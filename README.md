@@ -56,6 +56,27 @@ International spot converted at the interbank rate is not the local Sarafa rate;
 (fallback for week and month: Stooq daily closes), converted to PKR per tola at the current USD/PKR rate. If no source answers,
 the app says history is unavailable rather than drawing a made-up chart.
 
+## Login codes by SMS or WhatsApp (FR-A1)
+
+`api/otp.mjs` sends and checks real one-time codes through [Twilio Verify](https://www.twilio.com/docs/verify).
+Twilio generates, sends, expires (10 minutes) and checks the code; the app and this server never see it, and the
+provider keys stay on the server (Rule 6). Only Pakistani mobile numbers (+92 30x–34x, 355) are accepted, a number can
+request a new code every 30 seconds, and Twilio adds its own rate limits and fraud blocking.
+
+Until the keys below are set, the login runs in **demo mode**: it says so on screen, sends nothing, and accepts any 6 digits.
+
+Turn on real codes:
+
+1. Create a Twilio account, then in the console create a **Verify service** (Verify → Services).
+2. In Vercel → project `pgbx-app` → Settings → Environment Variables, add for Production:
+   `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SERVICE_SID`.
+3. Redeploy. The login switches to real SMS codes automatically.
+4. Recommended in Twilio: restrict SMS geo-permissions to Pakistan and keep Fraud Guard on.
+
+WhatsApp codes: since March 2024 WhatsApp requires the business's own approved WhatsApp Business sender.
+Connect PGBX's WhatsApp sender to the Verify service in Twilio, then add `OTP_WHATSAPP=1` and redeploy;
+until then the app shows WhatsApp as "soon" and offers SMS. Twilio charges per message and per successful verification.
+
 ## Stack
 
 - `index.html` only: Preact + htm as an ES module from jsDelivr, Google Fonts (Lora, Lato)
@@ -84,7 +105,7 @@ Live:
 Sample or simulated:
 - If the live feed is unreachable, rates fall back to the Pakistan Sarafa 24K rate of 1 Oct 2026 (gold Rs 438,636/tola, silver Rs 6,528/tola) with random ticks, labelled "Simulated".
 - Sell prices use a sample spread (gold 1.2 %, silver 2.5 %).
-- Login: any 10-digit 3XX mobile number and any 6-digit code are accepted; no SMS is sent. The PIN is 1234 until changed.
+- Login: real SMS / WhatsApp codes once Twilio is connected (see above); until then demo mode accepts any 6 digits and sends nothing. The PIN is 1234 until changed.
 - Identity verification always passes; no camera is used and no image is taken.
 - Dealer phone numbers, coordinates and the customer's location (Saddar) are samples; the map is a schematic drawing.
 - Notifications appear in the app only; nothing is sent by push, SMS or email.

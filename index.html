@@ -214,6 +214,8 @@ h1,h2,h3{font-family:var(--serif);margin:0;font-weight:600}
 .step-back{animation:inBack .5s var(--ease) both}
 .field{display:flex;align-items:center;margin-top:16px;border:1.5px solid var(--line);border-radius:16px;background:#fff;transition:border-color .25s;overflow:hidden}
 .field:focus-within{border-color:var(--gold);box-shadow:0 0 0 4px rgba(200,150,43,.14)}
+.field.bad{border-color:rgba(179,65,46,.6)}
+.otp.err{animation:shake .45s var(--ease)}
 .field .cc{padding:0 12px 0 16px;height:56px;display:flex;align-items:center;gap:6px;font-weight:900;color:var(--g800);border-right:1px solid var(--line)}
 .field input{flex:1;min-width:0;height:56px;border:0;outline:0;background:transparent;font:inherit;font-size:18px;font-weight:700;letter-spacing:.06em;padding:0 14px;color:var(--ink)}
 .field input::placeholder{color:#b3bcb6;font-weight:400}
@@ -641,6 +643,20 @@ const DAY_LIMIT = 1500000;                 // FR-B6: per-day purchase limit in P
 const PIN_DEFAULT = '1234';                // prototype PIN (changeable in Account > Change PIN)
 const PIN_COOLDOWN_AT = 3;                 // FR-A4: wrong PINs before a 30 s pause (sample)
 const PIN_MAX_FAILS = 5;                   // FR-A4: wrong PINs before the session ends and OTP login is required (sample)
+// Pakistani mobile numbers: Jazz 300–309 and 320–329, Zong 310–319, Ufone 330–339, Telenor 340–349, SCOM 355
+const PK_MOBILE = /^3(?:[0-4]\d|55)\d{7}$/;
+// FR-A1 one-time codes go through the server (/api/otp); the provider keys never reach the app (Rule 6).
+async function otpCall(body) {
+  for (const b of API_BASES) {
+    try {
+      const r = await fetch(`${b}/api/otp`, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { cache: 'no-store' });
+      if (r.status === 404 || r.status === 405 || r.status === 501) continue;
+      const d = await r.json().catch(() => null);
+      if (d) return d;
+    } catch (e) { }
+  }
+  return { ok: false, error: 'unreachable', configured: false };
+}
 
 // Fallback seed: Pakistan Sarafa 24K rate, 1 Oct 2026 (per tola)
 const SEED = { gold: 438636, silver: 6528 };
@@ -929,24 +945,49 @@ function Login({ S, note, onDone, onBrowse, onPin }) {
   const [ok, setOk] = useState(false);
   const [out, setOut] = useState(false);
   const [sentAt, setSentAt] = useState(0);
+  const [channel, setChannel] = useState('sms');
+  const [sentVia, setSentVia] = useState('sms');
+  const [err, setErr] = useState('');
+  const [shake, setShake] = useState(0);
   const phoneRef = useRef(null), otpRef = useRef(null);
-  const valid = /^3\d{9}$/.test(phone);
+  const cfg = S.otpCfg;
+  const demo = cfg.checked && !cfg.configured;
+  const channels = demo ? ['sms', 'whatsapp'] : cfg.channels;
+  const valid = PK_MOBILE.test(phone);
   const shown = p => (p.length > 3 ? p.slice(0, 3) + ' ' + p.slice(3) : p);
   useEffect(() => { if (innerWidth > 500) { const t = setTimeout(() => phoneRef.current && phoneRef.current.focus({ preventScroll: true }), 1500); return () => clearTimeout(t); } }, []);
-  const send = () => {
-    if (!valid || busy) return;
-    setBusy(true);
-    setTimeout(() => { setBusy(false); setDir('in'); setStep('otp'); setOtp(''); setSentAt(Date.now()); setTimeout(() => otpRef.current && otpRef.current.focus({ preventScroll: true }), 400); }, 750);
+  useEffect(() => { if (!channels.includes(channel)) setChannel('sms'); }, [channels.join()]);
+  const toOtp = via => { setBusy(false); setSentVia(via); setDir('in'); setStep('otp'); setOtp(''); setSentAt(Date.now()); setTimeout(() => otpRef.current && otpRef.current.focus({ preventScroll: true }), 400); };
+  // FR-A1: a real code goes out by SMS or WhatsApp through /api/otp (Twilio Verify). Demo mode only when no provider is connected.
+  const send = async via => {
+    via = via || channel;
+    if (!valid || busy || !cfg.checked) return;
+    setBusy(true); setErr('');
+    if (demo) { setTimeout(() => toOtp(via), 750); return; }
+    const d = await otpCall({ action: 'send', phone, channel: via });
+    if (d.ok) { toOtp(d.channel || via); return; }
+    setBusy(false);
+    setErr(d.error === 'wait' ? `Please wait ${d.retryIn}s before requesting another code.` : d.message || 'Could not send the code. Check your connection and try again.');
   };
   useEffect(() => {
     if (otp.length !== 6 || ok) return;
-    setBusy(true);
-    const t = setTimeout(() => { setBusy(false); setOk(true); setTimeout(() => { setOut(true); setTimeout(() => onDone(phone), 620); }, 700); }, 650);
-    return () => clearTimeout(t);
+    let alive = true;
+    setBusy(true); setErr('');
+    const finish = () => { setBusy(false); setOk(true); setTimeout(() => { setOut(true); setTimeout(() => onDone(phone), 620); }, 700); };
+    if (demo) { const t = setTimeout(finish, 650); return () => clearTimeout(t); }
+    otpCall({ action: 'check', phone, code: otp }).then(d => {
+      if (!alive) return;
+      if (d.ok && d.approved) { finish(); return; }
+      setBusy(false); setOtp(''); setShake(x => x + 1);
+      setErr(d.message || 'That code is incorrect. Check the message and try again.');
+      setTimeout(() => otpRef.current && otpRef.current.focus({ preventScroll: true }), 50);
+    });
+    return () => { alive = false; };
   }, [otp]);
   const resendIn = Math.max(0, 30 - Math.floor((S.now - sentAt) / 1000));
   const g = rateOf(S.rates, 'gold'), s = rateOf(S.rates, 'silver');
   const connecting = S.rates.mode === 'connecting';
+  const viaName = v => (v === 'whatsapp' ? 'WhatsApp' : 'SMS');
   return html`<div class=${'login' + (out ? ' out' : '')}>
     <div class="aurora a"></div><div class="aurora b"></div>
     <div class="login-top">
@@ -967,29 +1008,39 @@ function Login({ S, note, onDone, onBrowse, onPin }) {
     <div class="sheet">
       <div class="grab"></div>
       ${note && html`<div class="login-note" role="alert"><${Icon} n="shield" c="sm"/><span>${note}</span></div>`}
+      ${demo && html`<div class="login-note"><${Icon} n="info" c="sm"/><span><b style="display:inline">Demo mode.</b> The SMS provider isn’t connected yet, so no message is sent and any 6 digits work.</span></div>`}
       ${step === 'phone' ? html`<div class=${dir === 'in' ? 'step-in' : 'step-back'} key="phone">
         <h2>Log in or create an account</h2>
-        <p class="sub">Enter your mobile number. We will text you a one-time code (FR-A1).</p>
-        <label class="field">
+        <p class="sub">Enter your Pakistani mobile number. We’ll send you a one-time code (FR-A1).</p>
+        <label class=${'field' + (phone.length === 10 && !valid ? ' bad' : '')}>
           <span class="cc">PK +92</span>
-          <input ref=${phoneRef} type="tel" inputmode="numeric" autocomplete="tel-national" placeholder="3XX XXXXXXX" aria-label="Mobile number"
-            value=${shown(phone)} onInput=${e => { let v = e.target.value.replace(/\D/g, ''); if (v.startsWith('92')) v = v.slice(2); if (v.startsWith('0')) v = v.slice(1); setPhone(v.slice(0, 10)); }}
+          <input ref=${phoneRef} type="tel" inputmode="numeric" autocomplete="tel-national" placeholder="3XX XXXXXXX" aria-label="Mobile number" aria-invalid=${phone.length === 10 && !valid}
+            value=${shown(phone)} onInput=${e => { let v = e.target.value.replace(/\D/g, ''); if (v.startsWith('92')) v = v.slice(2); if (v.startsWith('0')) v = v.slice(1); setPhone(v.slice(0, 10)); setErr(''); }}
             onKeyDown=${e => { if (e.key === 'Enter') send(); }} />
           ${valid && html`<span class="okc"><${Icon} n="check"/></span>`}
         </label>
-        <div style="margin-top:14px"><button class="btn btn-gold" disabled=${!valid} onClick=${send}>${busy ? html`<span class="mini-spin"></span> Sending code` : html`Send code <${Icon} n="chev" c="sm"/>`}</button></div>
+        ${phone.length === 10 && !valid ? html`<div class="hint err">That isn’t a Pakistani mobile number. Mobile numbers start with 30–34 or 355, for example 300 1234567.</div>`
+          : phone && phone[0] !== '3' ? html`<div class="hint err">Mobile numbers start with 3, for example 300 1234567.</div>` : ''}
+        <div style="margin-top:14px">
+          <div class="small muted" style="margin-bottom:6px">Send my code by</div>
+          <${Seg} items=${[['sms', 'SMS'], ['whatsapp', channels.includes('whatsapp') ? 'WhatsApp' : 'WhatsApp · soon']]} value=${channel} onChange=${v => { if (channels.includes(v)) { setChannel(v); setErr(''); } else setErr('WhatsApp codes need PGBX’s WhatsApp Business number, which isn’t connected yet. Use SMS for now.'); }} />
+        </div>
+        ${err && html`<div class="hint err" role="alert">${err}</div>`}
+        <div style="margin-top:14px"><button class="btn btn-gold" disabled=${!valid || !cfg.checked} onClick=${() => send()}>${busy ? html`<span class="mini-spin"></span> Sending code` : !cfg.checked ? html`<span class="mini-spin"></span> Connecting` : html`Send code by ${viaName(channel)} <${Icon} n="chev" c="sm"/>`}</button></div>
       </div>` : html`<div class="step-in" key="otp">
         <h2>${ok ? 'Verified' : 'Enter the 6-digit code'}</h2>
-        <p class="sub">Sent to +92 ${shown(phone)} · <button class="linkbtn" style="min-height:0;font-size:13px" onClick=${() => { setDir('back'); setStep('phone'); }}>Change</button></p>
-        <div class=${'otp' + (ok ? ' ok' : '')} onClick=${() => otpRef.current && otpRef.current.focus()}>
+        <p class="sub">${demo ? 'Demo: no message was sent to' : `Sent by ${viaName(sentVia)} to`} +92 ${shown(phone)} · <button class="linkbtn" style="min-height:0;font-size:13px" onClick=${() => { setDir('back'); setStep('phone'); setErr(''); }}>Change</button></p>
+        <div class=${'otp' + (ok ? ' ok' : '') + (shake ? ' err' : '')} key=${'o' + shake} onClick=${() => otpRef.current && otpRef.current.focus()}>
           ${[0, 1, 2, 3, 4, 5].map(i => html`<div class=${'ob' + (i === otp.length && !ok ? ' cur' : '')} style=${ok ? { animationDelay: (i * 0.05) + 's' } : null}>${otp[i] ? html`<span key=${i + otp[i]}>${otp[i]}</span>` : ''}</div>`)}
-          <input ref=${otpRef} type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" aria-label="One-time code" value=${otp} disabled=${ok}
+          <input ref=${otpRef} type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" aria-label="One-time code" value=${otp} disabled=${ok || busy}
             onInput=${e => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))} />
         </div>
+        ${err && html`<div class="hint err" role="alert">${err}</div>`}
         <div class="between" style="margin-top:12px">
-          <span class="small muted">${busy ? 'Verifying…' : ok ? 'Signing you in' : 'Prototype: any 6 digits work'}</span>
-          <button class="linkbtn" style="min-height:36px;font-size:13px" disabled=${resendIn > 0} onClick=${() => { setSentAt(Date.now()); setOtp(''); }}>${resendIn > 0 ? `Resend in ${resendIn}s` : 'Resend code'}</button>
+          <span class="small muted">${busy ? 'Verifying…' : ok ? 'Signing you in' : demo ? 'Demo: any 6 digits work' : 'The code expires in 10 minutes'}</span>
+          <button class="linkbtn" style="min-height:36px;font-size:13px" disabled=${resendIn > 0 || busy} onClick=${() => send(sentVia)}>${resendIn > 0 ? `Resend in ${resendIn}s` : `Resend by ${viaName(sentVia)}`}</button>
         </div>
+        ${resendIn === 0 && channels.length > 1 && html`<button class="linkbtn" style="min-height:36px;font-size:13px" disabled=${busy} onClick=${() => { const v = sentVia === 'sms' ? 'whatsapp' : 'sms'; setChannel(v); send(v); }}>Send by ${viaName(sentVia === 'sms' ? 'whatsapp' : 'sms')} instead</button>`}
       </div>`}
       <div class="login-links">
         <button class="linkbtn" onClick=${onBrowse}><${Icon} n="rates" c="sm"/> Browse live rates without logging in</button>
@@ -1517,11 +1568,23 @@ function KycScreen({ S, A, next }) {
 
 function ProfileScreen({ S, A }) {
   const [f, setF] = useState({ ...S.profile });
-  const [ph, setPh] = useState({ open: false, num: '', sent: false, code: '' });
+  const [ph, setPh] = useState({ open: false, num: '', sent: false, code: '', busy: false, err: '' });
+  const demo = S.otpCfg.checked && !S.otpCfg.configured;
+  const phSend = async () => {
+    setPh(p => ({ ...p, busy: true, err: '' }));
+    const d = demo ? { ok: true } : await otpCall({ action: 'send', phone: ph.num, channel: 'sms' });
+    setPh(p => ({ ...p, busy: false, sent: !!d.ok, err: d.ok ? '' : d.error === 'wait' ? `Please wait ${d.retryIn}s.` : d.message || 'Could not send the code.' }));
+  };
+  const phCheck = async () => {
+    setPh(p => ({ ...p, busy: true, err: '' }));
+    const d = demo ? { ok: true, approved: true } : await otpCall({ action: 'check', phone: ph.num, code: ph.code });
+    if (d.ok && d.approved) { A.changePhone(ph.num); setPh({ open: false, num: '', sent: false, code: '', busy: false, err: '' }); return; }
+    setPh(p => ({ ...p, busy: false, code: '', err: d.message || 'That code is incorrect.' }));
+  };
   const idChanged = ['name', 'cnic', 'dob'].some(k => (f[k] || '') !== (S.profile[k] || ''));
   const dirty = idChanged || ['email', 'address'].some(k => (f[k] || '') !== (S.profile[k] || ''));
   const emailBad = f.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email);
-  const numOk = /^3\d{9}$/.test(ph.num);
+  const numOk = PK_MOBILE.test(ph.num);
   return html`<div class="page">
     <${TopBar} title="Personal details" onBack=${A.back} />
     <div class="scroll" style="top:calc(var(--top) + 60px)">
@@ -1533,12 +1596,14 @@ function ProfileScreen({ S, A }) {
         ${idChanged && S.kyc.status === 'verified' && html`<div class="login-note" style="margin-top:12px"><${Icon} n="alert" c="sm"/><span>Changing identity details needs re-verification (FR-N2). Buying is paused until PGBX checks them again.</span></div>`}
         <div class="tiny muted" style="text-transform:uppercase;letter-spacing:.08em;font-weight:900;margin-top:20px">Contact details</div>
         <label class="f">Mobile number</label>
-        <div class="between"><b>+92 ${S.phone ? S.phone.slice(0, 3) + ' ' + S.phone.slice(3) : '3•• ••• 4521'}</b><button class="linkbtn" onClick=${() => setPh({ open: !ph.open, num: '', sent: false, code: '' })}>${ph.open ? 'Cancel' : 'Change'}</button></div>
+        <div class="between"><b>+92 ${S.phone ? S.phone.slice(0, 3) + ' ' + S.phone.slice(3) : '3•• ••• 4521'}</b><button class="linkbtn" onClick=${() => setPh({ open: !ph.open, num: '', sent: false, code: '', busy: false, err: '' })}>${ph.open ? 'Cancel' : 'Change'}</button></div>
         ${ph.open && html`<div class="card summary step-in" style="margin:8px 0 0">
-          <div class="field" style="margin-top:0"><span class="cc">+92</span><input inputmode="numeric" placeholder="New number 3XX XXXXXXX" value=${ph.num} onInput=${e => setPh({ ...ph, num: e.target.value.replace(/\D/g, '').replace(/^0/, '').slice(0, 10) })} /></div>
-          ${!ph.sent ? html`<div style="margin-top:10px"><button class="btn btn-green" disabled=${!numOk} onClick=${() => setPh({ ...ph, sent: true })}>Send code to new number</button></div>`
-            : html`<input class="inp" style="margin-top:10px" inputmode="numeric" placeholder="6-digit code (prototype: any)" value=${ph.code} onInput=${e => setPh({ ...ph, code: e.target.value.replace(/\D/g, '').slice(0, 6) })} />
-              <div style="margin-top:10px"><button class="btn btn-gold" disabled=${ph.code.length !== 6} onClick=${() => { A.changePhone(ph.num); setPh({ open: false, num: '', sent: false, code: '' }); }}>Verify and update</button></div>`}
+          <div class="field" style="margin-top:0"><span class="cc">+92</span><input inputmode="numeric" placeholder="New number 3XX XXXXXXX" value=${ph.num} onInput=${e => setPh({ ...ph, num: e.target.value.replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '').slice(0, 10), sent: false, err: '' })} /></div>
+          ${ph.num.length === 10 && !numOk && html`<div class="hint err">Enter a valid Pakistani mobile number, for example 300 1234567.</div>`}
+          ${!ph.sent ? html`<div style="margin-top:10px"><button class="btn btn-green" disabled=${!numOk || ph.busy} onClick=${phSend}>${ph.busy ? 'Sending…' : 'Send code by SMS to new number'}</button></div>`
+            : html`<input class="inp" style="margin-top:10px" inputmode="numeric" autocomplete="one-time-code" placeholder=${demo ? '6-digit code (demo: any)' : '6-digit code from the SMS'} value=${ph.code} onInput=${e => setPh({ ...ph, code: e.target.value.replace(/\D/g, '').slice(0, 6), err: '' })} />
+              <div style="margin-top:10px"><button class="btn btn-gold" disabled=${ph.code.length !== 6 || ph.busy} onClick=${phCheck}>${ph.busy ? 'Checking…' : 'Verify and update'}</button></div>`}
+          ${ph.err && html`<div class="hint err" role="alert">${ph.err}</div>`}
         </div>`}
         <label class="f">Email</label><input class=${'inp' + (emailBad ? ' bad' : '')} type="email" placeholder="name@example.com" value=${f.email || ''} onInput=${e => setF({ ...f, email: e.target.value })} />
         <label class="f">Address</label><textarea rows="2" placeholder="House, street, area, city" value=${f.address || ''} onInput=${e => setF({ ...f, address: e.target.value })}></textarea>
@@ -2018,6 +2083,7 @@ function App() {
     cart: [], cartBump: 0, checkout: [], checkoutFrom: 'now', simCreditFail: false,
     notifications: [], banner: null, notifPrefs: { push: true, sms: true, email: false },
     alerts: [], history: {},
+    otpCfg: { checked: false, configured: false, channels: ['sms'] },
   }));
   const [now, setNow] = useState(Date.now());
   const set = patch => setSt(s => ({ ...s, ...(typeof patch === 'function' ? patch(s) : patch) }));
@@ -2027,6 +2093,9 @@ function App() {
   const histLoading = useRef({});
 
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+
+  // FR-A1: ask the server whether a real SMS / WhatsApp provider is connected
+  useEffect(() => { otpCall().then(d => set({ otpCfg: { checked: true, configured: !!d.configured, channels: d.channels && d.channels.length ? d.channels : ['sms'] } })); }, []);
 
   // Live rates: poll the server every 10 s (FR-R1). If it never answers, fall back to simulation.
   useEffect(() => {
