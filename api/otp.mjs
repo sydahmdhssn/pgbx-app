@@ -1,3 +1,5 @@
+import { ALLOWED_ORIGIN, allowOrigin } from './_origin.mjs';
+
 // /api/otp: send and check one-time login codes by SMS or WhatsApp (FR-A1).
 //
 // Provider: Twilio Verify (it generates, sends, expires and checks the code; the code never reaches this server).
@@ -37,7 +39,6 @@ function limited(kind, key) {
 }
 const clientIp = req => String(req.headers['x-real-ip'] || req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 'unknown';
 
-const ALLOWED_ORIGIN = /^https:\/\/pgbx-app(?:-[a-z0-9-]+)?\.vercel\.app$|^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/;
 
 const ERRORS = {
   20404: ['expired', 'This code has expired or was already used. Request a new code.'],
@@ -76,13 +77,7 @@ function send(res, status, obj) {
 }
 
 export default async function handler(req, res) {
-  const origin = req.headers.origin;
-  if (origin && ALLOWED_ORIGIN.test(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  }
+  const origin = allowOrigin(req, res, 'GET, POST');
   if (req.method === 'OPTIONS') { res.statusCode = 204; res.end(); return; }
   if (req.method === 'GET') return send(res, 200, { ok: true, configured: CONFIGURED, channels: CONFIGURED ? CHANNELS : [] });
   if (req.method !== 'POST') return send(res, 405, { ok: false, error: 'method' });

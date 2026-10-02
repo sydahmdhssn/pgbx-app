@@ -5,6 +5,8 @@
 //   fallback (week/month only): Stooq daily CSV for XAUUSD / XAGUSD
 // Prices are converted at the current USD/PKR rate from open.er-api.com.
 
+import { allowOrigin } from './_origin.mjs';
+
 const TOLA_G = 11.664;
 const OZ_G = 31.1034768;
 const RANGES = {
@@ -63,7 +65,8 @@ async function stooq(metal, range) {
 }
 
 export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  allowOrigin(req, res);
+  if (req.method === 'OPTIONS') { res.statusCode = 204; res.end(); return; }
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   const q = new URL(req.url, 'http://x').searchParams;
   const metal = q.get('metal') === 'silver' ? 'silver' : 'gold';

@@ -101,7 +101,8 @@ until then the app shows WhatsApp as "soon" and offers SMS. Twilio charges per m
 
 `vercel.json` sends a Content-Security-Policy (scripts only from this site, connections only to this site and
 `pgbx-app.vercel.app`, no embedding in other sites), `X-Frame-Options: DENY`, `Permissions-Policy`, `Referrer-Policy`,
-`X-Content-Type-Options` and `Cross-Origin-Opener-Policy`. Keep scripts out of inline `<script>` tags and `on…=` attributes,
+`X-Content-Type-Options` and `Cross-Origin-Opener-Policy`. The `/api` services send cross-origin (CORS) headers only to the app's own addresses
+(production, its previews and localhost), set in `api/_origin.mjs`; this stops other websites from using them in a browser. Keep scripts out of inline `<script>` tags and `on…=` attributes,
 or the policy will block them.
 
 ## Demo data in the browser
@@ -109,6 +110,9 @@ or the policy will block them.
 The prototype saves its sample data (wallet, orders, cart, profile, verification status, PIN, notifications, alerts) in this
 browser's local storage so a refresh does not reset the demo, and a returning user unlocks with the PIN. Account →
 **Reset demo data** erases it. Nothing is sent anywhere. A real app keeps this on the server and in the phone's secure storage.
+Saved data is checked when the app opens: anything damaged or from an older version is dropped or converted, and the rest
+falls back to defaults. If the app ever fails while drawing, a recovery screen offers **Try again** and **Reset demo data**
+instead of a blank page. Returning users see a short (about 1 s) splash before the PIN screen; first-time visitors get the full one.
 
 ## What the prototype covers
 

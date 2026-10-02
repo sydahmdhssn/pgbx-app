@@ -1,5 +1,5 @@
 // htm + Preact, self-hosted (no third-party CDN at runtime); licences in vendor/LICENSES.txt
-import { html, render, useState, useEffect, useRef, useMemo } from './vendor/htm-preact-standalone-3.1.1.module.js';
+import { html, render, useState, useEffect, useRef, useMemo, useErrorBoundary } from './vendor/htm-preact-standalone-3.1.1.module.js';
 
 // Liquid Glass refraction needs SVG filters inside backdrop-filter, which only Chromium supports; others get blur only.
 try { if (navigator.userAgentData && navigator.userAgentData.brands.some(b => /Chromium/.test(b.brand))) document.documentElement.classList.add('lg-refract'); } catch (e) { }
@@ -300,15 +300,22 @@ const dotClass = (rates, stale) => 'ldot' + (stale ? ' stale' : rates.mode !== '
 /* ============================================================
    Splash
    ============================================================ */
-function Splash({ onDone, rates }) {
+function Splash({ onDone, rates, quick }) {
   const [out, setOut] = useState(false);
   const parts = useMemo(() => Array.from({ length: 22 }, (_, i) => ({
     left: (i * 37 % 100) + '%', dur: 5 + (i * 13 % 50) / 10, delay: (i * 7 % 30) / 10, dx: ((i * 23 % 60) - 30) + 'px', size: 2 + (i % 4),
   })), []);
   const sparks = useMemo(() => Array.from({ length: 18 }, (_, i) => { const a = (i / 18) * Math.PI * 2, r = 120 + (i % 3) * 26; return { x: Math.cos(a) * r, y: Math.sin(a) * r, d: (i % 4) * 0.04 }; }), []);
   const finish = () => { if (out) return; setOut(true); setTimeout(onDone, 700); };
-  useEffect(() => { const t = setTimeout(finish, 3900); return () => clearTimeout(t); }, []);
+  useEffect(() => { const t = setTimeout(finish, quick ? 1200 : 3900); return () => clearTimeout(t); }, []);
   const status = rates.mode === 'live' ? html`<b>●</b> Live rates connected` : rates.mode === 'sim' ? 'Using simulated rates' : 'Connecting to live rates…';
+  if (quick) return html`<div class=${'splash quick' + (out ? ' out' : '')} onClick=${finish}>
+    <div class="rays"></div><div class="vignette"></div>
+    <div class="splash-center">
+      <div class="coin-stage"><${Coin} size=${150} glow=${true} still=${true} /></div>
+      <h1 class="splash-title">Pakistan Gold Bullion Exchange</h1>
+    </div>
+  </div>`;
   return html`<div class=${'splash' + (out ? ' out' : '')} onClick=${finish}>
     <div class="rays"></div><div class="vignette"></div>
     <div class="particles">${parts.map(p => html`<span class="particle" style=${{ left: p.left, width: p.size + 'px', height: p.size + 'px', animationDuration: p.dur + 's', animationDelay: p.delay + 's', '--dx': p.dx }}></span>`)}</div>
@@ -1476,7 +1483,45 @@ const TABS = [['rates', 'Rates'], ['buy', 'Buy'], ['wallet', 'Wallet'], ['redeem
 const STORE_KEY = 'pgbx-demo-v1';
 const KEEP = ['ledger', 'orders', 'redemptions', 'dealerStock', 'cart', 'profile', 'kyc', 'pin', 'pinFails', 'pinLockUntil', 'phone',
   'notifications', 'notifPrefs', 'alerts', 'biometric', 'tab', 'buyMetal', 'loggedIn'];
-function loadSaved() { try { const d = JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); return d && d.v === 1 ? d.s : null; } catch (e) { return null; } }
+function loadSaved() { try { const d = JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); return d && d.v === 1 && d.s && typeof d.s === 'object' ? sanitizeSaved(d.s) : null; } catch (e) { return null; } }
+
+// Saved data is untrusted (it may be damaged or from an older app version): keep only well-formed values,
+// convert the older single-product order format, and let everything else fall back to defaults.
+function sanitizeSaved(s) {
+  const out = {};
+  const isObj = v => v && typeof v === 'object' && !Array.isArray(v);
+  const num = v => typeof v === 'number' && isFinite(v);
+  const int = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
+  const str = v => typeof v === 'string';
+  const list = (v, ok) => (Array.isArray(v) ? v.filter(x => isObj(x) && ok(x)) : null);
+  const line = l => isObj(l) && P[l.pid] && int(l.units, 1, MAX_UNITS) && (l.unit === undefined || num(l.unit));
+  const set = (k, v) => { if (v !== null && v !== undefined) out[k] = v; };
+  set('ledger', list(s.ledger, e => P[e.pid] && Number.isInteger(e.delta) && num(e.ts) && str(e.reason) && str(e.ref)));
+  if (Array.isArray(s.orders)) set('orders', s.orders.map(o => {
+    if (!isObj(o) || !str(o.id) || !str(o.receipt) || !num(o.ts)) return null;
+    const lines = Array.isArray(o.lines) ? o.lines : (P[o.pid] ? [{ pid: o.pid, units: o.units, unit: o.unit }] : null);
+    if (!lines || !lines.length || !lines.every(l => line(l) && num(l.unit))) return null;
+    return { ...o, lines, total: num(o.total) ? o.total : lines.reduce((a, l) => a + l.unit * l.units, 0), method: METHODS.some(m => m.id === o.method) ? o.method : 'bank', status: o.status === 'flagged' ? 'flagged' : 'credited' };
+  }).filter(Boolean));
+  set('redemptions', list(s.redemptions, r => str(r.id) && P[r.pid] && int(r.units, 1, 1000) && DEALERS.some(d => d.id === r.dealerId) && /^\d{6}$/.test(r.code) && num(r.expiresAt) && ['requested', 'ready', 'completed', 'cancelled'].includes(r.status)));
+  set('cart', list(s.cart, line));
+  set('notifications', list(s.notifications, n => str(n.id) && num(n.ts) && str(n.title) && str(n.body) && str(n.kind)));
+  set('alerts', list(s.alerts, a => str(a.id) && (a.metal === 'gold' || a.metal === 'silver') && (a.dir === 'above' || a.dir === 'below') && num(a.target) && a.target > 0));
+  if (isObj(s.dealerStock) && DEALERS.every(d => isObj(s.dealerStock[d.id]) && PRODUCTS.every(p => int(s.dealerStock[d.id][p.id], 0, 1e6)))) out.dealerStock = s.dealerStock;
+  if (isObj(s.profile) && str(s.profile.name) && s.profile.name.trim().length >= 1)
+    out.profile = { name: s.profile.name, cnic: str(s.profile.cnic) ? s.profile.cnic : '', dob: str(s.profile.dob) ? s.profile.dob : '', email: str(s.profile.email) ? s.profile.email : '', address: str(s.profile.address) ? s.profile.address : '' };
+  if (isObj(s.kyc) && ['none', 'pending', 'verified', 'reverify'].includes(s.kyc.status)) out.kyc = { status: s.kyc.status === 'pending' ? 'none' : s.kyc.status, at: num(s.kyc.at) ? s.kyc.at : null, expiry: str(s.kyc.expiry) ? s.kyc.expiry : '' };
+  if (isObj(s.notifPrefs)) out.notifPrefs = { push: s.notifPrefs.push !== false, sms: s.notifPrefs.sms !== false, email: s.notifPrefs.email === true };
+  if (str(s.pin) && /^\d{4}$/.test(s.pin)) out.pin = s.pin;
+  if (int(s.pinFails, 0, PIN_MAX_FAILS)) out.pinFails = s.pinFails;
+  if (num(s.pinLockUntil)) out.pinLockUntil = Math.min(s.pinLockUntil, Date.now() + 30000);
+  if (str(s.phone) && (s.phone === '' || PK_MOBILE.test(s.phone))) out.phone = s.phone;
+  if (typeof s.biometric === 'boolean') out.biometric = s.biometric;
+  if (TABS.some(t => t[0] === s.tab)) out.tab = s.tab;
+  if (s.buyMetal === 'gold' || s.buyMetal === 'silver') out.buyMetal = s.buyMetal;
+  if (typeof s.loggedIn === 'boolean') out.loggedIn = s.loggedIn;
+  return out;
+}
 function saveState(st) { try { localStorage.setItem(STORE_KEY, JSON.stringify({ v: 1, s: Object.fromEntries(KEEP.map(k => [k, st[k]])) })); } catch (e) { } }
 function clearSaved() { try { localStorage.removeItem(STORE_KEY); } catch (e) { } }
 const SAVED = loadSaved();
@@ -1785,7 +1830,7 @@ function App() {
   return html`<div class="device" onPointerDown=${active} onKeyDown=${active} onWheel=${active} onTouchMove=${active} onScrollCapture=${onScroll} onInput=${active}>
     <div class="device-inner">
       <${StatusBar} light=${darkTop} />
-      ${phase === 'splash' && html`<${Splash} rates=${st.rates} onDone=${() => { if (returning) set({ lockNote: 'Welcome back' }); setPhase(returning ? 'pin' : 'login'); }} />`}
+      ${phase === 'splash' && html`<${Splash} rates=${st.rates} quick=${returning} onDone=${() => { if (returning) set({ lockNote: 'Welcome back' }); setPhase(returning ? 'pin' : 'login'); }} />`}
       ${phase === 'login' && html`<${Login} S=${S} note=${st.loginNote} onRetry=${checkOtp} onDone=${phone => {
         set({ phone }); enterApp();
         notify('security', 'New login on this device', `Logged in with +92 ${phone.slice(0, 3)} ${phone.slice(3)}. If this wasn’t you, contact PGBX.`);
@@ -1823,4 +1868,20 @@ function StatusBar({ light }) {
 function fit() { const s = Math.min(1, (innerHeight - 48) / 862, (innerWidth - 32) / 408); document.documentElement.style.setProperty('--s', Math.max(0.4, s).toFixed(4)); }
 addEventListener('resize', fit); fit();
 
-render(html`<${App}/>`, document.getElementById('root'));
+// If anything unexpected breaks while drawing the app, show a way out instead of a blank page.
+function CrashScreen() {
+  return html`<div class="device"><div class="device-inner"><div class="lock" style="justify-content:center;text-align:center;gap:6px">
+    <${Coin} size=${96} still=${true} />
+    <h2>Something went wrong</h2>
+    <p class="proto" style="max-width:280px;line-height:1.5">The app hit a problem loading your demo data. You can try again, or reset the demo to start fresh.</p>
+    <div style="display:grid;gap:10px;width:100%;max-width:300px;margin-top:14px">
+      <button class="btn btn-gold" onClick=${() => location.reload()}>Try again</button>
+      <button class="btn btn-ghost" onClick=${() => { clearSaved(); location.href = location.pathname; }}>Reset demo data</button>
+    </div>
+  </div></div></div>`;
+}
+function Root() {
+  const [error] = useErrorBoundary(e => { try { console.error('PGBX app error:', e); } catch (x) { } });
+  return error ? html`<${CrashScreen}/>` : html`<${App}/>`;
+}
+render(html`<${Root}/>`, document.getElementById('root'));

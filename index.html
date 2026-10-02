@@ -178,6 +178,9 @@ h1,h2,h3{font-family:var(--serif);margin:0;font-weight:600}
 .splash.out .coin-stage{animation:coinOut .65s var(--ease) forwards}
 .splash.out .splash-title,.splash.out .splash-tag,.splash.out .splash-load{animation:fadeOut .35s var(--ease) forwards}
 @keyframes coinOut{to{opacity:0;transform:scale(1.55)}}
+.splash.quick .coin-stage{animation-duration:.5s}
+.splash.quick .rays{animation:raysIn .5s var(--ease) forwards,spin 70s linear infinite}
+.splash.quick .splash-title{animation:enter .5s .15s var(--ease) both}
 
 /* ---------- login ---------- */
 .login{position:absolute;inset:0;overflow:hidden;background:linear-gradient(180deg,#0d5333 0%,#08391f 50%,#052414 100%);color:#fff;display:flex;flex-direction:column;animation:fadeIn .5s var(--ease) both}

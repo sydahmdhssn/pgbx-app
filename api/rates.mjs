@@ -8,6 +8,8 @@
 //           fallback: @fawazahmed0/currency-api via jsDelivr
 // Spreads and product premiums below are SAMPLE values until PGBX sets them (FR-M1, FR-M2).
 
+import { allowOrigin } from './_origin.mjs';
+
 const TOLA_G = 11.664;
 const OZ_G = 31.1034768;
 const SPREAD = { gold: 0.012, silver: 0.025 };
@@ -69,7 +71,8 @@ async function usdPkr() {
 }
 
 export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  allowOrigin(req, res);
+  if (req.method === 'OPTIONS') { res.statusCode = 204; res.end(); return; }
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   const warnings = [];
 
