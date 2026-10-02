@@ -22,7 +22,7 @@ On a desktop the app shows inside a 390×844 phone frame; at phone width (500 px
 
 | Param | Effect |
 |---|---|
-| `?start=home` | Skip the splash and PIN and open the Rates home, logged in |
+| `?start=home` | Skip the splash and login and open the Rates home, logged in |
 | `?feedFail=1` | Simulate a stale rate feed: shows "Rates are delayed" and disables buying (FR-R4) |
 | `?start=login` / `?start=pin` | Open straight on the login or PIN screen |
 | `?sim=1` | Use simulated rates instead of the live feed |
@@ -79,9 +79,9 @@ Sample or simulated:
 - Login: any 10-digit 3XX mobile number and any 6-digit code are accepted; no SMS is sent.
 - Product premiums, the 10-unit per-order limit, the customer (Ahmed Khan), opening holdings (2 × 1 tola silver, 1 × 1 g gold), the four dealers and their stock.
 - Payments always succeed after about 1.8 s. Receipt numbers, redemption codes, the QR-style pattern and serial numbers are generated locally.
-- Which rate source PGBX will use for local buy and sell prices.
 
 Shown as "[To be confirmed by PGBX]" (open questions in Section 10 and related FRs):
+- Which rate source PGBX will use for its local buy and sell prices, and the real spread
 - Redemption fee or making charge, and who pays the dealer
 - Whether redemption differs for gold and silver
 - Whether sell-back to PGBX is in version 1 (FR-W6)
