@@ -626,8 +626,8 @@ div.choice{cursor:pointer}
 .sheet.glass{background:none;--glass-tint:rgba(247,244,236,.86);box-shadow:none}
 .sheet.glass::before{-webkit-backdrop-filter:blur(26px) saturate(190%);backdrop-filter:blur(26px) saturate(190%);box-shadow:inset 0 1px 0 rgba(255,255,255,.9),inset 0 0 0 .5px rgba(255,255,255,.5),0 -24px 50px -24px rgba(0,0,0,.55)}
 .lg-refract .sheet.glass::before{backdrop-filter:url(#lg-refract) blur(22px) saturate(190%)}
-.push.glass{background:none;border:0;--glass-tint:rgba(252,250,244,.6)}
-.toast.glass{background:none;border:0;--glass-tint:rgba(5,36,20,.62);--glass-rim:inset 0 1px 0 rgba(255,255,255,.22),inset 0 0 0 .5px rgba(226,182,90,.4)}
+.push.glass{position:absolute;z-index:80;background:none;border:0;--glass-tint:rgba(252,250,244,.6)}
+.toast.glass{position:absolute;z-index:60;background:none;border:0;--glass-tint:rgba(5,36,20,.62);--glass-rim:inset 0 1px 0 rgba(255,255,255,.22),inset 0 0 0 .5px rgba(226,182,90,.4)}
 .toast.glass::after{opacity:.3}
 .tick{-webkit-backdrop-filter:blur(10px) saturate(160%);backdrop-filter:blur(10px) saturate(160%);box-shadow:inset 0 1px 0 rgba(255,255,255,.2),inset 0 0 0 .5px rgba(226,182,90,.25);border-color:transparent}
 .key{-webkit-backdrop-filter:blur(10px) saturate(160%);backdrop-filter:blur(10px) saturate(160%);border-color:transparent;
