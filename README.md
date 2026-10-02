@@ -91,6 +91,11 @@ until then the app shows WhatsApp as "soon" and offers SMS. Twilio charges per m
 - Preact + htm self-hosted in `vendor/` (licences in `vendor/LICENSES.txt`); no third-party script at runtime. Google Fonts (Lora, Lato)
 - Inline SVG icons, metallic ingots and the PGBX coin logo
 - Motion uses transform and opacity with `cubic-bezier(.22,1,.36,1)` and respects `prefers-reduced-motion`
+- Liquid Glass styling in the spirit of iOS 26: a floating glass tab bar that shrinks while scrolling down and a liquid
+  tab indicator, glass headers that content scrolls under, glass back and cart buttons, sheet, banners, toasts, segmented
+  controls, PIN keys and secondary buttons. Blur, saturation and specular rims work in all modern browsers; the extra
+  refraction (an SVG displacement filter inside `backdrop-filter`) is applied only in Chromium-based browsers, which support it.
+  `prefers-reduced-transparency` switches to solid surfaces.
 
 ## Security headers
 

@@ -580,6 +580,75 @@ label.f{display:block;font-size:12px;font-weight:700;color:var(--muted);margin:1
 .dact a{display:inline-flex;align-items:center;gap:5px;min-height:34px;padding:0 10px;border-radius:10px;background:rgba(11,74,44,.07);color:var(--g800);font-size:11px;font-weight:900;text-decoration:none;white-space:nowrap}
 div.choice{cursor:pointer}
 
+/* ---------- Liquid Glass (iOS 26 style material) ---------- */
+/* Layers: ::before = the glass (blur + saturation + optional refraction), ::after = specular light. Content sits above. */
+:root{--glass-tint:rgba(255,255,255,.42);--glass-rim:inset 0 1px 0 rgba(255,255,255,.75),inset 0 -1px 0 rgba(255,255,255,.18),inset 0 0 0 .5px rgba(255,255,255,.45);--glass-drop:0 12px 32px -14px rgba(3,24,13,.45),0 2px 6px -2px rgba(3,24,13,.18)}
+.glass{position:relative;z-index:0}
+.glass::before{content:'';position:absolute;inset:0;border-radius:inherit;z-index:-1;pointer-events:none;background:var(--glass-tint);
+  -webkit-backdrop-filter:blur(18px) saturate(185%) brightness(1.04);backdrop-filter:blur(18px) saturate(185%) brightness(1.04);box-shadow:var(--glass-rim),var(--glass-drop)}
+.lg-refract .glass::before{backdrop-filter:url(#lg-refract) blur(14px) saturate(185%) brightness(1.04)}
+.glass::after{content:'';position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:-1;
+  background:linear-gradient(180deg,rgba(255,255,255,.5) 0%,rgba(255,255,255,.08) 38%,rgba(255,255,255,0) 60%),radial-gradient(120% 90% at 50% 120%,rgba(255,255,255,.22),rgba(255,255,255,0) 60%);opacity:.75}
+.glass.dark{--glass-tint:rgba(8,40,24,.42);--glass-rim:inset 0 1px 0 rgba(255,255,255,.28),inset 0 -1px 0 rgba(255,255,255,.06),inset 0 0 0 .5px rgba(226,182,90,.35)}
+.glass.dark::after{opacity:.35}
+
+/* floating tab bar: capsule that shrinks while scrolling down */
+.app .tabbar{animation-fill-mode:backwards;position:absolute;left:12px;right:12px;bottom:calc(var(--bot) + 10px);border-radius:32px;padding:6px;border:0;background:none;-webkit-backdrop-filter:none;backdrop-filter:none;
+  --glass-tint:rgba(252,250,245,.66);transform-origin:50% 100%;transition:transform .55s var(--spring)}
+.app.framed .tabbar{bottom:16px;padding-bottom:6px}
+.app .tabbar.mini{transform:translateY(6px) scale(.86)}
+.app .tabbar.mini .tab{transform:none}
+.tabbar .spec{position:absolute;top:0;bottom:0;left:0;width:34%;border-radius:inherit;pointer-events:none;z-index:2;opacity:0;transition:opacity .4s var(--ease),transform .25s var(--ease);
+  background:radial-gradient(60% 80% at 50% 0%,rgba(255,255,255,.55),rgba(255,255,255,0) 70%);transform:translateX(var(--hx,0px))}
+.tabbar:hover .spec{opacity:1}
+.app .view .scroll{padding-bottom:118px}
+.pill-track{padding:0 4px}
+.pill{border-radius:26px;background:linear-gradient(180deg,rgba(255,255,255,.75),rgba(255,255,255,.35));border:0;
+  box-shadow:inset 0 1px 0 #fff,inset 0 0 0 .5px rgba(200,150,43,.45),0 6px 16px -8px rgba(138,100,20,.55);animation:goo .6s var(--spring)}
+@keyframes goo{0%{transform:scale(1)}35%{transform:scaleX(1.32) scaleY(.82)}70%{transform:scaleX(.94) scaleY(1.06)}100%{transform:scale(1)}}
+
+/* sub-screen header: content scrolls under a glass edge; floating glass back button */
+.page>.topbar{position:absolute;left:0;right:0;top:0;z-index:6;background:transparent}
+.page>.topbar::before{content:'';position:absolute;inset:0 0 -22px;z-index:-1;pointer-events:none;background:linear-gradient(rgba(247,244,236,.82),rgba(247,244,236,.5) 72%,rgba(247,244,236,0));
+  -webkit-backdrop-filter:blur(14px) saturate(160%);backdrop-filter:blur(14px) saturate(160%);-webkit-mask:linear-gradient(#000 62%,transparent);mask:linear-gradient(#000 62%,transparent)}
+.page>.scroll{top:0!important;padding-top:calc(var(--top) + 66px)}
+.topbar .iconbtn{border-radius:50%;--glass-tint:rgba(255,255,255,.55)}
+.iconbtn.glass:active,.cartbtn.glass:active{transform:scale(1.08)}
+.cartbtn.glass{background:none;border:0;border-radius:50%}
+
+/* segmented controls: glass droplet knob that stretches when it moves */
+.seg,.segn{background:rgba(29,43,34,.06);box-shadow:inset 0 1px 2px rgba(29,43,34,.08)}
+.seg .knob,.segn .knob{background:none;box-shadow:none}
+.knob>i{position:absolute;inset:0;border-radius:inherit;background:linear-gradient(180deg,#fff,rgba(255,255,255,.82));
+  box-shadow:inset 0 1px 0 #fff,inset 0 0 0 .5px rgba(29,43,34,.08),0 6px 14px -6px rgba(11,74,44,.4);animation:goo .55s var(--spring)}
+
+/* sheets, banners, toasts, chips, keys and secondary buttons */
+.sheet.glass{background:none;--glass-tint:rgba(247,244,236,.86);box-shadow:none}
+.sheet.glass::before{-webkit-backdrop-filter:blur(26px) saturate(190%);backdrop-filter:blur(26px) saturate(190%);box-shadow:inset 0 1px 0 rgba(255,255,255,.9),inset 0 0 0 .5px rgba(255,255,255,.5),0 -24px 50px -24px rgba(0,0,0,.55)}
+.lg-refract .sheet.glass::before{backdrop-filter:url(#lg-refract) blur(22px) saturate(190%)}
+.push.glass{background:none;border:0;--glass-tint:rgba(252,250,244,.6)}
+.toast.glass{background:none;border:0;--glass-tint:rgba(5,36,20,.62);--glass-rim:inset 0 1px 0 rgba(255,255,255,.22),inset 0 0 0 .5px rgba(226,182,90,.4)}
+.toast.glass::after{opacity:.3}
+.tick{-webkit-backdrop-filter:blur(10px) saturate(160%);backdrop-filter:blur(10px) saturate(160%);box-shadow:inset 0 1px 0 rgba(255,255,255,.2),inset 0 0 0 .5px rgba(226,182,90,.25);border-color:transparent}
+.key{-webkit-backdrop-filter:blur(10px) saturate(160%);backdrop-filter:blur(10px) saturate(160%);border-color:transparent;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.28),inset 0 -1px 0 rgba(255,255,255,.06),inset 0 0 0 .5px rgba(226,182,90,.3),0 8px 18px -10px rgba(0,0,0,.5)}
+.key:active{transform:scale(1.08);background-color:rgba(226,182,90,.22)}
+.key.plain{box-shadow:none;-webkit-backdrop-filter:none;backdrop-filter:none}
+.btn-ghost{background:rgba(255,255,255,.5);border-color:transparent;-webkit-backdrop-filter:blur(12px) saturate(170%);backdrop-filter:blur(12px) saturate(170%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.85),inset 0 0 0 1px rgba(11,74,44,.16),0 8px 18px -12px rgba(11,74,44,.35)}
+.btn-gold{box-shadow:0 10px 24px -10px rgba(200,150,43,.8),inset 0 1px 0 rgba(255,255,255,.7),inset 0 -2px 6px rgba(138,100,20,.25)}
+.btn:active{transform:scale(1.03)}
+.rate{box-shadow:0 18px 40px -18px rgba(5,36,20,.75),inset 0 1px 0 rgba(255,255,255,.18),inset 0 0 0 .5px rgba(226,182,90,.25)}
+.hero .brand .iconbtn{border-radius:50%}
+
+/* Respect "Reduce transparency": solid surfaces, no blur or refraction */
+@media (prefers-reduced-transparency:reduce){
+  .glass::before,.page>.topbar::before,.sheet.glass::before{-webkit-backdrop-filter:none!important;backdrop-filter:none!important}
+  .glass{--glass-tint:#fbf9f3}.glass.dark,.toast.glass{--glass-tint:#0B4A2C}.sheet.glass{--glass-tint:var(--cream)}.push.glass{--glass-tint:#fcfaf4}
+  .page>.topbar::before{background:var(--cream)}
+  .tick,.key,.btn-ghost{-webkit-backdrop-filter:none;backdrop-filter:none}
+}
+
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;animation-delay:0ms!important;transition-duration:.01ms!important}
   .coin .ring,.check-disc path{stroke-dashoffset:0}
@@ -608,6 +677,12 @@ div.choice{cursor:pointer}
     <linearGradient id="ingTopS" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#d9dfe3"/><stop offset=".5" stop-color="#ffffff"/><stop offset="1" stop-color="#c9d0d5"/></linearGradient>
     <linearGradient id="ingFrontS" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e6eaed"/><stop offset=".55" stop-color="#b9c1c7"/><stop offset="1" stop-color="#7f8a92"/></linearGradient>
     <linearGradient id="ingSideS" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#a5aeb4"/><stop offset="1" stop-color="#6a747b"/></linearGradient>
+    <!-- Liquid Glass refraction: low-frequency noise bends what is seen through the glass (used by Chromium; other browsers get blur only) -->
+    <filter id="lg-refract" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.006 0.011" numOctaves="2" seed="11" result="noise"/>
+      <feGaussianBlur in="noise" stdDeviation="3" result="soft"/>
+      <feDisplacementMap in="SourceGraphic" in2="soft" scale="34" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
     <mask id="crescentMask"><rect x="0" y="0" width="200" height="200" fill="#fff"/><circle cx="106" cy="72" r="24" fill="#000"/></mask>
     <clipPath id="pgbxClip"><text x="100" y="146" text-anchor="middle" font-family="Lora, Georgia, serif" font-weight="700" font-size="34" letter-spacing="3">PGBX</text></clipPath>
   </defs>

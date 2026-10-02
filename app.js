@@ -1,6 +1,9 @@
 // htm + Preact, self-hosted (no third-party CDN at runtime); licences in vendor/LICENSES.txt
 import { html, render, useState, useEffect, useRef, useMemo } from './vendor/htm-preact-standalone-3.1.1.module.js';
 
+// Liquid Glass refraction needs SVG filters inside backdrop-filter, which only Chromium supports; others get blur only.
+try { if (navigator.userAgentData && navigator.userAgentData.brands.some(b => /Chromium/.test(b.brand))) document.documentElement.classList.add('lg-refract'); } catch (e) { }
+
 // Fonts load without blocking first paint (replaces an inline onload handler, which the CSP forbids)
 { const f = document.getElementById('fonts'); if (f) { if (f.sheet) f.media = 'all'; else f.addEventListener('load', () => { f.media = 'all'; }); } }
 
@@ -394,7 +397,7 @@ function Login({ S, note, onDone, onBrowse, onPin, onRetry }) {
         </div>`)}
       </div>
     </div>
-    <div class="sheet">
+    <div class="sheet glass">
       <div class="grab"></div>
       ${note && html`<div class="login-note" role="alert"><${Icon} n="shield" c="sm"/><span>${note}</span></div>`}
       ${down && html`<div class="login-note" role="alert"><${Icon} n="alert" c="sm"/><span style="flex:1">Can’t reach the login service. Check your connection.</span><button class="linkbtn" style="min-height:0;font-size:13px" onClick=${onRetry}>Retry</button></div>`}
@@ -490,21 +493,21 @@ function LockScreen({ pin, fails, lockUntil, now, biometric, note, onUnlock, onF
    Shared bits
    ============================================================ */
 const TopBar = ({ title, onBack, right }) => html`<div class="topbar">
-  <button class="iconbtn" onClick=${onBack} aria-label="Back"><${Icon} n="back"/></button><h2>${title}</h2><div style="margin-left:auto;display:flex;align-items:center;gap:6px">${right || ''}</div>
+  <button class="iconbtn glass" onClick=${onBack} aria-label="Back"><${Icon} n="back"/></button><h2>${title}</h2><div style="margin-left:auto;display:flex;align-items:center;gap:6px">${right || ''}</div>
 </div>`;
 const TabHead = ({ title, sub, right }) => html`<div class="tabhead enter"><div class="between"><h1>${title}</h1>${right || ''}</div>${sub && html`<p>${sub}</p>`}</div>`;
 const StaleBanner = () => html`<div class="banner warn enter" role="alert"><${Icon} n="alert"/><div><b>Rates are delayed</b>Buying is paused until fresh rates arrive from PGBX (FR-R4).</div></div>`;
 const Seg = ({ items, value, onChange }) => {
   const idx = Math.max(0, items.findIndex(x => x[0] === value));
   return html`<div class="segn" style=${{ '--n': items.length }} role="tablist">
-    <span class="knob" style=${{ transform: `translateX(${idx * 100}%)` }}></span>
+    <span class="knob" style=${{ transform: `translateX(${idx * 100}%)` }}><i key=${'k' + idx}></i></span>
     ${items.map(([k, l]) => html`<button class=${value === k ? 'on' : ''} onClick=${() => onChange(k)} role="tab" aria-selected=${value === k}>${l}</button>`)}
   </div>`;
 };
 const Switch = ({ on }) => html`<span class=${'switch' + (on ? ' on' : '')}><i></i></span>`;
 const CartButton = ({ S, A }) => {
   const n = S.cart.reduce((a, l) => a + l.units, 0);
-  return html`<button class="cartbtn" onClick=${A.openCart} aria-label=${`Cart, ${n} units`}><span key=${'c' + S.cartBump} class=${S.cartBump ? 'bump' : ''}><${Icon} n="cart"/></span>${n > 0 && html`<span class="badge lt" key=${'n' + n}>${n}</span>`}</button>`;
+  return html`<button class="cartbtn glass" onClick=${A.openCart} aria-label=${`Cart, ${n} units`}><span key=${'c' + S.cartBump} class=${S.cartBump ? 'bump' : ''}><${Icon} n="cart"/></span>${n > 0 && html`<span class="badge lt" key=${'n' + n}>${n}</span>`}</button>`;
 };
 const linesTotal = (lines, prices) => lines.reduce((a, l) => a + (prices[l.pid] || 0) * l.units, 0);
 const linesUnits = lines => lines.reduce((a, l) => a + l.units, 0);
@@ -573,7 +576,7 @@ function RatesHome({ S, A }) {
   return html`<div class="scroll">
     <div class="hero">
       <div class="brand enter"><${Coin} size=${40} still=${true} /><div><b>PGBX</b><small>Pakistan Gold Bullion Exchange</small></div>
-        ${!guest && html`<button class="iconbtn" style="margin-left:auto;color:#fff;position:relative" aria-label=${`Notifications, ${S.unread} unread`} onClick=${() => A.push({ name: 'inbox' })}><${Icon} n="bell"/>${S.unread > 0 && html`<span class="badge" key=${'u' + S.unread}>${S.unread}</span>`}</button>`}</div>
+        ${!guest && html`<button class="iconbtn glass dark" style="margin-left:auto;color:#fff" aria-label=${`Notifications, ${S.unread} unread`} onClick=${() => A.push({ name: 'inbox' })}><${Icon} n="bell"/>${S.unread > 0 && html`<span class="badge" key=${'u' + S.unread}>${S.unread}</span>`}</button>`}</div>
       <div class="live"><span class=${dotClass(rates, stale)}></span>${feedLabel(rates, stale, now)}</div>
       <h1 class="enter">${guest ? 'Today’s rates' : `Assalam-o-Alaikum, ${S.profile.name.split(' ')[0]}`}</h1>
     </div>
@@ -703,7 +706,7 @@ function BuyList({ S, A }) {
   return html`<div class="scroll">
     <${TabHead} title="Buy" sub="Choose a product. Whole units only, 999.0 purity." right=${!S.guest && html`<${CartButton} S=${S} A=${A} />`} />
     <div class="seg" role="tablist">
-      <span class="knob" style=${{ transform: `translateX(${metal === 'gold' ? 0 : 100}%)` }}></span>
+      <span class="knob" style=${{ transform: `translateX(${metal === 'gold' ? 0 : 100}%)` }}><i key=${'k' + metal}></i></span>
       <button class=${metal === 'gold' ? 'on' : ''} onClick=${() => A.set({ buyMetal: 'gold' })} role="tab" aria-selected=${metal === 'gold'}>Gold · 7</button>
       <button class=${metal === 'silver' ? 'on' : ''} onClick=${() => A.set({ buyMetal: 'silver' })} role="tab" aria-selected=${metal === 'silver'}>Silver · 4</button>
     </div>
@@ -1283,7 +1286,7 @@ function CodeScreen({ S, A, rid }) {
    ============================================================ */
 const N_ICON = { purchase: 'buy', redemption: 'store', security: 'shield', account: 'user', alert: 'bell' };
 function PushBanner({ n, onOpen }) {
-  return html`<button class="push" key=${n.id} onClick=${onOpen} role="status">
+  return html`<button class="push glass" key=${n.id} onClick=${onOpen} role="status">
     <${Coin} size=${34} still=${true} />
     <div style="flex:1;min-width:0"><div class="pt">PGBX · NOW</div><b>${n.title}</b><div class="small muted">${n.body}</div></div>
   </button>`;
@@ -1500,6 +1503,8 @@ function App() {
   const [now, setNow] = useState(Date.now());
   const set = patch => setSt(s => ({ ...s, ...(typeof patch === 'function' ? patch(s) : patch) }));
   const lastActive = useRef(Date.now());
+  const [mini, setMini] = useState(false);              // Liquid Glass tab bar shrinks while scrolling down
+  const miniRef = useRef(false), lastY = useRef(0);
   const committed = useRef(new Set(st.orders.map(o => o.id)));       // idempotency (Rule 2 / NFR-1), survives refresh
   const receipts = useRef(new Set(st.orders.map(o => o.receipt)));
   const histLoading = useRef({});
@@ -1759,9 +1764,18 @@ function App() {
   const tabIdx = tabIndex(st.tab);
   const hideTabs = top && ['processing', 'changepin', 'kyc'].includes(top.name);
   const enterCls = st.navDir === 'fwd' ? 'enter-fwd' : st.navDir === 'back' ? 'enter-back' : 'enter';
+  useEffect(() => { lastY.current = 0; miniRef.current = false; setMini(false); }, [routeKey]);
 
   const active = () => { lastActive.current = Date.now(); };
-  return html`<div class="device" onPointerDown=${active} onKeyDown=${active} onWheel=${active} onTouchMove=${active} onScrollCapture=${active} onInput=${active}>
+  const onScroll = e => {
+    active();
+    const t = e.target; if (!t || !t.classList || !t.classList.contains('scroll')) return;
+    const y = t.scrollTop, d = y - lastY.current; lastY.current = y;
+    const m = y > 80 && d > 2 ? true : (d < -6 || y < 24) ? false : null;
+    if (m !== null && m !== miniRef.current) { miniRef.current = m; setMini(m); }
+  };
+  const spec = e => { const r = e.currentTarget.getBoundingClientRect(); e.currentTarget.style.setProperty('--hx', `${(e.clientX - r.left) - r.width * 0.17}px`); };
+  return html`<div class="device" onPointerDown=${active} onKeyDown=${active} onWheel=${active} onTouchMove=${active} onScrollCapture=${onScroll} onInput=${active}>
     <div class="device-inner">
       <${StatusBar} light=${darkTop} />
       ${phase === 'splash' && html`<${Splash} rates=${st.rates} onDone=${() => { if (returning) set({ lockNote: 'Welcome back' }); setPhase(returning ? 'pin' : 'login'); }} />`}
@@ -1773,13 +1787,13 @@ function App() {
           onUnlock=${enterApp} onFail=${pinFail} onBrowse=${browse} onLogin=${() => { set({ lockNote: '', loginNote: '' }); setPhase('login'); }} />`}
       ${phase === 'app' && html`<div class=${'app' + (framed ? ' framed' : '')}>
         <div class="view"><div class=${enterCls} key=${routeKey} style="position:absolute;inset:0">${content}</div></div>
-        ${!hideTabs && html`<nav class="tabbar" aria-label="Main"><div class="tabs">
-          <div class="pill-track" style=${{ transform: `translateX(${tabIdx * 100}%)` }}><div class="pill"></div></div>
+        ${!hideTabs && html`<nav class=${'tabbar glass' + (mini ? ' mini' : '')} aria-label="Main" onPointerMove=${spec}><span class="spec"></span><div class="tabs">
+          <div class="pill-track" style=${{ transform: `translateX(${tabIdx * 100}%)` }}><div class="pill" key=${'p' + tabIdx}></div></div>
           ${TABS.map(([k, l]) => html`<button class=${'tab' + (st.tab === k ? ' on' : '')} onClick=${() => A.tab(k)} aria-current=${st.tab === k ? 'page' : null}>
             <${Icon} n=${k}/>${l}${st.guest && k !== 'rates' ? html`<span style="position:absolute;top:6px;right:calc(50% - 18px);opacity:.6"><${Icon} n="lock" c="xs"/></span>` : ''}</button>`)}
         </div></nav>`}
         ${st.banner && html`<${PushBanner} n=${st.banner} onOpen=${() => set(s => ({ banner: null, stack: [...s.stack, { name: 'inbox' }], navDir: 'fwd' }))} />`}
-        ${st.toast && html`<div class="toast" key=${st.toast.id} role="status"><${Icon} n="info" c="sm"/>${st.toast.msg}</div>`}
+        ${st.toast && html`<div class="toast glass" key=${st.toast.id} role="status"><${Icon} n="info" c="sm"/>${st.toast.msg}</div>`}
       </div>`}
     </div>
   </div>`;
