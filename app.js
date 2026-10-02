@@ -4,8 +4,7 @@ import { html, render, useState, useEffect, useRef, useMemo, useErrorBoundary } 
 // Liquid Glass refraction needs SVG filters inside backdrop-filter, which only Chromium supports; others get blur only.
 try { if (navigator.userAgentData && navigator.userAgentData.brands.some(b => /Chromium/.test(b.brand))) document.documentElement.classList.add('lg-refract'); } catch (e) { }
 
-// Fonts load without blocking first paint (replaces an inline onload handler, which the CSP forbids)
-{ const f = document.getElementById('fonts'); if (f) { if (f.sheet) f.media = 'all'; else f.addEventListener('load', () => { f.media = 'all'; }); } }
+// Fonts: Apple system families (SF Pro, SF Compact, SF Mono, New York) via CSS; nothing is downloaded.
 
 /* ============================================================
    Constants (SRS references in comments)
@@ -244,7 +243,7 @@ function Coin({ size = 200, glow = false, sweep = false, sweepDelay, still = fal
         <circle cx="100" cy="100" r="74" fill="none" stroke="#E2B65A" stroke-width=".8" opacity=".45"/>
         <circle cx="92" cy="80" r="30" fill="url(#goldMetal)" mask="url(#crescentMask)"/>
         <polygon points=${star(124, 62, 10, 4.2)} fill="url(#goldMetal)"/>
-        <text x="100" y="146" text-anchor="middle" font-family="Lora, Georgia, serif" font-weight="700" font-size="34" letter-spacing="3" fill="url(#goldText)">PGBX</text>
+        <text x="100" y="146" text-anchor="middle" font-family="ui-serif, 'New York', Georgia, serif" font-weight="700" font-size="34" letter-spacing="3" fill="url(#goldText)">PGBX</text>
         <g clip-path="url(#pgbxClip)"><rect class="shine" x="30" y="110" width="44" height="50" fill="url(#shineGrad)" transform="translate(-140 0)"/></g>
       </g>
     </svg>
@@ -262,8 +261,8 @@ function Ingot({ metal = 'gold', w = 72, label }) {
     <polygon points="98,10 110,26 116,60 112,40" fill=${`url(#ingSide${k})`} opacity=".6"/>
     <polyline points="12,27 108,27" stroke="rgba(255,255,255,.65)" stroke-width="1.2"/>
     <rect x="34" y="31" width="52" height="24" rx="3" fill="none" stroke=${ink} stroke-opacity=".45" stroke-width="1"/>
-    <text x="60" y="42" text-anchor="middle" font-family="Lato,sans-serif" font-weight="900" font-size="8" fill=${ink} fill-opacity=".85" letter-spacing="1">PGBX</text>
-    <text x="60" y="52" text-anchor="middle" font-family="Lato,sans-serif" font-weight="700" font-size="7" fill=${ink} fill-opacity=".75">${label || '999.0'}</text>
+    <text x="60" y="42" text-anchor="middle" font-family="-apple-system, system-ui, 'Segoe UI', Roboto, sans-serif" font-weight="900" font-size="8" fill=${ink} fill-opacity=".85" letter-spacing="1">PGBX</text>
+    <text x="60" y="52" text-anchor="middle" font-family="-apple-system, system-ui, 'Segoe UI', Roboto, sans-serif" font-weight="700" font-size="7" fill=${ink} fill-opacity=".75">${label || '999.0'}</text>
   </svg>`;
 }
 
@@ -901,7 +900,7 @@ function Receipt({ S, A, oid }) {
 const fmtCnic = v => { const d = v.replace(/\D/g, '').slice(0, 13); return d.length > 12 ? `${d.slice(0, 5)}-${d.slice(5, 12)}-${d.slice(12)}` : d.length > 5 ? `${d.slice(0, 5)}-${d.slice(5)}` : d; };
 const IdCardArt = ({ back }) => html`<svg class="idcard" viewBox="0 0 250 156" aria-hidden="true">
   <rect width="250" height="156" rx="12" fill="#e8efe6"/><rect width="250" height="30" rx="12" fill="#0B4A2C"/><rect y="18" width="250" height="12" fill="#0B4A2C"/>
-  <text x="14" y="20" font-size="10" font-weight="900" fill="#E2B65A" font-family="Lato,sans-serif">${back ? 'CNIC · BACK (SAMPLE)' : 'CNIC · FRONT (SAMPLE)'}</text>
+  <text x="14" y="20" font-size="10" font-weight="900" fill="#E2B65A" font-family="-apple-system, system-ui, 'Segoe UI', Roboto, sans-serif">${back ? 'CNIC · BACK (SAMPLE)' : 'CNIC · FRONT (SAMPLE)'}</text>
   ${back ? html`<rect x="14" y="44" width="222" height="10" rx="3" fill="#c5d3c6"/><rect x="14" y="62" width="180" height="10" rx="3" fill="#c5d3c6"/><rect x="14" y="98" width="222" height="40" rx="4" fill="#fff"/>${Array.from({ length: 40 }, (_, i) => html`<rect x=${18 + i * 5.4} y="102" width=${i % 3 ? 2 : 3.5} height="32" fill="#1D2B22"/>`)}`
     : html`<rect x="14" y="42" width="62" height="78" rx="6" fill="#c5d3c6"/><circle cx="45" cy="70" r="14" fill="#9fb3a2"/><path d="M24 116a21 21 0 0 1 42 0" fill="#9fb3a2"/>
       <rect x="90" y="46" width="120" height="10" rx="3" fill="#c5d3c6"/><rect x="90" y="66" width="90" height="10" rx="3" fill="#c5d3c6"/><rect x="90" y="86" width="140" height="10" rx="3" fill="#c5d3c6"/><rect x="90" y="106" width="70" height="10" rx="3" fill="#c5d3c6"/>`}
@@ -1084,7 +1083,7 @@ function statementHtml(S, d, from, to) {
   const esc = x => String(x).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const rows = d.entries.map(e => `<tr><td>${esc(dt(e.ts))}</td><td>${esc(entryType(e))}</td><td>${esc(pname(P[e.pid]))}</td><td style="text-align:right">${e.delta > 0 ? '+' : '−'}${Math.abs(e.delta)}</td><td style="text-align:right">${e.price ? esc(fmt(e.price)) : ''}</td><td>${esc(e.ref)}</td></tr>`).join('') || '<tr><td colspan="6">No activity in this period.</td></tr>';
   return `<!doctype html><html><head><meta charset="utf-8"><title>PGBX statement ${from} to ${to}</title>
-<style>body{font:13px/1.5 Lato,Arial,sans-serif;color:#1D2B22;margin:32px}h1{font-family:Georgia,serif;color:#0B4A2C;margin:0}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{padding:7px 8px;border-bottom:1px solid #ddd;text-align:left}th{background:#0B4A2C;color:#fff;font-size:11px;text-transform:uppercase}.m{color:#5F6D64}.box{border:1px solid #C8962B;border-radius:8px;padding:10px 12px;margin-top:12px}</style></head>
+<style>body{font:13px/1.5 -apple-system,BlinkMacSystemFont,system-ui,'Segoe UI',Roboto,Arial,sans-serif;color:#1D2B22;margin:32px}h1{font-family:ui-serif,'New York',Georgia,serif;color:#0B4A2C;margin:0}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{padding:7px 8px;border-bottom:1px solid #ddd;text-align:left}th{background:#0B4A2C;color:#fff;font-size:11px;text-transform:uppercase}.m{color:#5F6D64}.box{border:1px solid #C8962B;border-radius:8px;padding:10px 12px;margin-top:12px}</style></head>
 <body><h1>PGBX wallet statement</h1><div class="m">Pakistan Gold Bullion Exchange · Office 1211, 12th Floor, Gold Tower, Saddar, Karachi</div>
 <div class="box"><b>${esc(S.profile.name)}</b> · CNIC ${esc(maskCnic(S.profile.cnic) || 'not verified')} · +92 ${esc(S.phone || '3XX XXX 4521')}<br>Period: ${from} to ${to} · Generated ${esc(dt(Date.now()))}</div>
 <p><b>Opening holdings:</b> ${esc(holdText(d.opening))}<br><b>Closing holdings:</b> ${esc(holdText(d.closing))}</p>
@@ -1153,7 +1152,7 @@ function DealerMap({ selected, isOk, onSelect }) {
       <g transform=${`translate(${yx} ${yy})`}><circle class="you-ring" r="9" fill="rgba(31,120,200,.25)"/><circle r="5.5" fill="#1f78c8" stroke="#fff" stroke-width="2"/></g>
       ${DEALERS.map(d => { const [x, y] = proj(d.lat, d.lng); const ok = isOk(d); return html`<g class=${'pin' + (selected === d.id ? ' on' : '') + (ok ? '' : ' off')} transform=${`translate(${x} ${y})`} onClick=${() => ok && onSelect(d.id)}>
         <g class="pg"><path d="M0 0 C-9 -12 -9 -24 0 -24 S9 -12 0 0Z" fill=${selected === d.id ? '#C8962B' : '#0B4A2C'} stroke="#fff" stroke-width="1.5"/><circle cy="-15" r="3.2" fill="#fff"/></g>
-        <text y="12" text-anchor="middle" font-size="9" font-weight="900" fill="#1D2B22" font-family="Lato,sans-serif">${d.name.split(' ')[0]}</text></g>`; })}
+        <text y="12" text-anchor="middle" font-size="9" font-weight="900" fill="#1D2B22" font-family="-apple-system, system-ui, 'Segoe UI', Roboto, sans-serif">${d.name.split(' ')[0]}</text></g>`; })}
     </svg>
     <span class="cap">Schematic map · map provider ${TBC}</span>
   </div>`;

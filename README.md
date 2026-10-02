@@ -88,7 +88,12 @@ until then the app shows WhatsApp as "soon" and offers SMS. Twilio charges per m
 ## Stack
 
 - `index.html` (markup and styles) + `app.js` (the app), no build step
-- Preact + htm self-hosted in `vendor/` (licences in `vendor/LICENSES.txt`); no third-party script at runtime. Google Fonts (Lora, Lato)
+- Preact + htm self-hosted in `vendor/` (licences in `vendor/LICENSES.txt`); no third-party script or font at runtime
+- Fonts: Apple's system families, used through CSS system-font keywords (Apple licenses them for Apple platforms only, so
+  they are not embedded): **SF Pro** for text and controls (`--sans`), **SF Compact** for tight layouts such as tab labels,
+  small caps labels, chips and pills (`--compact`), **SF Mono** for receipt numbers, codes and OTP boxes (`--mono`) and
+  **New York** for headings and prices (`--serif`). iPhone, iPad and Mac show the real fonts; Android and Windows fall back to
+  Roboto / Segoe UI, Georgia and Consolas. SF Compact appears only where it is installed; elsewhere SF Pro is used.
 - Inline SVG icons, metallic ingots and the PGBX coin logo
 - Motion uses transform and opacity with `cubic-bezier(.22,1,.36,1)` and respects `prefers-reduced-motion`
 - Liquid Glass styling in the spirit of iOS 26: a floating glass tab bar that shrinks while scrolling down and a liquid
