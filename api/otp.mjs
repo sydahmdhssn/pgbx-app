@@ -17,9 +17,25 @@ const CHANNELS = ['sms', ...(process.env.OTP_WHATSAPP === '1' ? ['whatsapp'] : [
 // Pakistani mobile numbers: Jazz 300–309 and 320–329, Zong 310–319, Ufone 330–339, Telenor 340–349, SCOM 355
 const PK_MOBILE = /^3(?:[0-4]\d|55)\d{7}$/;
 
-// Best-effort throttle per server instance; Twilio Verify also rate-limits and blocks fraud (Fraud Guard).
+// Abuse limits (best effort, kept in this server instance's memory; Twilio Verify adds its own limits and Fraud Guard).
+// The durable fix (shared rate-limit store + human check before sending) is planned; see README.
+const RESEND_MS = 30000;                         // one code per number every 30 s
+const LIMITS = {
+  sendPerNumber: { max: 3, ms: 60 * 60e3 },      // 3 codes per number per hour
+  sendPerIp: { max: 5, ms: 10 * 60e3 },          // 5 codes per device / IP per 10 minutes
+  checkPerIp: { max: 20, ms: 10 * 60e3 },        // 20 code checks per device / IP per 10 minutes
+};
 const lastSend = new Map();
-const RESEND_MS = 30000;
+const hits = new Map();
+function limited(kind, key) {
+  const { max, ms } = LIMITS[kind]; const k = kind + ':' + key; const now = Date.now();
+  const arr = (hits.get(k) || []).filter(t => now - t < ms);
+  if (arr.length >= max) { hits.set(k, arr); return Math.ceil((ms - (now - arr[0])) / 1000); }
+  arr.push(now); hits.set(k, arr);
+  if (hits.size > 5000) for (const [key2, v] of hits) if (!v.length || now - v[v.length - 1] > 3600e3) hits.delete(key2);
+  return 0;
+}
+const clientIp = req => String(req.headers['x-real-ip'] || req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 'unknown';
 
 const ALLOWED_ORIGIN = /^https:\/\/pgbx-app(?:-[a-z0-9-]+)?\.vercel\.app$|^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/;
 
@@ -70,7 +86,10 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') { res.statusCode = 204; res.end(); return; }
   if (req.method === 'GET') return send(res, 200, { ok: true, configured: CONFIGURED, channels: CONFIGURED ? CHANNELS : [] });
   if (req.method !== 'POST') return send(res, 405, { ok: false, error: 'method' });
-  if (origin && !ALLOWED_ORIGIN.test(origin)) return send(res, 403, { ok: false, error: 'origin' });
+  // Only the app's own pages may ask for codes: browsers always send Origin on these POSTs. (A script can fake the
+  // header, so this only stops casual misuse; the per-IP and per-number limits below and Twilio's limits do the rest.)
+  if (!origin || !ALLOWED_ORIGIN.test(origin)) return send(res, 403, { ok: false, error: 'origin' });
+  if (!String(req.headers['content-type'] || '').includes('application/json')) return send(res, 415, { ok: false, error: 'content_type' });
   if (!CONFIGURED) return send(res, 503, { ok: false, configured: false, error: 'not_configured', message: 'SMS provider is not connected yet.' });
 
   const body = await readBody(req);
@@ -84,11 +103,18 @@ export default async function handler(req, res) {
       if (!CHANNELS.includes(channel)) return send(res, 400, { ok: false, error: 'whatsapp_unavailable', message: ERRORS[68008][1] });
       const last = lastSend.get(to) || 0;
       if (Date.now() - last < RESEND_MS) return send(res, 429, { ok: false, error: 'wait', retryIn: Math.ceil((RESEND_MS - (Date.now() - last)) / 1000), message: 'Please wait before requesting another code.' });
+      const ipWait = limited('sendPerIp', clientIp(req));
+      if (ipWait) return send(res, 429, { ok: false, error: 'wait', retryIn: ipWait, message: 'Too many codes requested from this device. Try again later.' });
+      const numWait = limited('sendPerNumber', to);
+      if (numWait) return send(res, 429, { ok: false, error: 'wait', retryIn: numWait, message: 'Too many codes sent to this number. Try again later.' });
       lastSend.set(to, Date.now());
+      if (lastSend.size > 5000) for (const [k, t] of lastSend) if (Date.now() - t > RESEND_MS) lastSend.delete(k);
       const v = await twilio('Verifications', { To: to, Channel: channel, Locale: 'en' });
       return send(res, 200, { ok: true, channel: v.channel || channel, status: v.status });
     }
     if (body.action === 'check') {
+      const checkWait = limited('checkPerIp', clientIp(req));
+      if (checkWait) return send(res, 429, { ok: false, error: 'wait', retryIn: checkWait, message: 'Too many attempts from this device. Try again later.' });
       const code = String(body.code || '').replace(/\D/g, '');
       if (code.length < 4 || code.length > 10) return send(res, 400, { ok: false, error: 'invalid_code', message: 'Enter the code you received.' });
       const v = await twilio('VerificationCheck', { To: to, Code: code });

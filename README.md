@@ -26,10 +26,9 @@ On a desktop the app shows inside a 390×844 phone frame; at phone width (500 px
 | `?feedFail=1` | Simulate a stale rate feed: shows "Rates are delayed" and disables buying (FR-R4) |
 | `?start=login` / `?start=pin` | Open straight on the login or PIN screen |
 | `?sim=1` | Use simulated rates instead of the live feed |
-| `?api=https://host` | Read live rates and history from another deployment's `/api/rates` and `/api/history` |
 | `?kyc=done` | Start with identity already verified (skips the CNIC + selfie step before buying) |
 
-Combine them: `?start=home&feedFail=1`.
+Combine them: `?start=home&feedFail=1`. `?start=home` and `?kyc=done` are demo shortcuts and must not exist in a production build.
 
 ## Deploy
 
@@ -63,6 +62,15 @@ Twilio generates, sends, expires (10 minutes) and checks the code; the app and t
 provider keys stay on the server (Rule 6). Only Pakistani mobile numbers (+92 30x–34x, 355) are accepted, a number can
 request a new code every 30 seconds, and Twilio adds its own rate limits and fraud blocking.
 
+Abuse limits now in place (no extra accounts needed): code requests must come from the app's own pages (Origin check,
+JSON only); at most 3 codes per number per hour, 5 code requests per device (IP) per 10 minutes and 20 code checks per
+device per 10 minutes. These are kept in each server instance's memory, so they are best effort. **Still to do:** a shared
+rate-limit store (for example Vercel KV / Upstash) and a human check (for example Cloudflare Turnstile) before sending,
+plus Twilio geo-permissions limited to Pakistan, Fraud Guard and a spending alert.
+
+If the code service cannot be reached, the app shows an error with Retry. Demo mode is used only when the server reports
+that no provider is connected.
+
 Until the keys below are set, the login runs in **demo mode**: it says so on screen, sends nothing, and accepts any 6 digits.
 
 Turn on real codes:
@@ -79,9 +87,23 @@ until then the app shows WhatsApp as "soon" and offers SMS. Twilio charges per m
 
 ## Stack
 
-- `index.html` only: Preact + htm as an ES module from jsDelivr, Google Fonts (Lora, Lato)
+- `index.html` (markup and styles) + `app.js` (the app), no build step
+- Preact + htm self-hosted in `vendor/` (licences in `vendor/LICENSES.txt`); no third-party script at runtime. Google Fonts (Lora, Lato)
 - Inline SVG icons, metallic ingots and the PGBX coin logo
 - Motion uses transform and opacity with `cubic-bezier(.22,1,.36,1)` and respects `prefers-reduced-motion`
+
+## Security headers
+
+`vercel.json` sends a Content-Security-Policy (scripts only from this site, connections only to this site and
+`pgbx-app.vercel.app`, no embedding in other sites), `X-Frame-Options: DENY`, `Permissions-Policy`, `Referrer-Policy`,
+`X-Content-Type-Options` and `Cross-Origin-Opener-Policy`. Keep scripts out of inline `<script>` tags and `on…=` attributes,
+or the policy will block them.
+
+## Demo data in the browser
+
+The prototype saves its sample data (wallet, orders, cart, profile, verification status, PIN, notifications, alerts) in this
+browser's local storage so a refresh does not reset the demo, and a returning user unlocks with the PIN. Account →
+**Reset demo data** erases it. Nothing is sent anywhere. A real app keeps this on the server and in the phone's secure storage.
 
 ## What the prototype covers
 
