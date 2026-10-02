@@ -1761,6 +1761,13 @@ function App() {
   }
   const routeKey = st.tab + '/' + (top ? top.name + (top.pid || top.rid || top.kind || top.oid || top.orderKey || '') : '') + '/' + st.stack.length;
   const darkTop = phase !== 'app' || (!top && st.tab === 'rates') || (top && top.name === 'changepin');
+  // Tell the browser which colour sits behind the system status bar (Safari on iOS 26 fades the page into it),
+  // so the top of the screen stays crisp: dark green on green screens, cream on cream screens.
+  useEffect(() => {
+    const c = darkTop ? '#0B4A2C' : '#F7F4EC';
+    document.documentElement.style.backgroundColor = c;
+    const m = document.querySelector('meta[name="theme-color"]'); if (m) m.setAttribute('content', c);
+  }, [darkTop]);
   const tabIdx = tabIndex(st.tab);
   const hideTabs = top && ['processing', 'changepin', 'kyc'].includes(top.name);
   const enterCls = st.navDir === 'fwd' ? 'enter-fwd' : st.navDir === 'back' ? 'enter-back' : 'enter';
