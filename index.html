@@ -1,0 +1,1317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#052414">
+<title>PGBX Mobile Prototype</title>
+<meta name="description" content="Clickable prototype of the PGBX customer app: live rates, buy, wallet and redeem at PGBX dealers. Sample data only.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&family=Lora:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --g950:#03180d; --g900:#052414; --g800:#0B4A2C; --g700:#12603A; --g600:#1b7347;
+  --gold:#C8962B; --gold-l:#E2B65A; --gold-d:#8A6414;
+  --cream:#F7F4EC; --cream-2:#EFEADD; --card:#FFFFFF;
+  --ink:#1D2B22; --muted:#5F6D64; --line:rgba(29,43,34,.10);
+  --up:#1F8A4C; --down:#B3412E; --warn:#9A5B00; --warn-bg:#FFF1D6;
+  --ease:cubic-bezier(.22,1,.36,1); --spring:cubic-bezier(.34,1.56,.64,1);
+  --serif:'Lora',Georgia,serif; --sans:'Lato',system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  --s:1;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%}
+body{background:radial-gradient(120% 90% at 50% 0%,#0f5a35 0%,#073019 45%,#03180d 100%);color:var(--ink);font-family:var(--sans);overflow:hidden;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;border:0;background:none;padding:0;cursor:pointer}
+h1,h2,h3{font-family:var(--serif);margin:0;font-weight:600}
+.defs{position:absolute;width:0;height:0;overflow:hidden}
+
+/* ---------- phone frame ---------- */
+.device{position:absolute;left:50%;top:50%;width:390px;height:844px;box-sizing:content-box;border:9px solid #0a120d;border-radius:58px;
+  transform:translate(-50%,-50%) scale(var(--s));background:var(--cream);overflow:hidden;
+  box-shadow:0 0 0 1.5px #3b4a40,0 0 0 3px #0a120d,0 40px 90px rgba(0,0,0,.55),0 0 120px rgba(200,150,43,.08)}
+.device-inner{position:absolute;inset:0;border-radius:49px;overflow:hidden;background:var(--cream);isolation:isolate}
+.statusbar{position:absolute;top:0;left:0;right:0;height:50px;z-index:50;display:flex;align-items:center;justify-content:space-between;padding:6px 30px 0 36px;font-weight:700;font-size:15px;pointer-events:none;transition:color .4s var(--ease)}
+.statusbar.light{color:#fff}.statusbar.dark{color:var(--ink)}
+.statusbar .notch{position:absolute;left:50%;top:11px;width:122px;height:34px;border-radius:20px;background:#000;transform:translateX(-50%)}
+.statusbar .sb-icons{display:flex;gap:6px;align-items:center}
+.page-caption{position:fixed;left:0;right:0;bottom:10px;text-align:center;color:rgba(226,182,90,.7);font-size:12px;letter-spacing:.08em;pointer-events:none}
+@media (max-height:700px){.page-caption{display:none}}
+.device-inner{--top:50px;--bot:0px}
+.app{position:absolute;inset:0;display:flex;flex-direction:column}
+@media (max-width:500px){
+  body{overflow:hidden}
+  .device{left:0;top:0;width:100%;height:100%;height:100dvh;border:0;border-radius:0;transform:none;box-shadow:none}
+  .device-inner{border-radius:0}
+  .statusbar,.page-caption{display:none}
+  .device-inner{--top:env(safe-area-inset-top,0px);--bot:env(safe-area-inset-bottom,0px)}
+}
+
+/* ---------- generic ---------- */
+.view{position:relative;flex:1;min-height:0}
+.page{position:absolute;inset:0}
+.scroll{position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding-bottom:24px}
+.scroll::-webkit-scrollbar{display:none}
+.enter{animation:enter .55s var(--ease) both}
+.cascade>*{animation:enter .6s var(--ease) both;animation-delay:calc(var(--i,0)*55ms + 60ms)}
+@keyframes enter{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes pop{0%{transform:scale(.4);opacity:0}100%{transform:scale(1);opacity:1}}
+.pad{padding:0 18px}
+.section-title{display:flex;align-items:baseline;justify-content:space-between;margin:24px 18px 10px}
+.section-title h3{font-size:18px;color:var(--g800)}
+.section-title span{font-size:12px;color:var(--muted)}
+.card{background:var(--card);border-radius:20px;box-shadow:0 1px 0 rgba(29,43,34,.04),0 8px 24px -12px rgba(11,74,44,.25);border:1px solid rgba(29,43,34,.05)}
+.muted{color:var(--muted)}
+.small{font-size:12px}
+.tiny{font-size:11px;letter-spacing:.02em}
+.tbc{display:inline-block;color:var(--warn);background:var(--warn-bg);border:1px dashed rgba(154,91,0,.4);border-radius:6px;padding:1px 6px;font-size:12px;font-weight:700}
+.chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700}
+.sample{display:inline-block;font-size:10px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:var(--gold-d);background:rgba(200,150,43,.13);border-radius:5px;padding:2px 6px;vertical-align:middle}
+.press{transition:transform .18s var(--ease),opacity .2s var(--ease)}
+.press:active{transform:scale(.965)}
+.btn{display:flex;align-items:center;justify-content:center;gap:8px;min-height:52px;border-radius:16px;font-weight:900;font-size:16px;letter-spacing:.01em;width:100%;transition:transform .18s var(--ease),opacity .25s var(--ease)}
+.btn:active{transform:scale(.97)}
+.btn-gold{background:linear-gradient(180deg,#E7BE62,#C8962B 60%,#B4851F);color:#2a1d04;box-shadow:0 10px 24px -10px rgba(200,150,43,.8),inset 0 1px 0 rgba(255,255,255,.5)}
+.btn-green{background:var(--g800);color:#fff;box-shadow:0 10px 24px -12px rgba(11,74,44,.9)}
+.btn-ghost{background:transparent;color:var(--g800);border:1.5px solid rgba(11,74,44,.25)}
+.btn-danger{background:transparent;color:var(--down);border:1.5px solid rgba(179,65,46,.35)}
+.btn[disabled]{opacity:.42;pointer-events:none}
+.icon{width:22px;height:22px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.icon.sm{width:18px;height:18px}.icon.xs{width:14px;height:14px}
+.row{display:flex;align-items:center;gap:12px}
+.between{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.divider{height:1px;background:var(--line);margin:0 16px}
+.up{color:var(--up)}.down{color:var(--down)}
+
+/* ---------- top bar (sub screens) ---------- */
+.topbar{display:flex;align-items:center;gap:6px;padding:calc(var(--top) + 4px) 10px 8px;background:var(--cream);position:relative;z-index:5}
+.topbar h2{font-size:19px;color:var(--g800)}
+.iconbtn{width:44px;height:44px;border-radius:14px;display:grid;place-items:center;color:var(--g800);transition:transform .18s var(--ease),background .2s}
+.iconbtn:active{transform:scale(.9)}
+.tabhead{padding:calc(var(--top) + 10px) 18px 6px}
+.tabhead h1{font-size:28px;color:var(--g800)}
+.tabhead p{margin:4px 0 0;color:var(--muted);font-size:14px}
+
+/* ---------- tab bar ---------- */
+.tabbar{position:relative;z-index:20;background:rgba(255,255,255,.92);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-top:1px solid var(--line);padding:6px 8px calc(var(--bot) + 6px)}
+.app.framed .tabbar{padding-bottom:22px}
+.tabs{position:relative;display:grid;grid-template-columns:repeat(5,1fr)}
+.pill-track{position:absolute;top:0;bottom:0;left:0;width:20%;transition:transform .5s var(--ease);padding:2px 6px}
+.pill{width:100%;height:100%;border-radius:16px;background:linear-gradient(180deg,rgba(200,150,43,.18),rgba(200,150,43,.08));border:1px solid rgba(200,150,43,.35)}
+.tab{position:relative;z-index:1;min-height:54px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:11px;font-weight:700;color:#7b867f;transition:color .3s var(--ease),transform .18s var(--ease)}
+.tab:active{transform:scale(.92)}
+.tab.on{color:var(--g800)}
+.tab .icon{transition:transform .45s var(--spring)}
+.tab.on .icon{transform:translateY(-1px) scale(1.08)}
+
+/* ---------- splash ---------- */
+.splash{position:absolute;inset:0;background:radial-gradient(90% 60% at 50% 42%,#11603a 0%,#0B4A2C 35%,#052414 80%);display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden;color:#fff}
+.splash.out{animation:splashOut .55s var(--ease) forwards}
+@keyframes splashOut{to{opacity:0;transform:scale(1.04)}}
+.coin{display:block;overflow:visible}
+.coin .dots{transform-box:fill-box;transform-origin:center;animation:spin 40s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.coin .ring{stroke-dasharray:1;stroke-dashoffset:1;animation:draw 1.5s .15s var(--ease) forwards}
+@keyframes draw{to{stroke-dashoffset:0}}
+.coin .face{transform-box:fill-box;transform-origin:center;animation:pop .9s .35s var(--ease) both}
+.coin .emblem{transform-box:fill-box;transform-origin:center;animation:emblem 1s .75s var(--ease) both}
+@keyframes emblem{from{opacity:0;transform:translateY(8px) scale(.9)}to{opacity:1;transform:none}}
+.coin .shine{animation:shine 2.6s 1.2s var(--ease) infinite}
+@keyframes shine{0%{transform:translateX(-140px)}60%,100%{transform:translateX(160px)}}
+.coin-wrap{position:relative;display:grid;place-items:center}
+.glow{position:absolute;inset:-30%;border-radius:50%;background:radial-gradient(circle,rgba(226,182,90,.35),rgba(226,182,90,0) 62%);animation:glow 3.2s ease-in-out infinite;pointer-events:none}
+@keyframes glow{0%,100%{opacity:.55;transform:scale(.95)}50%{opacity:1;transform:scale(1.05)}}
+.splash-name{margin-top:28px;text-align:center;animation:enter 1s 1.25s var(--ease) both}
+.splash-name h1{font-size:22px;letter-spacing:.02em;color:#fff}
+.splash-tag{margin-top:10px;font-size:11px;font-weight:900;letter-spacing:.28em;color:var(--gold-l);animation:fadeIn 1s 1.7s var(--ease) both}
+.particles{position:absolute;inset:0;pointer-events:none}
+.particle{position:absolute;bottom:-10px;width:4px;height:4px;border-radius:50%;background:radial-gradient(circle,#fff3c8,#E2B65A 55%,rgba(200,150,43,0) 70%);opacity:0;animation:rise linear infinite}
+@keyframes rise{0%{transform:translate3d(0,0,0) scale(.6);opacity:0}12%{opacity:.9}100%{transform:translate3d(var(--dx),-900px,0) scale(1.1);opacity:0}}
+.splash-foot{position:absolute;bottom:calc(var(--bot) + 34px);font-size:11px;color:rgba(255,255,255,.55);letter-spacing:.06em;animation:fadeIn 1s 2s both}
+
+/* ---------- PIN ---------- */
+.lock{position:absolute;inset:0;background:radial-gradient(100% 55% at 50% 18%,#12603A 0%,#0B4A2C 40%,#052414 100%);color:#fff;display:flex;flex-direction:column;align-items:center;padding:calc(var(--top) + 24px) 28px calc(var(--bot) + 18px);animation:fadeIn .5s var(--ease) both}
+.lock h2{margin-top:18px;font-size:22px;animation:enter .6s .2s var(--ease) both}
+.lock .proto{margin-top:6px;font-size:12px;color:rgba(255,255,255,.6);animation:enter .6s .28s var(--ease) both}
+.lock .note{min-height:18px;margin-top:6px;font-size:13px;color:var(--gold-l)}
+.dots4{display:flex;gap:18px;margin:22px 0 18px}
+.dot{width:14px;height:14px;border-radius:50%;border:1.5px solid rgba(226,182,90,.7);position:relative}
+.dot::after{content:'';position:absolute;inset:-1.5px;border-radius:50%;background:var(--gold-l);transform:scale(0);transition:transform .35s var(--spring),background .3s}
+.dot.on::after{transform:scale(1)}
+.dots4.ok .dot{border-color:#3fcf7c}.dots4.ok .dot::after{background:#3fcf7c;transform:scale(1)}
+.dots4.ok{animation:okPulse .5s var(--ease)}
+@keyframes okPulse{50%{transform:scale(1.08)}}
+.keypad{display:grid;grid-template-columns:repeat(3,76px);gap:14px 26px;margin-top:auto}
+.key{width:76px;height:76px;border-radius:50%;display:grid;place-items:center;font-family:var(--serif);font-size:28px;color:#fff;background:rgba(255,255,255,.07);border:1px solid rgba(226,182,90,.18);animation:pop .5s var(--spring) both;transition:transform .15s var(--ease),background .2s}
+.key:active{transform:scale(.88);background:rgba(226,182,90,.25)}
+.key.plain{background:transparent;border-color:transparent}
+.key.plain .kl{font-family:var(--sans);font-size:11px;font-weight:700;margin-top:2px;color:rgba(255,255,255,.75)}
+.browse{margin-top:18px;min-height:44px;color:var(--gold-l);font-weight:700;font-size:14px;display:flex;align-items:center;gap:6px;animation:fadeIn .8s .9s both}
+.scan{position:absolute;inset:0;display:grid;place-items:center;background:rgba(5,36,20,.55);animation:fadeIn .25s both;z-index:3}
+.scan-box{width:120px;height:120px;border-radius:30px;border:2px solid var(--gold-l);display:grid;place-items:center;color:var(--gold-l);animation:pop .4s var(--spring) both}
+.scan-box .icon{width:56px;height:56px;stroke-width:1.4}
+
+/* ---------- rates home ---------- */
+.hero{background:radial-gradient(120% 100% at 80% 0%,#12603A 0%,#0B4A2C 45%,#052414 100%);color:#fff;padding:calc(var(--top) + 10px) 18px 92px;border-radius:0 0 30px 30px;position:relative;overflow:hidden}
+.hero::before{content:'';position:absolute;right:-60px;top:-40px;width:240px;height:240px;border-radius:50%;border:1px dashed rgba(226,182,90,.18)}
+.hero .brand{display:flex;align-items:center;gap:10px}
+.hero .brand b{font-family:var(--serif);font-size:17px}
+.hero .brand small{display:block;font-size:11px;color:rgba(255,255,255,.65)}
+.live{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:700;color:rgba(255,255,255,.85);margin-top:16px}
+.live i{width:8px;height:8px;border-radius:50%;background:#3fcf7c;position:relative}
+.live i::after{content:'';position:absolute;inset:0;border-radius:50%;background:#3fcf7c;animation:ping 1.8s var(--ease) infinite}
+.live.stale i,.live.stale i::after{background:#f0a23a}
+@keyframes ping{from{transform:scale(1);opacity:.7}to{transform:scale(2.8);opacity:0}}
+.hero h1{font-size:24px;margin-top:6px}
+.rate-stack{margin:-78px 14px 0;display:grid;gap:12px;position:relative;z-index:2}
+.rate{border-radius:22px;padding:16px 16px 14px;color:#fff;position:relative;overflow:hidden;background:linear-gradient(150deg,#12603A 0%,#0B4A2C 70%);box-shadow:0 18px 40px -18px rgba(5,36,20,.75);border:1px solid rgba(226,182,90,.25)}
+.rate.silver{border-color:rgba(214,220,224,.3)}
+.rate .top{display:flex;align-items:center;gap:10px}
+.rate .metal{font-family:var(--serif);font-size:17px}
+.rate .pur{font-size:11px;color:rgba(255,255,255,.6)}
+.rate .chg{margin-left:auto}
+.chg.upc{background:rgba(63,207,124,.16);color:#7be3a6}.chg.downc{background:rgba(240,110,90,.16);color:#ffab9b}
+.rate .mid{display:flex;align-items:flex-end;justify-content:space-between;margin-top:12px}
+.rate .lbl{font-size:11px;color:rgba(255,255,255,.6);letter-spacing:.04em;text-transform:uppercase;font-weight:700}
+.price-big{font-family:var(--serif);font-size:27px;font-weight:700;margin-top:2px;color:var(--gold-l)}
+.rate.silver .price-big{color:#E8EDF0}
+.flash{position:relative;display:inline-block;isolation:isolate}
+.flash::after{content:'';position:absolute;inset:-1px -6px;border-radius:8px;background:rgba(226,182,90,.55);z-index:-1;opacity:0;animation:flash 1.2s var(--ease)}
+@keyframes flash{12%{opacity:1}100%{opacity:0}}
+.rate .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.12)}
+.rate .grid3 b{display:block;font-size:14px;margin-top:2px;font-variant-numeric:tabular-nums}
+.spark{display:block}
+.banner{margin:14px 14px 0;border-radius:16px;padding:12px 14px;display:flex;gap:10px;align-items:flex-start;font-size:13px;line-height:1.4}
+.banner.warn{background:var(--warn-bg);color:#6b3f00;border:1px solid rgba(154,91,0,.25)}
+.banner.info{background:#fff;border:1px solid var(--line);color:var(--ink)}
+.banner b{display:block;font-size:14px}
+.hscroll{display:flex;gap:12px;overflow-x:auto;padding:4px 18px 10px;scroll-snap-type:x mandatory;scrollbar-width:none}
+.hscroll::-webkit-scrollbar{display:none}
+.feat{flex:none;width:148px;padding:14px;scroll-snap-align:start;text-align:left}
+.feat .ing{height:62px;display:grid;place-items:center;border-radius:14px;background:linear-gradient(180deg,#f7f1e2,#efe6cf)}
+.feat.sil .ing{background:linear-gradient(180deg,#f2f4f5,#e3e7ea)}
+.feat b{display:block;margin-top:10px;font-size:15px}
+.feat .p{font-family:var(--serif);font-weight:700;color:var(--g800);margin-top:4px}
+.wallet-sum{margin:0 14px;padding:18px;color:#fff;background:linear-gradient(140deg,#0B4A2C,#052414);border-radius:22px;position:relative;overflow:hidden;text-align:left;width:calc(100% - 28px);display:block}
+.wallet-sum::after{content:'';position:absolute;right:-30px;bottom:-50px;width:160px;height:160px;border-radius:50%;background:radial-gradient(circle,rgba(226,182,90,.25),rgba(226,182,90,0) 65%)}
+.wallet-sum .v{font-family:var(--serif);font-size:26px;color:var(--gold-l);margin-top:4px}
+.dealers-card{margin:12px 14px 0;padding:16px;display:flex;gap:14px;align-items:center;text-align:left;width:calc(100% - 28px)}
+.badge-ico{width:46px;height:46px;border-radius:14px;display:grid;place-items:center;background:rgba(200,150,43,.14);color:var(--gold-d);flex:none}
+.foot-note{margin:18px 18px 0;font-size:11px;line-height:1.5;color:var(--muted)}
+
+/* ---------- buy ---------- */
+.seg{position:relative;display:grid;grid-template-columns:1fr 1fr;background:var(--cream-2);border-radius:16px;padding:4px;margin:10px 18px 4px}
+.seg .knob{position:absolute;top:4px;bottom:4px;left:4px;width:calc(50% - 4px);border-radius:12px;background:#fff;box-shadow:0 4px 12px -4px rgba(11,74,44,.35);transition:transform .5s var(--spring)}
+.seg button{position:relative;z-index:1;min-height:44px;font-weight:900;font-size:14px;color:var(--muted);transition:color .3s;display:flex;align-items:center;justify-content:center;gap:8px}
+.seg button.on{color:var(--g800)}
+.plist{display:grid;gap:10px;padding:10px 18px 0}
+.pcard{display:flex;align-items:center;gap:14px;padding:12px 14px;text-align:left;width:100%}
+.pcard .ing{width:76px;height:56px;border-radius:14px;display:grid;place-items:center;background:linear-gradient(180deg,#f7f1e2,#efe6cf);flex:none}
+.pcard.sil .ing{background:linear-gradient(180deg,#f2f4f5,#e3e7ea)}
+.pcard b{font-size:17px;font-family:var(--serif)}
+.pcard .pp{margin-left:auto;text-align:right}
+.pcard .pp b{display:block;font-family:var(--serif);color:var(--g800);font-size:16px}
+.offline{margin:12px 18px 0;padding:12px 14px;border:1.5px dashed rgba(200,150,43,.55);border-radius:16px;font-size:13px;color:var(--muted);display:flex;gap:10px;align-items:center}
+
+/* ---------- product ---------- */
+.stage-ing{height:200px;display:grid;place-items:center;margin:4px 18px 0;border-radius:26px;background:radial-gradient(70% 70% at 50% 40%,#fff9ea,#efe3c4);position:relative;overflow:hidden}
+.stage-ing.sil{background:radial-gradient(70% 70% at 50% 40%,#fbfcfd,#dfe4e8)}
+.float{animation:float 4s ease-in-out infinite}
+@keyframes float{0%,100%{transform:translateY(-6px) rotate(-1.5deg)}50%{transform:translateY(6px) rotate(1.5deg)}}
+.shadow{position:absolute;bottom:30px;width:150px;height:16px;border-radius:50%;background:rgba(60,40,0,.18);filter:blur(4px);animation:shadow 4s ease-in-out infinite}
+@keyframes shadow{0%,100%{transform:scale(.85);opacity:.6}50%{transform:scale(1);opacity:1}}
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 18px 0}
+.tile{padding:12px;border-radius:16px;background:#fff;border:1px solid var(--line)}
+.tile span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700}
+.tile b{display:block;margin-top:4px;font-size:15px}
+.stepper{display:flex;align-items:center;gap:6px;background:var(--cream-2);border-radius:16px;padding:4px}
+.stepper button{width:44px;height:44px;border-radius:12px;background:#fff;display:grid;place-items:center;color:var(--g800);box-shadow:0 2px 6px -2px rgba(11,74,44,.25);transition:transform .15s var(--ease),opacity .2s}
+.stepper button:active{transform:scale(.88)}
+.stepper button[disabled]{opacity:.35;pointer-events:none}
+.stepper output{min-width:34px;text-align:center;font-family:var(--serif);font-size:20px;font-weight:700}
+.stepper output span{display:inline-block;animation:pop .35s var(--spring)}
+.lockbox{margin:14px 18px 0;padding:14px;border-radius:18px;background:#fff;border:1px solid var(--line)}
+.bar{height:6px;border-radius:6px;background:var(--cream-2);overflow:hidden;margin-top:10px}
+.bar i{display:block;height:100%;width:100%;border-radius:6px;background:linear-gradient(90deg,var(--gold),var(--gold-l));transform-origin:left;transition:transform 1s linear}
+.bar.low i{background:linear-gradient(90deg,#c0582f,#e48a54)}
+.total{display:flex;justify-content:space-between;align-items:baseline;margin:16px 18px 12px}
+.total b{font-family:var(--serif);font-size:26px;color:var(--g800)}
+.cta{padding:10px 18px 0}
+
+/* ---------- pay ---------- */
+.summary{margin:6px 18px 0;padding:16px}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:8px 0;font-size:14px}
+.kv span:first-child{color:var(--muted)}
+.kv b{text-align:right}
+.methods{display:grid;gap:10px;margin:0 18px}
+.method{display:flex;align-items:center;gap:12px;padding:14px;border-radius:18px;background:#fff;border:1.5px solid var(--line);text-align:left;width:100%;transition:border-color .3s var(--ease),transform .18s var(--ease)}
+.method:active{transform:scale(.98)}
+.method.on{border-color:var(--gold);box-shadow:0 8px 20px -14px rgba(200,150,43,.9)}
+.method .mi{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;background:rgba(11,74,44,.08);color:var(--g800);flex:none}
+.radio{margin-left:auto;width:22px;height:22px;border-radius:50%;border:2px solid #b8c0bb;display:grid;place-items:center;flex:none;transition:border-color .3s}
+.radio i{width:10px;height:10px;border-radius:50%;background:var(--gold);transform:scale(0);transition:transform .4s var(--spring)}
+.on>.radio,.radio.on{border-color:var(--gold)}
+.on>.radio i,.radio.on i{transform:scale(1)}
+
+/* ---------- processing / receipt ---------- */
+.center-screen{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center}
+.spinner{width:72px;height:72px;animation:spin 1s linear infinite}
+.proc-steps{margin-top:22px;display:grid;gap:8px;font-size:14px;color:var(--muted)}
+.proc-steps div{animation:enter .5s var(--ease) both}
+.check-wrap{position:relative;width:110px;height:110px;margin:calc(var(--top) + 18px) auto 0;display:grid;place-items:center}
+.ripple{position:absolute;inset:0;border-radius:50%;border:2px solid var(--gold);opacity:0;animation:ripple 2.4s var(--ease) infinite}
+.ripple:nth-child(2){animation-delay:.8s}.ripple:nth-child(3){animation-delay:1.6s}
+@keyframes ripple{0%{transform:scale(.7);opacity:.7}100%{transform:scale(1.9);opacity:0}}
+.check-disc{width:96px;height:96px;border-radius:50%;background:linear-gradient(150deg,#12603A,#0B4A2C);display:grid;place-items:center;animation:pop .6s var(--spring) both;box-shadow:0 14px 30px -12px rgba(11,74,44,.9)}
+.check-disc path{stroke-dasharray:1;stroke-dashoffset:1;animation:draw .6s .45s var(--ease) forwards}
+.receipt{margin:20px 18px 0;padding:6px 16px 10px;position:relative}
+.receipt::before{content:'';position:absolute;left:16px;right:16px;top:0;height:3px;border-radius:0 0 3px 3px;background:linear-gradient(90deg,var(--gold),var(--gold-l))}
+.rno{font-family:ui-monospace,Menlo,monospace;font-size:13px;letter-spacing:.04em}
+
+/* ---------- wallet ---------- */
+.wallet-hero{margin:8px 14px 0;padding:20px 18px;border-radius:24px;color:#fff;background:linear-gradient(145deg,#12603A,#052414);position:relative;overflow:hidden}
+.wallet-hero .v{font-family:var(--serif);font-size:32px;color:var(--gold-l);margin-top:4px}
+.wallet-hero .split{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
+.wallet-hero .split div{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:14px;padding:10px 12px}
+.wallet-hero .split b{display:block;font-size:16px;margin-top:2px}
+.hold{display:flex;align-items:center;gap:12px;padding:12px 14px}
+.hold .cnt{font-family:var(--serif);font-size:20px;font-weight:700;color:var(--g800);min-width:44px}
+.ledger-item{display:flex;gap:12px;padding:12px 14px;align-items:flex-start}
+.ledger-item .li{width:36px;height:36px;border-radius:12px;display:grid;place-items:center;flex:none}
+.li.plus{background:rgba(31,138,76,.12);color:var(--up)}.li.minus{background:rgba(179,65,46,.1);color:var(--down)}.li.open{background:rgba(200,150,43,.14);color:var(--gold-d)}
+
+/* ---------- redeem ---------- */
+.choice{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:18px;background:#fff;border:1.5px solid var(--line);width:100%;text-align:left;transition:border-color .3s var(--ease),transform .18s var(--ease),opacity .3s}
+.choice:active{transform:scale(.98)}
+.choice.on{border-color:var(--gold)}
+.choice.off{opacity:.45;pointer-events:none;filter:grayscale(1)}
+.choice .ing{width:58px;height:42px;display:grid;place-items:center;flex:none}
+.stock{font-size:11px;font-weight:900;letter-spacing:.04em;text-transform:uppercase;padding:3px 7px;border-radius:6px}
+.stock.in{background:rgba(31,138,76,.12);color:var(--up)}.stock.out{background:rgba(179,65,46,.1);color:var(--down)}
+.stack{display:grid;gap:10px;margin:0 18px}
+.cnic{margin:14px 18px 0;padding:12px 14px;border-radius:16px;background:rgba(11,74,44,.07);display:flex;gap:10px;font-size:13px;line-height:1.45;color:var(--g800)}
+
+/* ---------- code ---------- */
+.code-card{margin:6px 18px 0;padding:20px 16px;text-align:center}
+.code-digits{display:flex;justify-content:center;gap:8px;margin-top:8px}
+.code-digits span{width:40px;height:52px;border-radius:12px;display:grid;place-items:center;font-family:var(--serif);font-size:28px;font-weight:700;color:var(--g800);background:var(--cream);border:1px solid rgba(200,150,43,.35);animation:pop .45s var(--spring) both}
+.qr{margin:16px auto 6px;width:156px;height:156px;padding:8px;background:#fff;border-radius:14px;border:1px solid var(--line);animation:fadeIn .8s .3s both}
+.steps{display:flex;align-items:flex-start;margin:18px 6px 4px}
+.step{flex:1;text-align:center;font-size:11px;font-weight:700;color:var(--muted);position:relative}
+.step .sd{width:26px;height:26px;border-radius:50%;margin:0 auto 6px;display:grid;place-items:center;background:var(--cream-2);color:var(--muted);position:relative;z-index:1;transition:background .4s,color .4s}
+.step .sd .icon{width:14px;height:14px;stroke-width:2.6}
+.step.done .sd{background:var(--g800);color:#fff;animation:pop .45s var(--spring)}
+.step.cur .sd{background:var(--gold);color:#fff}
+.step.done,.step.cur{color:var(--g800)}
+.step+.step::before{content:'';position:absolute;top:12px;right:50%;width:100%;height:2px;background:var(--cream-2)}
+.step+.step::after{content:'';position:absolute;top:12px;right:50%;width:100%;height:2px;background:var(--g800);transform:scaleX(0);transform-origin:left;transition:transform .6s var(--ease)}
+.step.done::after,.step.cur::after{transform:scaleX(1)}
+.sim{margin:18px 18px 0;padding:14px;border-radius:18px;border:2px dashed rgba(154,91,0,.45);background:repeating-linear-gradient(135deg,#fffaf0,#fffaf0 10px,#fff4e0 10px,#fff4e0 20px)}
+.sim h3{font-size:15px;color:#6b3f00;display:flex;align-items:center;gap:8px}
+.check{display:flex;align-items:center;gap:10px;min-height:44px;font-size:14px;width:100%;text-align:left}
+.cbox{width:22px;height:22px;border-radius:7px;border:2px solid #b8c0bb;display:grid;place-items:center;transition:background .3s,border-color .3s;flex:none}
+.cbox .icon{width:14px;height:14px;stroke:#fff;stroke-width:3;transform:scale(0);transition:transform .35s var(--spring)}
+.cbox.on{background:var(--g800);border-color:var(--g800)}.cbox.on .icon{transform:scale(1)}
+.status-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:900}
+.st-requested{background:rgba(200,150,43,.16);color:var(--gold-d)}.st-ready{background:rgba(31,138,76,.13);color:var(--up)}
+.st-completed{background:rgba(11,74,44,.1);color:var(--g800)}.st-cancelled,.st-expired{background:rgba(95,109,100,.12);color:var(--muted)}
+
+/* ---------- account ---------- */
+.profile{margin:8px 14px 0;padding:18px;display:flex;gap:14px;align-items:center}
+.avatar{width:58px;height:58px;border-radius:50%;background:linear-gradient(145deg,#12603A,#052414);color:var(--gold-l);display:grid;place-items:center;font-family:var(--serif);font-size:22px;font-weight:700;flex:none}
+.verified{display:inline-flex;align-items:center;gap:5px;background:rgba(31,138,76,.12);color:var(--up);border-radius:999px;padding:4px 9px;font-size:12px;font-weight:900;margin-top:6px}
+.list{margin:0 14px;overflow:hidden}
+.li-row{display:flex;align-items:center;gap:14px;min-height:56px;padding:8px 16px;width:100%;text-align:left;transition:background .2s}
+.li-row:active{background:rgba(11,74,44,.05)}
+.li-row .lic{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;background:rgba(11,74,44,.07);color:var(--g800);flex:none}
+.li-row .end{margin-left:auto;color:var(--muted);display:flex;align-items:center;gap:6px;font-size:13px}
+.li-row+.li-row{border-top:1px solid var(--line)}
+.switch{width:52px;height:32px;border-radius:999px;background:#cfd5d1;position:relative;transition:background .35s var(--ease);flex:none}
+.switch i{position:absolute;top:3px;left:3px;width:26px;height:26px;border-radius:50%;background:#fff;box-shadow:0 2px 6px rgba(0,0,0,.2);transition:transform .45s var(--spring)}
+.switch.on{background:var(--g700)}.switch.on i{transform:translateX(20px)}
+.faq{border-top:1px solid var(--line)}
+.faq:first-child{border-top:0}
+.faq button{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:56px;padding:10px 16px;text-align:left;font-weight:700;font-size:14px}
+.faq .chev{transition:transform .4s var(--ease);color:var(--muted)}
+.faq.open .chev{transform:rotate(90deg)}
+.faq .ans{padding:0 16px 14px;font-size:14px;line-height:1.5;color:var(--muted);animation:enter .4s var(--ease)}
+.table{width:100%;border-collapse:collapse;font-size:13px}
+.table td,.table th{padding:10px 14px;text-align:left;border-top:1px solid var(--line)}
+.table th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);border-top:0}
+.table td:last-child,.table th:last-child{text-align:right}
+textarea,select{width:100%;font:inherit;font-size:15px;border:1.5px solid var(--line);border-radius:14px;padding:12px;background:#fff;color:var(--ink);outline:none;transition:border-color .25s}
+textarea:focus,select:focus{border-color:var(--gold)}
+label.f{display:block;font-size:12px;font-weight:700;color:var(--muted);margin:14px 0 6px;text-transform:uppercase;letter-spacing:.06em}
+.prose{padding:0 18px;font-size:14px;line-height:1.6}
+.prose h3{font-size:16px;color:var(--g800);margin:18px 0 6px}
+
+/* ---------- toast ---------- */
+.toast{position:absolute;left:16px;right:16px;bottom:calc(var(--bot) + 96px);z-index:60;background:var(--g900);color:#fff;border-radius:16px;padding:12px 14px;font-size:14px;display:flex;gap:10px;align-items:center;box-shadow:0 14px 34px -10px rgba(0,0,0,.5);border:1px solid rgba(226,182,90,.3);animation:toast .5s var(--ease) both}
+.toast .icon{color:var(--gold-l)}
+@keyframes toast{from{opacity:0;transform:translateY(20px) scale(.96)}to{opacity:1;transform:none}}
+.guest-bar{margin:12px 14px 0;padding:10px 12px 10px 14px;border-radius:16px;background:#fff;border:1px solid rgba(200,150,43,.4);display:flex;align-items:center;gap:10px;font-size:13px}
+.guest-bar button{margin-left:auto;min-height:40px;padding:0 14px;border-radius:12px;background:var(--g800);color:#fff;font-weight:900;font-size:13px}
+.empty{margin:20px 18px;padding:24px;text-align:center;border-radius:20px;border:1.5px dashed rgba(11,74,44,.2);color:var(--muted);font-size:14px}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;animation-delay:0ms!important;transition-duration:.01ms!important}
+  .coin .ring,.check-disc path{stroke-dashoffset:0}
+}
+</style>
+</head>
+<body>
+<svg class="defs" aria-hidden="true">
+  <defs>
+    <linearGradient id="goldMetal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7a5410"/><stop offset=".28" stop-color="#E2B65A"/><stop offset=".5" stop-color="#fff0c2"/>
+      <stop offset=".72" stop-color="#C8962B"/><stop offset="1" stop-color="#6e4a0c"/>
+    </linearGradient>
+    <linearGradient id="goldText" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff0c2"/><stop offset=".45" stop-color="#E2B65A"/><stop offset="1" stop-color="#a7771b"/>
+    </linearGradient>
+    <radialGradient id="coinFace" cx=".45" cy=".35" r=".75">
+      <stop offset="0" stop-color="#1a7a4a"/><stop offset=".55" stop-color="#0B4A2C"/><stop offset="1" stop-color="#03180d"/>
+    </radialGradient>
+    <linearGradient id="shineGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".5" stop-color="#fff" stop-opacity=".85"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="ingTopG" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#E9C56E"/><stop offset=".5" stop-color="#fff2c8"/><stop offset="1" stop-color="#D9AA45"/></linearGradient>
+    <linearGradient id="ingFrontG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#E2B65A"/><stop offset=".55" stop-color="#C8962B"/><stop offset="1" stop-color="#8A6414"/></linearGradient>
+    <linearGradient id="ingSideG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#B98A26"/><stop offset="1" stop-color="#6e4a0c"/></linearGradient>
+    <linearGradient id="ingTopS" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#d9dfe3"/><stop offset=".5" stop-color="#ffffff"/><stop offset="1" stop-color="#c9d0d5"/></linearGradient>
+    <linearGradient id="ingFrontS" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e6eaed"/><stop offset=".55" stop-color="#b9c1c7"/><stop offset="1" stop-color="#7f8a92"/></linearGradient>
+    <linearGradient id="ingSideS" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#a5aeb4"/><stop offset="1" stop-color="#6a747b"/></linearGradient>
+    <linearGradient id="sparkFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#E2B65A" stop-opacity=".35"/><stop offset="1" stop-color="#E2B65A" stop-opacity="0"/></linearGradient>
+    <linearGradient id="sparkFillS" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#E8EDF0" stop-opacity=".3"/><stop offset="1" stop-color="#E8EDF0" stop-opacity="0"/></linearGradient>
+    <mask id="crescentMask"><rect x="0" y="0" width="200" height="200" fill="#fff"/><circle cx="106" cy="72" r="24" fill="#000"/></mask>
+    <clipPath id="pgbxClip"><text x="100" y="146" text-anchor="middle" font-family="Lora, Georgia, serif" font-weight="700" font-size="34" letter-spacing="3">PGBX</text></clipPath>
+  </defs>
+</svg>
+<div id="root"></div>
+<div class="page-caption">PGBX CUSTOMER APP · CLICKABLE PROTOTYPE · SAMPLE DATA</div>
+
+<script type="module">
+import { html, render, useState, useEffect, useRef, useMemo } from 'https://cdn.jsdelivr.net/npm/htm@3.1.1/preact/standalone.module.js';
+
+/* ============================================================
+   Constants (SRS references in comments)
+   ============================================================ */
+const TOLA = 11.664;                       // 1 tola = 11.664 g in every calculation
+const params = new URLSearchParams(location.search);
+const START_HOME = params.get('start') === 'home';
+const FEED_FAIL = params.get('feedFail') === '1';
+const TICK_MS = 5000;                      // FR-R1: update every 5–10 s (simulated)
+const STALE_MS = 30000;                    // FR-R4: freshness limit (proposed default)
+const LOCK_S = 60;                         // FR-B2: 60 s price lock
+const MAX_UNITS = 10;                      // FR-B6: per-order limit (sample)
+const RESERVE_MS = 24 * 3600 * 1000;       // redemption code expiry (24 h)
+const AUTOLOCK_MS = 2 * 60 * 1000;         // FR-A4: lock after 2 minutes inactivity
+const TBC = '[To be confirmed by PGBX]';
+
+// Seed: Pakistan Sarafa 24K rate, 1 Oct 2026 (per tola)
+const SEED = { gold: 438636, silver: 6528 };
+// Sample spreads (sell price below buy). Real spreads are set by PGBX (FR-M1).
+const SPREAD = { gold: 0.012, silver: 0.025 };
+
+// The eleven online products (Section 3). Premiums are SAMPLE values only.
+const PRODUCTS = [
+  { id: 'g-10mg',  metal: 'gold',   label: '10 mg',   short: '10mg', grams: 0.01,   premium: 120 },
+  { id: 'g-20mg',  metal: 'gold',   label: '20 mg',   short: '20mg', grams: 0.02,   premium: 160 },
+  { id: 'g-50mg',  metal: 'gold',   label: '50 mg',   short: '50mg', grams: 0.05,   premium: 250 },
+  { id: 'g-100mg', metal: 'gold',   label: '100 mg',  short: '100mg', grams: 0.1,   premium: 350 },
+  { id: 'g-500mg', metal: 'gold',   label: '500 mg',  short: '500mg', grams: 0.5,   premium: 800 },
+  { id: 'g-1g',    metal: 'gold',   label: '1 gram',  short: '1 g',  grams: 1,      premium: 1200 },
+  { id: 'g-5g',    metal: 'gold',   label: '5 gram',  short: '5 g',  grams: 5,      premium: 3500 },
+  { id: 's-1t',    metal: 'silver', label: '1 tola',  short: '1 tola', grams: TOLA,      premium: 350 },
+  { id: 's-3t',    metal: 'silver', label: '3 tola',  short: '3 tola', grams: 3 * TOLA,  premium: 800 },
+  { id: 's-5t',    metal: 'silver', label: '5 tola',  short: '5 tola', grams: 5 * TOLA,  premium: 1200 },
+  { id: 's-10t',   metal: 'silver', label: '10 tola', short: '10 tola', grams: 10 * TOLA, premium: 2000 },
+];
+const P = Object.fromEntries(PRODUCTS.map(p => [p.id, p]));
+const metalName = m => (m === 'gold' ? 'Gold' : 'Silver');
+const pname = p => `${p.label} ${metalName(p.metal)}`;
+
+// Sample dealers (four of the 250). Stock is per product (FR-D2, FR-DL4).
+const DEALERS = [
+  { id: 'd1', name: 'Saddar Bullion Counter', area: 'Saddar, Karachi',       km: 1.2, hours: '10:00 – 20:00', out: [] },
+  { id: 'd2', name: 'Clifton Gold Desk',      area: 'Clifton Block 5, Karachi', km: 4.8, hours: '11:00 – 21:00', out: ['s-1t', 's-10t', 'g-5g'] },
+  { id: 'd3', name: 'Gulshan Sarafa Point',   area: 'Gulshan-e-Iqbal, Karachi', km: 9.3, hours: '10:30 – 19:30', out: ['g-1g', 's-3t'] },
+  { id: 'd4', name: 'Tariq Road Metals',      area: 'PECHS, Karachi',        km: 6.1, hours: '12:00 – 22:00', out: ['g-10mg', 's-5t'] },
+];
+const initialDealerStock = () => Object.fromEntries(DEALERS.map(d => [d.id,
+  Object.fromEntries(PRODUCTS.map(p => [p.id, d.out.includes(p.id) ? 0 : 3 + ((p.id.length * 7 + d.km * 10) | 0) % 9]))]));
+
+/* ============================================================
+   Helpers
+   ============================================================ */
+const fmt = n => 'Rs ' + Math.round(n).toLocaleString('en-US');
+const fmtW = g => (g < 1 ? `${+(g * 1000).toFixed(0)} mg` : `${+g.toFixed(3)} g`);
+const pct = n => (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+const uid = () => Math.random().toString(36).slice(2, 8).toUpperCase();
+const dt = ts => new Date(ts).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+const ago = ms => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s ago` : `${Math.floor(s / 60)}m ${s % 60}s ago`; };
+const dur = ms => { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 3600)}h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}m ${String(s % 60).padStart(2, '0')}s`; };
+function mulberry(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+// NOTE (Rule 1, FR-R3): in production every price comes from the PGBX server.
+// This prototype simulates that server locally so the screens can be clicked through.
+function rateOf(rates, metal) {
+  const buyTola = rates[metal].buy;
+  const sellTola = Math.round(buyTola * (1 - SPREAD[metal]));
+  return { buyTola, sellTola, buyGram: buyTola / TOLA, sellGram: sellTola / TOLA, chg: (buyTola / rates[metal].open - 1) * 100 };
+}
+const priceOf = (p, rates) => Math.round(rateOf(rates, p.metal).buyGram * p.grams + p.premium);
+
+function seedHistory(end, vol, n = 36, seed = 7) {
+  const r = mulberry(seed); const out = [end];
+  for (let i = 1; i < n; i++) out.unshift(Math.round(out[0] * (1 + (r() - 0.52) * vol)));
+  return out;
+}
+function initialRates() {
+  const now = Date.now();
+  const g = seedHistory(SEED.gold, 0.003, 36, 11), s = seedHistory(SEED.silver, 0.005, 36, 23);
+  return {
+    gold: { buy: SEED.gold, open: g[0], hist: g },
+    silver: { buy: SEED.silver, open: s[0], hist: s },
+    updatedAt: FEED_FAIL ? now - 47000 : now,
+    tick: 0,
+  };
+}
+
+// Append-only wallet ledger (FR-W3). Opening sample holdings: 2 × 1 tola silver, 1 × 1 g gold.
+function initialLedger() {
+  const t = Date.now() - 9 * 24 * 3600e3;
+  return [
+    { id: 'L-0001', ts: t, pid: 's-1t', delta: 2, reason: 'opening', ref: 'PGBX-R-260923-SMPL01', price: 6610 },
+    { id: 'L-0002', ts: t + 3600e3, pid: 'g-1g', delta: 1, reason: 'opening', ref: 'PGBX-R-260923-SMPL02', price: 38900 },
+  ];
+}
+
+/* ============================================================
+   Icons (inline SVG strokes)
+   ============================================================ */
+const PATHS = {
+  rates: 'M3 17l5-5 4 4 8-8M15 8h5v5',
+  buy: 'M5 8h14l-1.2 11.1a2 2 0 0 1-2 1.9H8.2a2 2 0 0 1-2-1.9L5 8zM9 8V6a3 3 0 0 1 6 0v2',
+  wallet: 'M4 7.5A2.5 2.5 0 0 1 6.5 5H18v3M4 7.5v10A2.5 2.5 0 0 0 6.5 20H20v-5M4 7.5A2.5 2.5 0 0 0 6.5 10H20v5M20 15h-4a2 2 0 0 1 0-4h4',
+  redeem: 'M4 10l1.5-5h13L20 10M4 10h16M4 10a2.7 2.7 0 0 0 5.3 0 2.7 2.7 0 0 0 5.4 0 2.7 2.7 0 0 0 5.3 0M5.5 12.5V20h13v-7.5M10 20v-4h4v4',
+  account: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4.5 20a7.5 7.5 0 0 1 15 0',
+  back: 'M15 5l-7 7 7 7',
+  chev: 'M9 6l6 6-6 6',
+  check: 'M5 12.5l4.5 4.5L19 7.5',
+  x: 'M6 6l12 12M18 6L6 18',
+  del: 'M9 6h11v12H9l-6-6 6-6zM12.5 9.5l5 5M17.5 9.5l-5 5',
+  face: 'M8 3.5H6A2.5 2.5 0 0 0 3.5 6v2M16 3.5h2A2.5 2.5 0 0 1 20.5 6v2M8 20.5H6A2.5 2.5 0 0 1 3.5 18v-2M16 20.5h2a2.5 2.5 0 0 0 2.5-2.5v-2M9 9.5v1M15 9.5v1M12 9.5v3.5h-1M9.5 16a3.5 3.5 0 0 0 5 0',
+  finger: 'M12 11v3M8.5 8.8A4.5 4.5 0 0 1 16.5 11v2.5M7.5 12v1a8 8 0 0 0 1.5 5M16.5 16.5a11 11 0 0 1-1 3.5M12 5a7 7 0 0 0-7 7v.5M19 12a7 7 0 0 0-3.5-6M10 14a14 14 0 0 0 1.5 6.5M14 14.5a12 12 0 0 1-.5 3',
+  lock: 'M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 7 0v3',
+  shield: 'M12 3l7.5 3v5.5c0 4.5-3.2 8-7.5 9.5-4.3-1.5-7.5-5-7.5-9.5V6L12 3zM8.8 12l2.2 2.2 4.3-4.4',
+  clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7.5V12l3 2',
+  pin: 'M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0C18.5 15.4 12 21 12 21zM12 12.3a2.3 2.3 0 1 0 0-4.6 2.3 2.3 0 0 0 0 4.6z',
+  alert: 'M12 4l9 16H3l9-16zM12 10v4M12 17.2v.1',
+  info: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 11v5M12 7.8v.1',
+  bank: 'M3.5 9.5L12 4l8.5 5.5M5 10v7M9.7 10v7M14.3 10v7M19 10v7M3.5 20h17',
+  card: 'M3.5 6.5h17v11h-17zM3.5 10h17M7 14.5h4',
+  phone: 'M8 3h8a1.5 1.5 0 0 1 1.5 1.5v15A1.5 1.5 0 0 1 16 21H8a1.5 1.5 0 0 1-1.5-1.5v-15A1.5 1.5 0 0 1 8 3zM11 18h2',
+  call: 'M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z',
+  help: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM9.5 9.5a2.5 2.5 0 0 1 4.9.7c0 1.8-2.4 2.2-2.4 3.8M12 17v.1',
+  flag: 'M5 21V4M5 4h11l-2 4 2 4H5',
+  doc: 'M7 3h7l4 4v14H7zM14 3v4h4M9.5 12h6M9.5 15.5h6',
+  receipt: 'M6 3h12v18l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5L6 21zM9 8h6M9 11.5h6M9 15h4',
+  key: 'M14.5 9.5a4 4 0 1 1-8 0 4 4 0 0 1 8 0zM13.4 12.4L20 19M17 16l2-2',
+  share: 'M12 3v12M7.5 7.5L12 3l4.5 4.5M5 13v6.5h14V13',
+  plus: 'M12 5v14M5 12h14',
+  minus: 'M5 12h14',
+  store: 'M4 10l1.5-5h13L20 10v10H4zM9 20v-5h6v5M4 10h16',
+  sparkle: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z',
+  out: 'M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10',
+  refresh: 'M20 11a8 8 0 0 0-14.7-3.5M4 4.5V8h3.5M4 13a8 8 0 0 0 14.7 3.5M20 19.5V16h-3.5',
+  box: 'M4 7.5l8-4 8 4v9l-8 4-8-4v-9zM4 7.5l8 4 8-4M12 11.5v9',
+  bell: 'M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15L6 16zM10 20.5a2 2 0 0 0 4 0',
+};
+const Icon = ({ n, c = '', s }) => html`<svg class=${'icon ' + c} viewBox="0 0 24 24" style=${s} aria-hidden="true"><path d=${PATHS[n]} /></svg>`;
+
+/* ============================================================
+   Brand visuals
+   ============================================================ */
+function Coin({ size = 200, glow = false }) {
+  const star = (cx, cy, R, r) => { let pts = []; for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r : R; pts.push((cx + rr * Math.cos(a)).toFixed(2) + ',' + (cy + rr * Math.sin(a)).toFixed(2)); } return pts.join(' '); };
+  return html`<div class="coin-wrap" style=${{ width: size + 'px', height: size + 'px' }}>
+    ${glow && html`<div class="glow"></div>`}
+    <svg class="coin" viewBox="0 0 200 200" width=${size} height=${size} role="img" aria-label="PGBX logo">
+      <circle class="dots" cx="100" cy="100" r="97" fill="none" stroke="#E2B65A" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="0.1 7" opacity=".85"/>
+      <circle class="face" cx="100" cy="100" r="82" fill="url(#coinFace)"/>
+      <circle class="ring" cx="100" cy="100" r="86" fill="none" stroke="url(#goldMetal)" stroke-width="5.5" pathLength="1" transform="rotate(-90 100 100)"/>
+      <g class="emblem">
+        <circle cx="100" cy="100" r="74" fill="none" stroke="#E2B65A" stroke-width=".8" opacity=".45"/>
+        <circle cx="92" cy="80" r="30" fill="url(#goldMetal)" mask="url(#crescentMask)"/>
+        <polygon points=${star(124, 62, 10, 4.2)} fill="url(#goldMetal)"/>
+        <text x="100" y="146" text-anchor="middle" font-family="Lora, Georgia, serif" font-weight="700" font-size="34" letter-spacing="3" fill="url(#goldText)">PGBX</text>
+        <g clip-path="url(#pgbxClip)"><rect class="shine" x="30" y="110" width="44" height="50" fill="url(#shineGrad)" transform="translate(-140 0)"/></g>
+      </g>
+    </svg>
+  </div>`;
+}
+
+function Ingot({ metal = 'gold', w = 72, label }) {
+  const k = metal === 'gold' ? 'G' : 'S';
+  const ink = metal === 'gold' ? '#7a5410' : '#59646b';
+  return html`<svg viewBox="0 0 120 72" width=${w} height=${w * 0.6} aria-hidden="true" style="display:block;overflow:visible">
+    <ellipse cx="60" cy="66" rx="50" ry="4" fill="rgba(0,0,0,.12)"/>
+    <polygon points="22,10 98,10 110,26 10,26" fill=${`url(#ingTop${k})`}/>
+    <polygon points="10,26 110,26 116,60 4,60" fill=${`url(#ingFront${k})`}/>
+    <polygon points="98,10 110,26 116,60 112,40" fill=${`url(#ingSide${k})`} opacity=".6"/>
+    <polyline points="12,27 108,27" stroke="rgba(255,255,255,.65)" stroke-width="1.2"/>
+    <rect x="34" y="31" width="52" height="24" rx="3" fill="none" stroke=${ink} stroke-opacity=".45" stroke-width="1"/>
+    <text x="60" y="42" text-anchor="middle" font-family="Lato,sans-serif" font-weight="900" font-size="8" fill=${ink} fill-opacity=".85" letter-spacing="1">PGBX</text>
+    <text x="60" y="52" text-anchor="middle" font-family="Lato,sans-serif" font-weight="700" font-size="7" fill=${ink} fill-opacity=".75">${label || '999.0'}</text>
+  </svg>`;
+}
+
+function Spark({ data, metal, w = 112, h = 40 }) {
+  const min = Math.min(...data), max = Math.max(...data), span = max - min || 1;
+  const pts = data.map((v, i) => [(i / (data.length - 1)) * w, h - 3 - ((v - min) / span) * (h - 6)]);
+  const line = pts.map(p => p.map(n => n.toFixed(1)).join(',')).join(' ');
+  const col = metal === 'gold' ? '#E2B65A' : '#E8EDF0';
+  const last = pts[pts.length - 1];
+  return html`<svg class="spark" width=${w} height=${h} viewBox=${`0 0 ${w} ${h}`} aria-hidden="true">
+    <polygon points=${`0,${h} ${line} ${w},${h}`} fill=${metal === 'gold' ? 'url(#sparkFill)' : 'url(#sparkFillS)'}/>
+    <polyline points=${line} fill="none" stroke=${col} stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx=${last[0]} cy=${last[1]} r="3" fill=${col}/>
+  </svg>`;
+}
+
+function QR({ code }) {
+  const N = 25, r = mulberry(+code * 7919 + 13); const cells = [];
+  const finder = (x, y) => (x >= 0 && x < 7 && y >= 0 && y < 7);
+  const inF = (x, y) => finder(x, y) || finder(x - (N - 7), y) || finder(x, y - (N - 7));
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { if (!inF(x, y) && r() > 0.52) cells.push(html`<rect x=${x} y=${y} width="1" height="1"/>`); }
+  const F = (x, y) => html`<g transform=${`translate(${x} ${y})`}><rect width="7" height="7" rx="1.2"/><rect x="1" y="1" width="5" height="5" rx=".8" fill="#fff"/><rect x="2" y="2" width="3" height="3" rx=".5"/></g>`;
+  return html`<svg class="qr" viewBox=${`0 0 ${N} ${N}`} shape-rendering="crispEdges" aria-label="Redemption code pattern" fill="#0B4A2C">${cells}${F(0, 0)}${F(N - 7, 0)}${F(0, N - 7)}</svg>`;
+}
+
+/* ============================================================
+   Splash
+   ============================================================ */
+function Splash({ onDone }) {
+  const [out, setOut] = useState(false);
+  const parts = useMemo(() => Array.from({ length: 22 }, (_, i) => ({
+    left: (i * 37 % 100) + '%', dur: 5 + (i * 13 % 50) / 10, delay: (i * 7 % 30) / 10, dx: ((i * 23 % 60) - 30) + 'px', size: 2 + (i % 4),
+  })), []);
+  const finish = () => { if (out) return; setOut(true); setTimeout(onDone, 520); };
+  useEffect(() => { const t = setTimeout(finish, 3100); return () => clearTimeout(t); }, []);
+  return html`<div class=${'splash' + (out ? ' out' : '')} onClick=${finish}>
+    <div class="particles">${parts.map(p => html`<span class="particle" style=${{ left: p.left, width: p.size + 'px', height: p.size + 'px', animationDuration: p.dur + 's', animationDelay: p.delay + 's', '--dx': p.dx }}></span>`)}</div>
+    <${Coin} size=${190} glow=${true} />
+    <div class="splash-name"><h1>Pakistan Gold Bullion Exchange</h1></div>
+    <div class="splash-tag">LIVE RATES · BUY · WALLET · REDEEM</div>
+    <div class="splash-foot">Prototype · sample data</div>
+  </div>`;
+}
+
+/* ============================================================
+   PIN pad (used by lock screen and Change PIN)
+   ============================================================ */
+function PinPad({ onComplete, ok, showFace, onFace }) {
+  const [pin, setPin] = useState('');
+  useEffect(() => { if (pin.length === 4) { const t = setTimeout(() => { onComplete(pin); setPin(p => (ok ? p : '')); }, 160); return () => clearTimeout(t); } }, [pin]);
+  const press = d => setPin(p => (p.length < 4 ? p + d : p));
+  const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'face', '0', 'del'];
+  return html`
+    <div class=${'dots4' + (ok ? ' ok' : '')} aria-label=${`${pin.length} of 4 digits entered`}>
+      ${[0, 1, 2, 3].map(i => html`<span class=${'dot' + (pin.length > i || ok ? ' on' : '')}></span>`)}
+    </div>
+    <div class="keypad">
+      ${keys.map((k, i) => {
+        const st = { animationDelay: (0.25 + i * 0.045) + 's' };
+        if (k === 'face') return showFace ? html`<button class="key plain" style=${st} onClick=${onFace} aria-label="Unlock with face"><div style="display:grid;justify-items:center"><${Icon} n="face"/><span class="kl">Face</span></div></button>` : html`<span></span>`;
+        if (k === 'del') return html`<button class="key plain" style=${st} onClick=${() => setPin(p => p.slice(0, -1))} aria-label="Delete"><${Icon} n="del"/></button>`;
+        return html`<button class="key" style=${st} onClick=${() => press(k)}>${k}</button>`;
+      })}
+    </div>`;
+}
+
+function LockScreen({ onUnlock, onBrowse, biometric, note }) {
+  const [ok, setOk] = useState(false);
+  const [scan, setScan] = useState(false);
+  const unlock = () => { setOk(true); setTimeout(onUnlock, 650); };
+  const face = () => { setScan(true); setTimeout(() => { setScan(false); unlock(); }, 900); };
+  return html`<div class="lock">
+    <${Coin} size=${112} glow=${true} />
+    <h2>${ok ? 'Welcome back' : 'Enter your PIN'}</h2>
+    <div class="proto">Prototype: any 4 digits unlock</div>
+    <div class="note">${note || ''}</div>
+    <${PinPad} ok=${ok} onComplete=${unlock} showFace=${biometric} onFace=${face} />
+    <button class="browse press" onClick=${onBrowse}><${Icon} n="rates" c="sm"/> Browse live rates without logging in</button>
+    ${scan && html`<div class="scan"><div class="scan-box"><${Icon} n="face"/></div></div>`}
+  </div>`;
+}
+
+/* ============================================================
+   Shared bits
+   ============================================================ */
+const TopBar = ({ title, onBack, right }) => html`<div class="topbar">
+  <button class="iconbtn" onClick=${onBack} aria-label="Back"><${Icon} n="back"/></button><h2>${title}</h2><div style="margin-left:auto">${right || ''}</div>
+</div>`;
+const TabHead = ({ title, sub }) => html`<div class="tabhead enter"><h1>${title}</h1>${sub && html`<p>${sub}</p>`}</div>`;
+const StaleBanner = () => html`<div class="banner warn enter" role="alert"><${Icon} n="alert"/><div><b>Rates are delayed</b>Buying is paused until fresh rates arrive from PGBX (FR-R4).</div></div>`;
+const Flash = ({ k, children }) => html`<span class="flash" key=${k}>${children}</span>`;
+
+/* ============================================================
+   Screens
+   ============================================================ */
+function RateCard({ rates, metal, i }) {
+  const r = rateOf(rates, metal);
+  return html`<div class=${'rate ' + metal} style=${{ '--i': i }}>
+    <div class="top">
+      <${Ingot} metal=${metal} w=${44} />
+      <div><div class="metal">${metalName(metal)} 24K</div><div class="pur">999.0 · per tola (11.664 g)</div></div>
+      <span class=${'chip chg ' + (r.chg >= 0 ? 'upc' : 'downc')}>${pct(r.chg)}</span>
+    </div>
+    <div class="mid">
+      <div><div class="lbl">Buy / tola</div><div class="price-big"><${Flash} k=${rates.tick}>${fmt(r.buyTola)}<//></div></div>
+      <${Spark} data=${rates[metal].hist} metal=${metal} />
+    </div>
+    <div class="grid3">
+      <div><div class="lbl">Sell / tola</div><b><${Flash} k=${rates.tick}>${fmt(r.sellTola)}<//></b></div>
+      <div><div class="lbl">Buy / gram</div><b>${fmt(r.buyGram)}</b></div>
+      <div><div class="lbl">Sell / gram</div><b>${fmt(r.sellGram)}</b></div>
+    </div>
+  </div>`;
+}
+
+function RatesHome({ S, A }) {
+  const { rates, now, stale, guest } = S;
+  const age = now - rates.updatedAt;
+  const featured = ['g-1g', 'g-5g', 'g-100mg', 's-1t', 's-10t'].map(id => P[id]);
+  const wv = S.walletValue;
+  return html`<div class="scroll">
+    <div class="hero">
+      <div class="brand enter"><${Coin} size=${40} /><div><b>PGBX</b><small>Pakistan Gold Bullion Exchange</small></div>
+        <button class="iconbtn" style="margin-left:auto;color:#fff" aria-label="Notifications" onClick=${() => A.toast('Notifications: purchase and redemption updates appear here (FR-N1)')}><${Icon} n="bell"/></button></div>
+      <div class=${'live' + (stale ? ' stale' : '')}><i></i>${stale ? `Delayed · last update ${ago(age)}` : `Live · updated ${ago(age)}`}</div>
+      <h1>${guest ? 'Today’s rates' : 'Assalam-o-Alaikum, Ahmed'}</h1>
+    </div>
+    <div class="rate-stack cascade">
+      <${RateCard} rates=${rates} metal="gold" i=${0} />
+      <${RateCard} rates=${rates} metal="silver" i=${1} />
+    </div>
+    ${stale && html`<${StaleBanner}/>`}
+    ${guest && html`<div class="guest-bar enter"><${Icon} n="lock" c="sm"/><span>Browsing as a guest</span><button class="press" onClick=${A.login}>Log in</button></div>`}
+
+    <div class="section-title"><h3>Featured products</h3><span>Whole units · 999.0</span></div>
+    <div class="hscroll cascade">
+      ${featured.map((p, i) => html`<button class=${'card feat press' + (p.metal === 'silver' ? ' sil' : '')} style=${{ '--i': i }} onClick=${() => A.openProduct(p.id)}>
+        <div class="ing"><${Ingot} metal=${p.metal} w=${70} label=${p.short} /></div>
+        <b>${pname(p)}</b><div class="p">${fmt(priceOf(p, rates))}</div><div class="tiny muted">999.0 purity</div>
+      </button>`)}
+    </div>
+
+    ${!guest && html`<div class="section-title"><h3>Your wallet</h3><span>Sell value</span></div>
+    <button class="wallet-sum press enter" onClick=${() => A.tab('wallet')}>
+      <div class="between"><span class="tiny" style="color:rgba(255,255,255,.65);text-transform:uppercase;letter-spacing:.08em;font-weight:900">Total at current sell price</span><${Icon} n="chev" c="sm"/></div>
+      <div class="v">${fmt(wv.total)}</div>
+      <div class="small" style="color:rgba(255,255,255,.75);margin-top:6px">${fmtW(wv.goldG)} gold · ${(wv.silverG / TOLA).toFixed(2)} tola silver</div>
+    </button>`}
+
+    <button class="card dealers-card press enter" onClick=${() => A.tab('redeem')}>
+      <div class="badge-ico"><${Icon} n="store"/></div>
+      <div><b>Collect at any of 250 dealers</b><div class="small muted" style="margin-top:3px">Redeem your holdings for the physical product. Bring your CNIC.</div></div>
+      <${Icon} n="chev" c="sm" s="color:var(--muted);margin-left:auto"/>
+    </button>
+
+    <p class="foot-note">Rates seeded from the Pakistan Sarafa 24K rate of 1 Oct 2026 (gold Rs 438,636 / silver Rs 6,528 per tola). Updates every 5 s are <b>simulated</b>; sell prices use a <b>sample</b> spread. In the real app every price is set and published by the PGBX server (FR-R3).</p>
+  </div>`;
+}
+
+function BuyList({ S, A }) {
+  const metal = S.buyMetal;
+  const list = PRODUCTS.filter(p => p.metal === metal);
+  const r = rateOf(S.rates, metal);
+  return html`<div class="scroll">
+    <${TabHead} title="Buy" sub="Choose a product. Whole units only, 999.0 purity." />
+    <div class="seg" role="tablist">
+      <span class="knob" style=${{ transform: `translateX(${metal === 'gold' ? 0 : 100}%)` }}></span>
+      <button class=${metal === 'gold' ? 'on' : ''} onClick=${() => A.set({ buyMetal: 'gold' })} role="tab" aria-selected=${metal === 'gold'}>Gold · 7</button>
+      <button class=${metal === 'silver' ? 'on' : ''} onClick=${() => A.set({ buyMetal: 'silver' })} role="tab" aria-selected=${metal === 'silver'}>Silver · 4</button>
+    </div>
+    <div class="pad small muted" style="margin-top:8px">${metalName(metal)} buy rate ${fmt(r.buyTola)}/tola · ${fmt(r.buyGram)}/g</div>
+    ${S.stale && html`<${StaleBanner}/>`}
+    <div class="plist cascade" key=${metal}>
+      ${list.map((p, i) => html`<button class=${'card pcard press' + (metal === 'silver' ? ' sil' : '')} style=${{ '--i': i }} onClick=${() => A.openProduct(p.id)}>
+        <div class="ing"><${Ingot} metal=${p.metal} w=${64} label=${p.short} /></div>
+        <div><b>${p.label}</b><div class="small muted">${metalName(p.metal)} · 999.0 · ${fmtW(p.grams)}</div></div>
+        <div class="pp"><b>${fmt(priceOf(p, S.rates))}</b><span class="tiny muted">per unit</span></div>
+      </button>`)}
+    </div>
+    <div class="offline"><${Icon} n="info" c="sm"/><span>Larger bars are sold offline only and are not available in the app (FR-P6).</span></div>
+    <p class="foot-note">Price = metal rate × weight + PGBX premium. Premiums shown are <b>sample</b> values; the server calculates every price (Rule 1).</p>
+  </div>`;
+}
+
+function ProductScreen({ S, A, pid }) {
+  const p = P[pid]; const lock = S.lock;
+  const remain = lock ? Math.min(LOCK_S, Math.max(0, Math.ceil((lock.expiresAt - S.now) / 1000))) : LOCK_S;
+  const total = lock ? lock.unit * S.qty : 0;
+  return html`<div class="page">
+    <${TopBar} title=${pname(p)} onBack=${A.back} />
+    <div class="scroll" style="top:calc(var(--top) + 60px)">
+      <div class=${'stage-ing enter' + (p.metal === 'silver' ? ' sil' : '')}>
+        <div class="shadow"></div>
+        <div class="float"><${Ingot} metal=${p.metal} w=${180} label=${p.short} /></div>
+      </div>
+      <div class="tiles cascade">
+        <div class="tile" style="--i:0"><span>Metal</span><b>${metalName(p.metal)}</b></div>
+        <div class="tile" style="--i:1"><span>Weight</span><b>${p.metal === 'silver' ? p.label : fmtW(p.grams)}</b><div class="tiny muted">${fmtW(p.grams)}</div></div>
+        <div class="tile" style="--i:2"><span>Purity</span><b>999.0</b></div>
+      </div>
+      ${S.stale && html`<${StaleBanner}/>`}
+      <div class="lockbox enter">
+        <div class="between"><div class="row" style="gap:8px"><${Icon} n="lock" c="sm" s="color:var(--gold-d)"/><b style="font-size:14px">Price locked for ${remain}s</b></div><span class="small muted">FR-B2</span></div>
+        <div class=${'bar' + (remain <= 10 ? ' low' : '')}><i style=${{ transform: `scaleX(${remain / LOCK_S})` }}></i></div>
+        <div class="between" style="margin-top:10px"><span class="small muted">Unit price</span><b style="font-family:var(--serif);font-size:18px"><${Flash} k=${lock && lock.expiresAt}>${fmt(lock ? lock.unit : 0)}<//></b></div>
+        <div class="tiny muted" style="margin-top:4px">Refreshes to the latest rate when the timer reaches zero.</div>
+      </div>
+      <div class="lockbox enter between">
+        <div><b style="font-size:15px">Units</b><div class="tiny muted">Whole units only · max ${MAX_UNITS} per order (sample)</div></div>
+        <div class="stepper">
+          <button disabled=${S.qty <= 1} onClick=${() => A.set({ qty: Math.max(1, S.qty - 1) })} aria-label="Fewer"><${Icon} n="minus" c="sm"/></button>
+          <output><span key=${S.qty}>${S.qty}</span></output>
+          <button disabled=${S.qty >= MAX_UNITS} onClick=${() => A.set({ qty: Math.min(MAX_UNITS, S.qty + 1) })} aria-label="More"><${Icon} n="plus" c="sm"/></button>
+        </div>
+      </div>
+      <div class="pad tiny muted" style="margin-top:8px">Per-day limit and minimum purchase: <span class="tbc">${TBC}</span></div>
+      <div class="total"><span class="muted">Total · ${S.qty} × ${p.label}</span><b>${fmt(total)}</b></div>
+      <div class="cta"><button class="btn btn-gold" disabled=${S.stale} onClick=${A.toPay}>Continue to pay <${Icon} n="chev" c="sm"/></button></div>
+    </div>
+  </div>`;
+}
+
+const METHODS = [
+  { id: 'bank', icon: 'bank', name: 'Instant bank transfer', sub: 'Pay from your bank app' },
+  { id: 'card', icon: 'card', name: 'Debit or credit card', sub: 'Card details are never stored in the app (NFR-7)' },
+  { id: 'mwallet', icon: 'phone', name: 'Mobile wallet', sub: 'Pay with your mobile wallet' },
+];
+function PayScreen({ S, A }) {
+  const p = P[S.lock.pid]; const remain = Math.min(LOCK_S, Math.max(0, Math.ceil((S.lock.expiresAt - S.now) / 1000)));
+  const total = S.lock.unit * S.qty;
+  return html`<div class="page">
+    <${TopBar} title="Pay" onBack=${A.back} />
+    <div class="scroll" style="top:calc(var(--top) + 60px)">
+      <div class="card summary enter">
+        <div class="row" style="padding-bottom:10px;border-bottom:1px solid var(--line)"><${Ingot} metal=${p.metal} w=${60} label=${p.short}/><div><b style="font-family:var(--serif);font-size:17px">${pname(p)}</b><div class="small muted">999.0 · ${fmtW(p.grams)} each</div></div></div>
+        <div class="kv"><span>Units</span><b>${S.qty}</b></div>
+        <div class="kv"><span>Locked unit price</span><b><${Flash} k=${S.lock.expiresAt}>${fmt(S.lock.unit)}<//></b></div>
+        <div class="kv"><span>Price lock</span><b class=${remain <= 10 ? 'down' : ''}>${remain}s left</b></div>
+        <div class="kv" style="border-top:1px solid var(--line);margin-top:4px;padding-top:12px"><span style="color:var(--ink);font-weight:700">Total</span><b style="font-family:var(--serif);font-size:20px;color:var(--g800)">${fmt(total)}</b></div>
+      </div>
+      <div class="section-title"><h3>Payment method</h3><span>FR-B3</span></div>
+      <div class="methods cascade">
+        ${METHODS.map((m, i) => html`<button class=${'method' + (S.method === m.id ? ' on' : '')} style=${{ '--i': i }} onClick=${() => A.set({ method: m.id })} role="radio" aria-checked=${S.method === m.id}>
+          <div class="mi"><${Icon} n=${m.icon}/></div><div><b style="font-size:15px">${m.name}</b><div class="tiny muted" style="margin-top:2px">${m.sub}</div></div><span class="radio"><i></i></span>
+        </button>`)}
+      </div>
+      <div class="pad tiny muted" style="margin-top:10px">Which payment channels are enabled, and their providers: <span class="tbc">${TBC}</span></div>
+      <div class="banner info enter"><${Icon} n="shield" c="sm" s="color:var(--g700)"/><div>Your wallet is credited only after PGBX confirms the payment (FR-B4, FR-B5). The price above is the price you are charged.</div></div>
+      ${S.stale && html`<${StaleBanner}/>`}
+      <div class="cta" style="margin-top:16px"><button class="btn btn-gold" disabled=${S.stale || S.paying} onClick=${A.pay}><${Icon} n="lock" c="sm"/> Pay ${fmt(total)}</button></div>
+    </div>
+  </div>`;
+}
+
+function Processing() {
+  return html`<div class="center-screen">
+    <svg class="spinner" viewBox="0 0 50 50"><circle cx="25" cy="25" r="21" fill="none" stroke="rgba(11,74,44,.12)" stroke-width="4"/><circle cx="25" cy="25" r="21" fill="none" stroke="url(#goldMetal)" stroke-width="4" stroke-linecap="round" stroke-dasharray="40 200"/></svg>
+    <h2 style="margin-top:22px;font-size:22px;color:var(--g800)" class="enter">Confirming payment</h2>
+    <div class="proc-steps">
+      <div style="animation-delay:.2s">Waiting for payment confirmation…</div>
+      <div style="animation-delay:.8s">Crediting your wallet…</div>
+      <div style="animation-delay:1.3s">Issuing receipt…</div>
+    </div>
+  </div>`;
+}
+
+function Receipt({ S, A, oid }) {
+  const o = S.orders.find(x => x.id === oid); const p = P[o.pid];
+  const share = async () => {
+    const text = `PGBX receipt ${o.receipt}: ${o.units} × ${pname(p)}, ${fmt(o.total)}, ${dt(o.ts)}`;
+    try { if (navigator.share) await navigator.share({ title: 'PGBX receipt', text }); else { await navigator.clipboard.writeText(text); A.toast('Receipt details copied'); } } catch (e) { }
+  };
+  return html`<div class="scroll">
+    <div class="check-wrap"><span class="ripple"></span><span class="ripple"></span><span class="ripple"></span>
+      <div class="check-disc"><svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="#E2B65A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d=${PATHS.check} pathLength="1"/></svg></div>
+    </div>
+    <div style="text-align:center;margin-top:16px" class="enter"><h1 style="font-size:24px;color:var(--g800)">Payment confirmed</h1><p class="muted" style="margin:6px 0 0;font-size:14px">${o.units} × ${pname(p)} added to your wallet</p></div>
+    <div class="card receipt cascade">
+      <div class="kv" style="--i:0"><span>Receipt no. (FR-B7)</span><b class="rno">${o.receipt}</b></div>
+      <div class="kv" style="--i:1"><span>Item</span><b>${o.units} × ${pname(p)} · 999.0</b></div>
+      <div class="kv" style="--i:2"><span>Unit price</span><b>${fmt(o.unit)}</b></div>
+      <div class="kv" style="--i:3"><span>Method</span><b>${METHODS.find(m => m.id === o.method).name}</b></div>
+      <div class="kv" style="--i:4"><span>Date</span><b>${dt(o.ts)}</b></div>
+      <div class="kv" style="--i:5;border-top:1px solid var(--line);margin-top:4px;padding-top:12px"><span style="color:var(--ink);font-weight:700">Total paid</span><b style="font-family:var(--serif);font-size:20px;color:var(--g800)">${fmt(o.total)}</b></div>
+      <div class="tiny muted" style="--i:6;padding:6px 0">Tax and legal details on receipts (CMP-7): <span class="tbc">${TBC}</span></div>
+    </div>
+    <div class="cta" style="display:grid;gap:10px;margin-top:16px">
+      <button class="btn btn-green" onClick=${() => A.tab('wallet')}><${Icon} n="wallet" c="sm"/> View wallet</button>
+      <button class="btn btn-ghost" onClick=${share}><${Icon} n="share" c="sm"/> Share receipt</button>
+      <button class="btn btn-ghost" style="border:0" onClick=${() => A.tab('rates')}>Back to rates</button>
+    </div>
+  </div>`;
+}
+
+function WalletScreen({ S, A }) {
+  const { holdings, reserved, walletValue: wv } = S;
+  const held = PRODUCTS.filter(p => holdings[p.id] > 0);
+  const history = [...S.ledger].reverse();
+  return html`<div class="scroll">
+    <${TabHead} title="Wallet" sub="Backed one-to-one by metal PGBX holds (FR-W5)" />
+    <div class="wallet-hero enter">
+      <div class="tiny" style="color:rgba(255,255,255,.65);text-transform:uppercase;letter-spacing:.08em;font-weight:900">Total value at current sell price</div>
+      <div class="v"><${Flash} k=${S.rates.tick}>${fmt(wv.total)}<//></div>
+      <div class="split">
+        <div><span class="tiny" style="color:rgba(255,255,255,.6)">GOLD</span><b>${fmtW(wv.goldG)}</b><span class="tiny" style="color:rgba(255,255,255,.6)">${fmt(wv.gold)}</span></div>
+        <div><span class="tiny" style="color:rgba(255,255,255,.6)">SILVER</span><b>${(wv.silverG / TOLA).toFixed(2)} tola</b><span class="tiny" style="color:rgba(255,255,255,.6)">${fmtW(wv.silverG)} · ${fmt(wv.silver)}</span></div>
+      </div>
+    </div>
+    <div class="section-title"><h3>Holdings</h3><span>FR-W1</span></div>
+    ${held.length === 0 ? html`<div class="empty">No holdings yet. <br/><button class="btn btn-gold" style="margin-top:12px" onClick=${() => A.tab('buy')}>Buy your first product</button></div>` :
+      html`<div class="card list cascade">${held.map((p, i) => html`<div class="hold" style=${{ '--i': i, borderTop: i ? '1px solid var(--line)' : '' }}>
+        <div class="cnt">${holdings[p.id]}×</div><${Ingot} metal=${p.metal} w=${48} label=${p.short}/>
+        <div><b>${pname(p)}</b><div class="tiny muted">${fmtW(p.grams * holdings[p.id])} total${reserved[p.id] ? '' : ''}</div>
+          ${reserved[p.id] ? html`<div class="tiny" style="color:var(--gold-d);font-weight:700;margin-top:2px">${reserved[p.id]} reserved for redemption</div>` : ''}</div>
+        <div style="margin-left:auto;text-align:right"><b style="font-size:14px">${fmt(holdings[p.id] * p.grams * rateOf(S.rates, p.metal).sellGram)}</b><div class="tiny muted">sell value</div></div>
+      </div>`)}</div>`}
+    <div class="dealers-card card" style="margin-top:12px">
+      <div class="badge-ico"><${Icon} n="refresh"/></div>
+      <div><b>Sell back to PGBX</b><div class="small muted" style="margin-top:3px">Whether sell-back is in version 1 (FR-W6): <span class="tbc">${TBC}</span></div></div>
+    </div>
+    <div class="section-title"><h3>History</h3><span>From the ledger (FR-W2, FR-W3)</span></div>
+    <div class="card list cascade">
+      ${history.map((e, i) => { const p = P[e.pid]; const cls = e.reason === 'purchase' ? 'plus' : e.reason === 'redemption' ? 'minus' : 'open';
+        const title = e.reason === 'purchase' ? 'Purchase' : e.reason === 'redemption' ? `Redeemed${e.dealer ? ' at ' + e.dealer : ''}` : 'Opening balance (sample)';
+        return html`<div class="ledger-item" style=${{ '--i': Math.min(i, 8), borderTop: i ? '1px solid var(--line)' : '' }}>
+          <div class=${'li ' + cls}><${Icon} n=${cls === 'minus' ? 'store' : cls === 'plus' ? 'buy' : 'box'} c="sm"/></div>
+          <div style="flex:1;min-width:0"><div class="between"><b style="font-size:14px">${title}</b><b class=${e.delta > 0 ? 'up' : 'down'} style="font-size:14px">${e.delta > 0 ? '+' : '−'}${Math.abs(e.delta)} × ${p.short}</b></div>
+            <div class="tiny muted" style="margin-top:3px">${dt(e.ts)}${e.price ? ' · ' + fmt(e.price) + '/unit' : ''}</div>
+            <div class="tiny muted rno" style="margin-top:2px">${e.ref}</div>
+            ${e.serials && html`<div class="tiny" style="margin-top:2px;color:var(--g700)">Serials: ${e.serials.join(', ')}</div>`}</div>
+        </div>`; })}
+    </div>
+    <div class="pad" style="margin-top:12px"><button class="btn btn-ghost" onClick=${() => A.toast('Statement download is planned for phase 3 (FR-W4)')}><${Icon} n="doc" c="sm"/> Download statement</button></div>
+    <p class="foot-note">The balance is never stored or edited: it is the sum of ledger entries above. Storage fee or time limit for holdings (FR-W7): <span class="tbc">${TBC}</span></p>
+  </div>`;
+}
+
+function RedeemScreen({ S, A }) {
+  const avail = id => (S.holdings[id] || 0) - (S.reserved[id] || 0);
+  const held = PRODUCTS.filter(p => avail(p.id) > 0);
+  const [pid, setPid] = useState(held[0] ? held[0].id : null);
+  const [units, setUnits] = useState(1);
+  const [did, setDid] = useState(null);
+  useEffect(() => { if (pid && avail(pid) <= 0) setPid(held[0] ? held[0].id : null); }, [S.holdings, S.reserved]);
+  useEffect(() => { setUnits(1); if (did && pid && S.dealerStock[did][pid] <= 0) setDid(null); }, [pid]);
+  const maxU = pid ? Math.min(avail(pid), S.dealerStock[did || 'd1'][pid] || avail(pid)) : 0;
+  const active = S.redemptions.filter(r => ['requested', 'ready'].includes(S.statusOf(r)));
+  const past = S.redemptions.filter(r => !['requested', 'ready'].includes(S.statusOf(r)));
+  const canConfirm = pid && did && units >= 1 && units <= avail(pid) && S.dealerStock[did][pid] >= units;
+  return html`<div class="scroll">
+    <${TabHead} title="Redeem" sub="Collect your metal at a PGBX dealer" />
+    ${active.length > 0 && html`<div class="section-title" style="margin-top:12px"><h3>Active redemptions</h3></div>
+      <div class="stack cascade">${active.map((r, i) => html`<${RedemptionRow} r=${r} S=${S} A=${A} i=${i}/>`)}</div>`}
+
+    <div class="section-title"><h3>1 · Choose a product</h3><span>Available units</span></div>
+    ${held.length === 0 ? html`<div class="empty">Nothing available to redeem.<br/><button class="btn btn-gold" style="margin-top:12px" onClick=${() => A.tab('buy')}>Buy a product</button></div>` : html`
+    <div class="stack cascade">
+      ${held.map((p, i) => html`<button class=${'choice' + (pid === p.id ? ' on' : '')} style=${{ '--i': i }} onClick=${() => setPid(p.id)} role="radio" aria-checked=${pid === p.id}>
+        <div class="ing"><${Ingot} metal=${p.metal} w=${54} label=${p.short}/></div>
+        <div><b>${pname(p)}</b><div class="tiny muted">${avail(p.id)} available${S.reserved[p.id] ? ` · ${S.reserved[p.id]} reserved` : ''}</div></div>
+        <span class=${'radio' + (pid === p.id ? ' on' : '')}><i></i></span>
+      </button>`)}
+    </div>
+    <div class="lockbox between">
+      <div><b style="font-size:15px">Units to collect</b><div class="tiny muted">Whole units only</div></div>
+      <div class="stepper">
+        <button disabled=${units <= 1} onClick=${() => setUnits(u => u - 1)} aria-label="Fewer"><${Icon} n="minus" c="sm"/></button>
+        <output><span key=${units}>${units}</span></output>
+        <button disabled=${!pid || units >= avail(pid)} onClick=${() => setUnits(u => u + 1)} aria-label="More"><${Icon} n="plus" c="sm"/></button>
+      </div>
+    </div>
+
+    <div class="section-title"><h3>2 · Choose a dealer</h3><span>4 of 250 · sample</span></div>
+    <div class="stack cascade">
+      ${DEALERS.map((d, i) => { const st = S.dealerStock[d.id][pid] || 0; const ok = st >= units;
+        return html`<button class=${'choice' + (did === d.id ? ' on' : '') + (ok ? '' : ' off')} style=${{ '--i': i }} disabled=${!ok} onClick=${() => setDid(d.id)} role="radio" aria-checked=${did === d.id}>
+          <div class="badge-ico" style="width:42px;height:42px"><${Icon} n="pin" c="sm"/></div>
+          <div style="flex:1;min-width:0"><div class="between"><b style="font-size:15px">${d.name}</b><span class=${'stock ' + (ok ? 'in' : 'out')}>${ok ? 'In stock' : 'Out of stock'}</span></div>
+            <div class="tiny muted" style="margin-top:3px">${d.area} · ${d.km} km</div>
+            <div class="tiny muted" style="margin-top:2px;display:flex;align-items:center;gap:4px"><${Icon} n="clock" c="xs"/> ${d.hours}</div></div>
+          <span class=${'radio' + (did === d.id ? ' on' : '')}><i></i></span>
+        </button>`; })}
+    </div>
+    <div class="pad tiny muted" style="margin-top:8px">Out-of-stock dealers cannot be chosen (FR-D2). Map, address and phone come from the admin panel (FR-D1).</div>
+
+    <div class="card summary" style="margin-top:16px">
+      <div class="kv"><span>Redemption fee / making charge (FR-D8)</span><span class="tbc">${TBC}</span></div>
+      <div class="kv"><span>Gold vs silver redemption rules</span><span class="tbc">${TBC}</span></div>
+      <div class="kv"><span>Code valid for</span><b>24 hours</b></div>
+    </div>
+    <div class="cnic"><${Icon} n="shield" c="sm"/><div><b>Bring your original CNIC.</b> The dealer checks it against your account before handing over the product (FR-D5). The code works once, only at the dealer you choose (FR-D4).</div></div>
+    <div class="cta" style="margin-top:16px"><button class="btn btn-gold" disabled=${!canConfirm} onClick=${() => A.redeem(pid, units, did)}>Confirm and reserve ${units} unit${units > 1 ? 's' : ''}</button></div>
+    `}
+    ${past.length > 0 && html`<div class="section-title"><h3>Past redemptions</h3></div><div class="stack">${past.map((r, i) => html`<${RedemptionRow} r=${r} S=${S} A=${A} i=${i}/>`)}</div>`}
+  </div>`;
+}
+const STATUS_LABEL = { requested: 'Requested', ready: 'Ready at dealer', completed: 'Collected', cancelled: 'Cancelled', expired: 'Expired' };
+function RedemptionRow({ r, S, A, i }) {
+  const p = P[r.pid]; const d = DEALERS.find(x => x.id === r.dealerId); const st = S.statusOf(r);
+  return html`<button class="choice" style=${{ '--i': i }} onClick=${() => A.push({ name: 'code', rid: r.id })}>
+    <div class="ing"><${Ingot} metal=${p.metal} w=${50} label=${p.short}/></div>
+    <div style="flex:1;min-width:0"><b style="font-size:14px">${r.units} × ${pname(p)}</b><div class="tiny muted">${d.name} · code ${r.code}</div></div>
+    <span class=${'status-pill st-' + st}>${STATUS_LABEL[st]}</span>
+  </button>`;
+}
+
+function CodeScreen({ S, A, rid }) {
+  const r = S.redemptions.find(x => x.id === rid); const p = P[r.pid]; const d = DEALERS.find(x => x.id === r.dealerId);
+  const st = S.statusOf(r);
+  const [idOk, setIdOk] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const order = ['requested', 'ready', 'completed'];
+  const idx = order.indexOf(st);
+  const live = st === 'requested' || st === 'ready';
+  return html`<div class="page">
+    <${TopBar} title="Redemption" onBack=${A.back} right=${html`<span class=${'status-pill st-' + st} style="margin-right:8px">${STATUS_LABEL[st]}</span>`} />
+    <div class="scroll" style="top:calc(var(--top) + 60px)">
+      <div class="card code-card enter">
+        <div class="tiny muted" style="text-transform:uppercase;letter-spacing:.1em;font-weight:900">Your one-time code</div>
+        <div class="code-digits" style=${{ opacity: live ? 1 : .45 }}>${r.code.split('').map((c, i) => html`<span style=${{ animationDelay: (0.1 + i * 0.06) + 's' }}>${c}</span>`)}</div>
+        <${QR} code=${r.code} />
+        <div class="tiny muted">Pattern for prototype only, not a scannable QR</div>
+        <div class="small" style="margin-top:10px;font-weight:700;color:${live ? 'var(--g800)' : 'var(--muted)'}">
+          ${live ? html`Expires in ${dur(r.expiresAt - S.now)}` : st === 'completed' ? `Collected ${dt(r.completedAt)}` : st === 'cancelled' ? 'Cancelled: units returned to your wallet' : 'Expired: units returned to your wallet'}
+        </div>
+        ${st !== 'cancelled' && st !== 'expired' ? html`<div class="steps">
+          ${order.map((k, i) => html`<div class=${'step' + (i < idx || st === 'completed' ? ' done' : i === idx ? ' cur' : '')}><div class="sd">${i < idx || st === 'completed' ? html`<${Icon} n="check"/>` : i + 1}</div>${STATUS_LABEL[k]}</div>`)}
+        </div>` : ''}
+      </div>
+      <div class="card summary">
+        <div class="kv"><span>Item</span><b>${r.units} × ${pname(p)}</b></div>
+        <div class="kv"><span>Dealer</span><b>${d.name}</b></div>
+        <div class="kv"><span>Address</span><b>${d.area}</b></div>
+        <div class="kv"><span>Hours</span><b>${d.hours}</b></div>
+        <div class="kv"><span>Fee</span><span class="tbc">${TBC}</span></div>
+        ${r.serials && html`<div class="kv"><span>Serial no. (FR-D6)</span><b class="rno">${r.serials.join(', ')}</b></div>`}
+      </div>
+      ${live && html`<div class="cnic"><${Icon} n="shield" c="sm"/><div>Show this code and your original CNIC at <b>${d.name}</b>. Your ${r.units} unit${r.units > 1 ? 's are' : ' is'} reserved until then (FR-D3).</div></div>`}
+      ${live && html`<div class="cta" style="margin-top:14px">
+        <button class="btn btn-danger" onClick=${() => { if (confirmCancel) { A.cancelRedemption(r.id); setConfirmCancel(false); } else setConfirmCancel(true); }}>
+          <${Icon} n="x" c="sm"/> ${confirmCancel ? 'Tap again to confirm cancel' : 'Cancel redemption'}</button>
+        <div class="tiny muted" style="text-align:center;margin-top:6px">FR-D9 · cancelling releases the reserved units</div>
+      </div>`}
+
+      <div class="sim">
+        <h3><${Icon} n="store" c="sm"/> Prototype: simulate the dealer</h3>
+        <p class="small" style="margin:6px 0 10px;color:#6b3f00">In the real system these steps happen in the dealer interface (FR-DL2, FR-DL3), not in the customer app.</p>
+        <button class="btn btn-ghost" style="background:#fff" disabled=${st !== 'requested'} onClick=${() => A.markReady(r.id)}><${Icon} n="box" c="sm"/> Mark ready</button>
+        <button class="check" disabled=${st !== 'ready'} style=${{ opacity: st === 'ready' ? 1 : .5, marginTop: '6px' }} onClick=${() => setIdOk(v => !v)} role="checkbox" aria-checked=${idOk}>
+          <span class=${'cbox' + (idOk ? ' on' : '')}><${Icon} n="check"/></span> Customer CNIC checked against account (FR-D5)
+        </button>
+        <button class="btn btn-green" disabled=${st !== 'ready' || !idOk} onClick=${() => A.handOver(r.id)}><${Icon} n="check" c="sm"/> Hand over</button>
+        <div class="tiny" style="color:#6b3f00;margin-top:8px">Hand over records serial numbers, deducts the wallet through a ledger entry and updates dealer stock.</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function AccountScreen({ S, A }) {
+  const rows = [
+    { icon: 'key', label: 'Change PIN', go: () => A.push({ name: 'changepin' }) },
+    { icon: 'face', label: 'Face / fingerprint unlock', toggle: true },
+    { icon: 'clock', label: 'Auto-lock', end: 'After 2 minutes', go: () => A.toast('The app locks after 2 minutes of inactivity (FR-A4)') },
+  ];
+  const help = [
+    { icon: 'help', label: 'FAQs', kind: 'faq' },
+    { icon: 'call', label: 'Contact PGBX', kind: 'contact' },
+    { icon: 'flag', label: 'Report a problem', kind: 'report' },
+    { icon: 'receipt', label: 'Fee schedule', kind: 'fees' },
+    { icon: 'doc', label: 'Terms and privacy', kind: 'terms' },
+  ];
+  return html`<div class="scroll">
+    <${TabHead} title="Account" />
+    <div class="card profile enter">
+      <div class="avatar">AK</div>
+      <div><b style="font-size:17px;font-family:var(--serif)">Ahmed Khan</b><div class="small muted">+92 3•• ••• 4521 · sample customer</div>
+        <span class="verified"><${Icon} n="shield" c="xs"/> Verified · CNIC + selfie</span></div>
+    </div>
+    <div class="section-title"><h3>Security</h3></div>
+    <div class="card list cascade">
+      ${rows.map((r, i) => r.toggle ? html`<button class="li-row" style=${{ '--i': i }} onClick=${() => A.set({ biometric: !S.biometric })} role="switch" aria-checked=${S.biometric}>
+          <span class="lic"><${Icon} n=${r.icon} c="sm"/></span><b style="font-size:15px">${r.label}</b><span class="end"><span class=${'switch' + (S.biometric ? ' on' : '')}><i></i></span></span></button>`
+        : html`<button class="li-row" style=${{ '--i': i }} onClick=${r.go}><span class="lic"><${Icon} n=${r.icon} c="sm"/></span><b style="font-size:15px">${r.label}</b><span class="end">${r.end || ''}<${Icon} n="chev" c="sm"/></span></button>`)}
+    </div>
+    <div class="section-title"><h3>Help and legal</h3></div>
+    <div class="card list cascade">
+      ${help.map((r, i) => html`<button class="li-row" style=${{ '--i': i }} onClick=${() => A.push({ name: 'info', kind: r.kind })}><span class="lic"><${Icon} n=${r.icon} c="sm"/></span><b style="font-size:15px">${r.label}</b><span class="end"><${Icon} n="chev" c="sm"/></span></button>`)}
+    </div>
+    <div class="pad small muted" style="margin-top:14px">Language: English · Urdu at launch <span class="tbc">${TBC}</span></div>
+    <div class="cta" style="margin-top:16px"><button class="btn btn-green" onClick=${A.lockNow}><${Icon} n="lock" c="sm"/> Lock app</button></div>
+    <p class="foot-note" style="text-align:center">PGBX customer app · clickable prototype · all customer, wallet and dealer data is sample data</p>
+  </div>`;
+}
+
+function ChangePin({ A }) {
+  const steps = ['Enter current PIN', 'Enter new PIN', 'Confirm new PIN'];
+  const [step, setStep] = useState(0);
+  const [ok, setOk] = useState(false);
+  const done = () => { if (step < 2) setStep(step + 1); else { setOk(true); setTimeout(() => { A.toast('PIN changed (prototype)'); A.back(); }, 600); } };
+  return html`<div class="lock" style="position:absolute;inset:0">
+    <div style="position:absolute;left:10px;top:calc(var(--top) + 4px)"><button class="iconbtn" style="color:#fff" onClick=${A.back} aria-label="Back"><${Icon} n="back"/></button></div>
+    <${Coin} size=${80} />
+    <h2 key=${step}>${steps[step]}</h2>
+    <div class="proto">Prototype: any 4 digits · real flow adds an OTP check</div>
+    <div class="note"></div>
+    <${PinPad} key=${step} ok=${ok} onComplete=${done} showFace=${false} />
+  </div>`;
+}
+
+function InfoScreen({ S, A, kind }) {
+  const titles = { faq: 'FAQs', contact: 'Contact PGBX', report: 'Report a problem', fees: 'Fee schedule', terms: 'Terms and privacy' };
+  let body;
+  if (kind === 'faq') body = html`<${Faqs}/>`;
+  else if (kind === 'contact') body = html`<div class="card list cascade">
+      ${[['pin', 'Head office', 'Office 1211, 12th Floor, Gold Tower, Saddar, Karachi'], ['call', 'Phone', '+92 21 35215555', 'tel:+922135215555'], ['phone', 'WhatsApp', '+92 303 3521555', 'https://wa.me/923033521555'], ['sparkle', 'Website', 'pgbx.com.pk', 'https://pgbx.com.pk']].map(([ic, l, v, href], i) =>
+        html`<a class="li-row" style=${{ '--i': i, color: 'inherit', textDecoration: 'none' }} href=${href || null} target="_blank" rel="noopener"><span class="lic"><${Icon} n=${ic} c="sm"/></span><div><div class="tiny muted">${l}</div><b style="font-size:15px">${v}</b></div></a>`)}
+    </div>
+    <div class="pad small muted" style="margin-top:12px">Support hours and in-app chat: <span class="tbc">${TBC}</span></div>`;
+  else if (kind === 'report') body = html`<${Report} S=${S} A=${A}/>`;
+  else if (kind === 'fees') body = html`<div class="card list enter"><table class="table">
+      <tr><th>Product</th><th>Premium (sample)</th></tr>
+      ${PRODUCTS.map(p => html`<tr><td>${pname(p)}</td><td>${fmt(p.premium)}</td></tr>`)}
+    </table></div>
+    <div class="card summary" style="margin-top:12px">
+      <div class="kv"><span>Buy / sell spread</span><span class="tbc">${TBC}</span></div>
+      <div class="kv"><span>Redemption fee / making charge</span><span class="tbc">${TBC}</span></div>
+      <div class="kv"><span>Storage fee or time limit</span><span class="tbc">${TBC}</span></div>
+      <div class="kv"><span>Minimum purchase</span><span class="tbc">${TBC}</span></div>
+    </div>
+    <p class="foot-note">Every fee is shown before you confirm (FR-D8). PGBX sets fees in the admin panel (FR-M2).</p>`;
+  else body = html`<div class="prose cascade">
+      ${[['Ownership of metal in your wallet', 'How the wallet is classified and which approvals apply'], ['Fees and charges', 'Spread, redemption fee and any storage fee'], ['Redemption period', 'How long holdings can be kept and redeemed (FR-W7)'], ['Refunds and disputes', 'What happens in a dispute'], ['Shariah approval', 'Written approval of the product, wallet and redemption flow (CMP-3)'], ['Privacy policy', 'How personal data is collected, stored and deleted (CMP-6)']].map(([h, d], i) =>
+        html`<div style=${{ '--i': i }}><h3>${h}</h3><p style="margin:0" class="muted">${d}.</p><p style="margin:6px 0 0"><span class="tbc">${TBC}</span></p></div>`)}
+      <p class="foot-note" style="margin:20px 0 0">Customers accept these terms before their first purchase (CMP-5).</p>
+    </div>`;
+  return html`<div class="page">
+    <${TopBar} title=${titles[kind]} onBack=${A.back} />
+    <div class="scroll" style="top:calc(var(--top) + 60px)">${body}</div>
+  </div>`;
+}
+function Faqs() {
+  const [open, setOpen] = useState(0);
+  const qs = [
+    ['What do I own when I buy?', 'A whole product, for example a 1 gram gold bar, held for you by PGBX. Every unit in your wallet is backed one-to-one by metal PGBX holds.'],
+    ['What purity are the products?', 'All eleven products are 999.0 purity.'],
+    ['Can I buy part of a product?', 'No. You always buy whole units and cannot combine smaller purchases into a larger product (FR-P7).'],
+    ['Why can I not buy larger bars?', 'Larger bars are sold offline only and do not appear in the app (FR-P6).'],
+    ['How long is the price locked?', 'For 60 seconds. After that it refreshes to the latest PGBX rate.'],
+    ['Where do I collect my metal?', 'At any of the 250 PGBX dealers that has your product in stock. Bring your original CNIC; your code is valid for 24 hours.'],
+    ['Is there a redemption fee?', null],
+    ['Can I sell back to PGBX?', null],
+    ['Is there a storage fee or time limit?', null],
+    ['Does redemption differ for gold and silver?', null],
+  ];
+  return html`<div class="card list cascade">${qs.map(([q, a], i) => html`<div class=${'faq' + (open === i ? ' open' : '')} style=${{ '--i': i }}>
+    <button onClick=${() => setOpen(open === i ? -1 : i)} aria-expanded=${open === i}>${q}<${Icon} n="chev" c="sm chev"/></button>
+    ${open === i && html`<div class="ans">${a || html`<span class="tbc">${TBC}</span>`}</div>`}
+  </div>`)}</div>`;
+}
+function Report({ S, A }) {
+  const opts = [...S.orders.map(o => ['o:' + o.id, `Order ${o.receipt}`]), ...S.redemptions.map(r => ['r:' + r.id, `Redemption ${r.code}`])];
+  const [ref, setRef] = useState(opts[0] ? opts[0][0] : 'general');
+  const [text, setText] = useState('');
+  return html`<div class="pad enter">
+    <label class="f">About</label>
+    <select value=${ref} onChange=${e => setRef(e.target.value)}>
+      ${opts.map(([v, l]) => html`<option value=${v}>${l}</option>`)}<option value="general">Something else</option>
+    </select>
+    <label class="f">What happened?</label>
+    <textarea rows="5" placeholder="Describe the problem" value=${text} onInput=${e => setText(e.target.value)}></textarea>
+    <div class="cta" style="padding:16px 0 0"><button class="btn btn-gold" disabled=${text.trim().length < 3} onClick=${() => { A.toast('Report sent to PGBX support (prototype)'); A.back(); }}>Send report</button></div>
+    <p class="small muted">FR-N3. PGBX support sees the order or redemption you choose.</p>
+  </div>`;
+}
+
+/* ============================================================
+   App (shared state)
+   ============================================================ */
+const TABS = [['rates', 'Rates'], ['buy', 'Buy'], ['wallet', 'Wallet'], ['redeem', 'Redeem'], ['account', 'Account']];
+
+function App() {
+  const [phase, setPhase] = useState(START_HOME ? 'app' : 'splash');
+  const [st, setSt] = useState(() => ({
+    guest: false, tab: 'rates', stack: [], buyMetal: 'gold', qty: 1, lock: null, method: 'bank', paying: false,
+    rates: initialRates(), ledger: initialLedger(), orders: [], redemptions: [], dealerStock: initialDealerStock(),
+    biometric: true, toast: null, lockNote: '',
+  }));
+  const [now, setNow] = useState(Date.now());
+  const set = patch => setSt(s => ({ ...s, ...(typeof patch === 'function' ? patch(s) : patch) }));
+  const lastActive = useRef(Date.now());
+  const committed = useRef(new Set());       // idempotency (Rule 2 / NFR-1)
+  const receipts = useRef(new Set());
+
+  // 1 s clock + 5 s simulated rate ticks
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    if (FEED_FAIL) return;
+    const t = setInterval(() => set(s => {
+      const step = (m, vol) => { const b = Math.round(s.rates[m].buy * (1 + (Math.random() - 0.5) * vol)); return { ...s.rates[m], buy: b, hist: [...s.rates[m].hist.slice(1), b] }; };
+      return { rates: { gold: step('gold', 0.003), silver: step('silver', 0.005), updatedAt: Date.now(), tick: s.rates.tick + 1 } };
+    }), TICK_MS);
+    return () => clearInterval(t);
+  }, []);
+
+  const stale = now - st.rates.updatedAt > STALE_MS;
+  const top = st.stack[st.stack.length - 1];
+
+  // FR-B2: refresh locked price at zero while on product / pay
+  useEffect(() => {
+    if (st.lock && top && (top.name === 'product' || top.name === 'pay') && now >= st.lock.expiresAt) {
+      set(s => ({ lock: { ...s.lock, unit: priceOf(P[s.lock.pid], s.rates), expiresAt: Date.now() + LOCK_S * 1000 } }));
+      toast('Price lock expired · refreshed to the latest rate');
+    }
+  }, [now]);
+
+  // FR-A4: auto-lock after 2 minutes of inactivity
+  useEffect(() => {
+    if (phase === 'app' && !st.guest && !(top && top.name === 'processing') && now - lastActive.current > AUTOLOCK_MS) {
+      set({ lockNote: 'Locked after 2 minutes of inactivity' }); setPhase('pin');
+    }
+  }, [now]);
+
+  // Toast auto-dismiss
+  useEffect(() => { if (!st.toast) return; const t = setTimeout(() => set({ toast: null }), 2800); return () => clearTimeout(t); }, [st.toast]);
+
+  // Derived wallet state from the ledger (FR-W3)
+  const holdings = useMemo(() => { const h = {}; st.ledger.forEach(e => { h[e.pid] = (h[e.pid] || 0) + e.delta; }); return h; }, [st.ledger]);
+  const statusOf = r => ((r.status === 'requested' || r.status === 'ready') && now > r.expiresAt ? 'expired' : r.status);
+  const reserved = {}; st.redemptions.forEach(r => { const s = statusOf(r); if (s === 'requested' || s === 'ready') reserved[r.pid] = (reserved[r.pid] || 0) + r.units; });
+  const walletValue = (() => { let gold = 0, silver = 0, goldG = 0, silverG = 0; PRODUCTS.forEach(p => { const n = holdings[p.id] || 0; if (!n) return; const v = n * p.grams * rateOf(st.rates, p.metal).sellGram;
+    if (p.metal === 'gold') { gold += v; goldG += n * p.grams; } else { silver += v; silverG += n * p.grams; } }); return { gold, silver, goldG, silverG, total: gold + silver }; })();
+
+  function toast(msg) { set({ toast: { msg, id: Math.random() } }); }
+  const A = {
+    set, toast,
+    tab: t => { if (st.guest && t !== 'rates') { A.login('Log in to use ' + t); return; } set({ tab: t, stack: [] }); },
+    push: r => set(s => ({ stack: [...s.stack, r] })),
+    back: () => set(s => ({ stack: s.stack.slice(0, -1) })),
+    login: note => { set({ lockNote: typeof note === 'string' ? note : '' }); setPhase('pin'); },
+    lockNow: () => { set({ lockNote: 'App locked', stack: [] }); setPhase('pin'); },
+    openProduct: pid => {
+      if (st.guest) { A.login('Log in to buy'); return; }
+      const p = P[pid];
+      set(s => ({ tab: s.tab === 'rates' ? 'rates' : 'buy', buyMetal: p.metal, qty: 1, stack: [...s.stack, { name: 'product', pid }], lock: { pid, unit: priceOf(p, s.rates), expiresAt: Date.now() + LOCK_S * 1000 } }));
+    },
+    toPay: () => { if (stale) return; set(s => ({ stack: [...s.stack, { name: 'pay', orderKey: 'K' + uid() + uid() }], paying: false })); },
+    pay: () => {
+      if (stale || st.paying) return;
+      const key = top.orderKey; const snap = { pid: st.lock.pid, units: st.qty, unit: st.lock.unit, method: st.method };
+      set(s => ({ paying: true, stack: [...s.stack, { name: 'processing' }] }));
+      setTimeout(() => {
+        if (committed.current.has(key)) return;      // process exactly once
+        committed.current.add(key);
+        const d = new Date(); let rno;
+        do { rno = `PGBX-R-${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${uid()}`; } while (receipts.current.has(rno));
+        receipts.current.add(rno);
+        const order = { id: key, receipt: rno, ...snap, total: snap.unit * snap.units, ts: Date.now() };
+        set(s => ({
+          paying: false, orders: [...s.orders, order],
+          ledger: [...s.ledger, { id: 'L-' + uid(), ts: order.ts, pid: snap.pid, delta: snap.units, reason: 'purchase', ref: rno, price: snap.unit }],
+          stack: [{ name: 'receipt', oid: key }], lock: null,
+        }));
+      }, 1800);
+    },
+    redeem: (pid, units, dealerId) => {
+      const used = new Set(st.redemptions.map(r => r.code)); let code;
+      do { code = String(Math.floor(100000 + Math.random() * 900000)); } while (used.has(code));
+      const r = { id: 'RD-' + uid(), pid, units, dealerId, code, createdAt: Date.now(), expiresAt: Date.now() + RESERVE_MS, status: 'requested' };
+      set(s => ({ redemptions: [...s.redemptions, r], stack: [...s.stack, { name: 'code', rid: r.id }] }));
+      toast(`${units} unit${units > 1 ? 's' : ''} reserved for 24 hours`);
+    },
+    cancelRedemption: id => { set(s => ({ redemptions: s.redemptions.map(r => (r.id === id ? { ...r, status: 'cancelled' } : r)) })); toast('Redemption cancelled · units released'); },
+    markReady: id => { set(s => ({ redemptions: s.redemptions.map(r => (r.id === id && r.status === 'requested' ? { ...r, status: 'ready' } : r)) })); toast('Dealer marked the order ready'); },
+    handOver: id => set(s => {
+      const r = s.redemptions.find(x => x.id === id);
+      if (!r || r.status !== 'ready') return {};      // a code works once (Rule 5)
+      const p = P[r.pid]; const d = DEALERS.find(x => x.id === r.dealerId);
+      const serials = Array.from({ length: r.units }, () => `PGBX-${p.metal === 'gold' ? 'AU' : 'AG'}-${Math.floor(100000 + Math.random() * 900000)}`);
+      setTimeout(() => toast('Handed over · wallet updated'), 0);
+      return {
+        redemptions: s.redemptions.map(x => (x.id === id ? { ...x, status: 'completed', completedAt: Date.now(), serials } : x)),
+        ledger: [...s.ledger, { id: 'L-' + uid(), ts: Date.now(), pid: r.pid, delta: -r.units, reason: 'redemption', ref: r.id, dealer: d.name, serials }],
+        dealerStock: { ...s.dealerStock, [d.id]: { ...s.dealerStock[d.id], [r.pid]: s.dealerStock[d.id][r.pid] - r.units } },
+      };
+    }),
+  };
+
+  const S = { ...st, now, stale, holdings, reserved, walletValue, statusOf };
+  const framed = typeof window !== 'undefined' && window.innerWidth > 500;
+
+  let content;
+  if (top) {
+    if (top.name === 'product') content = html`<${ProductScreen} S=${S} A=${A} pid=${top.pid}/>`;
+    else if (top.name === 'pay') content = html`<${PayScreen} S=${S} A=${A}/>`;
+    else if (top.name === 'processing') content = html`<${Processing}/>`;
+    else if (top.name === 'receipt') content = html`<${Receipt} S=${S} A=${A} oid=${top.oid}/>`;
+    else if (top.name === 'code') content = html`<${CodeScreen} S=${S} A=${A} rid=${top.rid}/>`;
+    else if (top.name === 'info') content = html`<${InfoScreen} S=${S} A=${A} kind=${top.kind}/>`;
+    else if (top.name === 'changepin') content = html`<${ChangePin} A=${A}/>`;
+  } else {
+    const M = { rates: RatesHome, buy: BuyList, wallet: WalletScreen, redeem: RedeemScreen, account: AccountScreen }[st.tab];
+    content = html`<${M} S=${S} A=${A}/>`;
+  }
+  const routeKey = st.tab + '/' + (top ? top.name + (top.pid || top.rid || top.kind || top.oid || '') : '');
+  const darkTop = phase !== 'app' || (!top && st.tab === 'rates') || (top && top.name === 'changepin');
+  const tabIdx = TABS.findIndex(t => t[0] === st.tab);
+  const hideTabs = top && (top.name === 'processing' || top.name === 'changepin');
+
+  return html`<div class="device" onPointerDown=${() => { lastActive.current = Date.now(); }} onKeyDown=${() => { lastActive.current = Date.now(); }}>
+    <div class="device-inner">
+      <${StatusBar} light=${darkTop} />
+      ${phase === 'splash' && html`<${Splash} onDone=${() => setPhase('pin')} />`}
+      ${phase === 'pin' && html`<${LockScreen} biometric=${st.biometric} note=${st.lockNote}
+          onUnlock=${() => { lastActive.current = Date.now(); set({ guest: false, lockNote: '' }); setPhase('app'); }}
+          onBrowse=${() => { set({ guest: true, tab: 'rates', stack: [], lockNote: '' }); setPhase('app'); }} />`}
+      ${phase === 'app' && html`<div class=${'app' + (framed ? ' framed' : '')}>
+        <div class="view"><div class="enter" key=${routeKey} style="position:absolute;inset:0">${content}</div></div>
+        ${!hideTabs && html`<nav class="tabbar" aria-label="Main"><div class="tabs">
+          <div class="pill-track" style=${{ transform: `translateX(${tabIdx * 100}%)` }}><div class="pill"></div></div>
+          ${TABS.map(([k, l]) => html`<button class=${'tab' + (st.tab === k ? ' on' : '')} onClick=${() => A.tab(k)} aria-current=${st.tab === k ? 'page' : null}>
+            <${Icon} n=${k}/>${l}${st.guest && k !== 'rates' ? html`<span style="position:absolute;top:6px;right:calc(50% - 18px);opacity:.6"><${Icon} n="lock" c="xs"/></span>` : ''}</button>`)}
+        </div></nav>`}
+        ${st.toast && html`<div class="toast" key=${st.toast.id} role="status"><${Icon} n="info" c="sm"/>${st.toast.msg}</div>`}
+      </div>`}
+    </div>
+  </div>`;
+}
+
+function StatusBar({ light }) {
+  const [t, setT] = useState(() => new Date());
+  useEffect(() => { const i = setInterval(() => setT(new Date()), 15000); return () => clearInterval(i); }, []);
+  return html`<div class=${'statusbar ' + (light ? 'light' : 'dark')} aria-hidden="true">
+    <span>${t.getHours()}:${String(t.getMinutes()).padStart(2, '0')}</span><span class="notch"></span>
+    <span class="sb-icons">
+      <svg width="18" height="12" viewBox="0 0 18 12" fill="currentColor"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/></svg>
+      <svg width="16" height="12" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M1.5 4.5a9.5 9.5 0 0 1 13 0M4 7.3a6 6 0 0 1 8 0"/><circle cx="8" cy="10.2" r="1.1" fill="currentColor" stroke="none"/></svg>
+      <svg width="26" height="12" viewBox="0 0 26 12" fill="none"><rect x=".5" y=".5" width="22" height="11" rx="3.2" stroke="currentColor" opacity=".45"/><rect x="2.5" y="2.5" width="16" height="7" rx="1.6" fill="currentColor"/><rect x="24" y="4" width="1.6" height="4" rx=".8" fill="currentColor" opacity=".5"/></svg>
+    </span>
+  </div>`;
+}
+
+/* Fit the 390×844 phone frame into the desktop window */
+function fit() { const s = Math.min(1, (innerHeight - 48) / 862, (innerWidth - 32) / 408); document.documentElement.style.setProperty('--s', Math.max(0.4, s).toFixed(4)); }
+addEventListener('resize', fit); fit();
+
+render(html`<${App}/>`, document.getElementById('root'));
+</script>
+</body>
+</html>
