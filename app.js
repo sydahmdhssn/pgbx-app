@@ -554,6 +554,7 @@ function RateCard({ rates, metal, onOpen }) {
   }, [r.buyTola, rates.mode]);
   const sk = (w, h) => html`<span class="sk" style=${{ width: w + 'px', height: h + 'px', marginTop: '4px' }}></span>`;
   return html`<button class=${"rc " + metal} onClick=${onOpen} aria-label=${`${metalName(metal)}: buy ${fmt(r.buyTola)} per tola. Open history and price alerts`}>
+    <span class="rc-sheen" aria-hidden="true"></span>
     <div class="rc-head">
       <span class="shine" style=${{ '--shine-delay': metal === 'gold' ? '1.2s' : '3.6s' }}><${Ingot} metal=${metal} w=${36} /></span>
       <div><div class="rc-name">${metalName(metal)} 24K</div><div class="rc-sub">999.0 · per tola (11.664 g)</div></div>

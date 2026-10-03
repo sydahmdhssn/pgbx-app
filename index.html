@@ -654,21 +654,27 @@ button.notice{transition:transform var(--t1)}button.notice:active{transform:scal
 
 
 /* rate cards: each carries its metal. Gold is warm champagne, silver is cool platinum:
-   a polished edge on top, a soft corner glow, metal-toned figures and a slow glint. */
+   a polished edge on top, a soft corner glow, metal-toned figures and a sweeping sheen. */
 .rc.gold,.rc.silver{position:relative;overflow:hidden;isolation:isolate}
-.rc.gold{background:linear-gradient(155deg,#FFFDF7 0%,#FCF4E0 48%,#F4E4BC 100%);box-shadow:var(--e2),inset 0 0 0 1px rgba(200,150,43,.28)}
-.rc.silver{background:linear-gradient(155deg,#FFFFFF 0%,#F3F5F7 48%,#E2E7EB 100%);box-shadow:var(--e2),inset 0 0 0 1px rgba(120,135,145,.22)}
+.rc.gold{background:linear-gradient(155deg,#FDF5E0 0%,#F7E6BE 50%,#EDD49B 100%);box-shadow:var(--e2),inset 0 0 0 1px rgba(200,150,43,.28)}
+.rc.silver{background:linear-gradient(155deg,#F8F9FA 0%,#E8ECEF 50%,#D5DCE1 100%);box-shadow:var(--e2),inset 0 0 0 1px rgba(120,135,145,.22)}
 .rc.gold::before,.rc.silver::before{content:'';position:absolute;left:0;right:0;top:0;height:3px;z-index:1}
-.rc.gold::before{background:linear-gradient(90deg,#8A6414,#E2B65A 22%,#FFF0C2 45%,#C8962B 70%,#8A6414)}
-.rc.silver::before{background:linear-gradient(90deg,#6E7A82,#C9D0D5 22%,#FFFFFF 45%,#AEB7BD 70%,#6E7A82)}
-.rc.gold::after,.rc.silver::after{content:'';position:absolute;inset:0;z-index:-1;pointer-events:none;
-  background:radial-gradient(70% 90% at 100% 0%,var(--glow) 0%,transparent 60%),linear-gradient(100deg,transparent 36%,var(--glint) 50%,transparent 64%) no-repeat;
-  background-size:100% 100%,300% 100%;background-position:0 0,150% 0;animation:glint 7s var(--glint-delay,2s) var(--ease) infinite}
-.rc.gold{--glow:rgba(226,182,90,.32);--glint:rgba(255,255,255,.95);--glint-delay:1.2s}
-.rc.silver{--glow:rgba(190,205,215,.5);--glint:rgba(255,255,255,1);--glint-delay:3.6s}
-@keyframes glint{0%{background-position:0 0,150% 0}30%,100%{background-position:0 0,-50% 0}}
+.rc.gold::before{background:linear-gradient(90deg,#8A6414,#C8962B 20%,#E2B65A 35%,#FFF6D8 50%,#E2B65A 65%,#C8962B 80%,#8A6414)}
+.rc.silver::before{background:linear-gradient(90deg,#6E7A82,#9AA5AC 20%,#C9D0D5 35%,#FFFFFF 50%,#C9D0D5 65%,#9AA5AC 80%,#6E7A82)}
+.rc.gold::after,.rc.silver::after{content:'';position:absolute;inset:0;z-index:-1;pointer-events:none;background:radial-gradient(70% 90% at 100% 0%,var(--glow) 0%,transparent 60%)}
+.rc.gold{--glow:rgba(255,236,190,.5);--sheen:rgba(255,250,232,.92);--sheen-edge:rgba(255,240,200,.5);--sheen-delay:1.6s}
+.rc.silver{--glow:rgba(190,205,215,.5);--sheen:rgba(255,255,255,1);--sheen-edge:rgba(225,233,239,.7);--sheen-delay:2.6s}
+/* the sheen from the first version: a broad band of light sweeping across the card every 7 s, under the text */
+.rc-sheen{position:absolute;top:-10%;bottom:-10%;left:0;width:50%;z-index:0;pointer-events:none;
+  background:linear-gradient(100deg,transparent 0%,var(--sheen-edge) 28%,var(--sheen) 46%,#fff 50%,var(--sheen) 54%,var(--sheen-edge) 72%,transparent 100%);
+  transform:translateX(-120%) skewX(-14deg);animation:rcSheen 7s var(--sheen-delay) var(--ease) infinite}
+@keyframes rcSheen{0%{transform:translateX(-120%) skewX(-14deg)}30%,100%{transform:translateX(330%) skewX(-14deg)}}
+.rc>.rc-head,.rc>.rc-main,.rc>.rc-grid{position:relative;z-index:1}
+/* the metal edge on top catches the same light */
+.rc.gold::before,.rc.silver::before{background-size:200% 100%;animation:edgeShine 7s var(--sheen-delay) var(--ease) infinite}
+@keyframes edgeShine{0%{background-position:100% 0}30%,100%{background-position:-100% 0}}
 .rc.gold .rc-price{color:#5A3D06}.rc.silver .rc-price{color:#27333B}
-.rc.gold .rc-lbl,.rc.gold .rc-sub{color:#7A6232}.rc.silver .rc-lbl,.rc.silver .rc-sub{color:#56636B}
+.rc.gold .rc-lbl,.rc.gold .rc-sub{color:#664F1F}.rc.silver .rc-lbl,.rc.silver .rc-sub{color:#4A565E}
 .rc.gold .rc-grid{border-top-color:rgba(160,115,25,.22)}.rc.silver .rc-grid{border-top-color:rgba(90,105,115,.2)}
 .rc.gold .rc-grid b{color:#3E2A05}.rc.silver .rc-grid b{color:#222C33}
 .rc.gold .chev{color:#A8873F}.rc.silver .chev{color:#8A969E}
@@ -682,7 +688,7 @@ button.notice{transition:transform var(--t1)}button.notice:active{transform:scal
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;animation-delay:0ms!important;transition-duration:.01ms!important}
   .coin .ring,.mark svg path,.ch-line,.spark .sl{stroke-dashoffset:0}
-  .rc.gold::after,.rc.silver::after{animation:none}
+  .rc-sheen{display:none}.rc.gold::before,.rc.silver::before{animation:none}
   .ldot::after,.shine::after,.home-head::after,.brand-card::after,.amb,.logo-stage .sheen{display:none}
 }
 </style>
