@@ -698,6 +698,14 @@ button.notice{transition:transform var(--t1)}button.notice:active{transform:scal
 .rc.gold .chev{color:#A8873F}.rc.silver .chev{color:#8A969E}
 .rc.gold .shine,.rc.silver .shine{border-radius:var(--r-sm);padding:6px;background:rgba(255,255,255,.55);box-shadow:inset 0 0 0 1px rgba(255,255,255,.8)}
 
+
+/* UX additions: toast action, unread dot, receipt opened from a notification */
+.toast .grow{flex:1;min-width:0}
+.toast-act{flex:none;min-height:36px;padding:0 12px;margin:-6px -8px -6px 0;border-radius:var(--r-sm);font-weight:600;color:var(--gold-300)}
+.toast-act:active{background:rgba(255,255,255,.12)}
+.ldot.unread{margin-top:6px;background:var(--danger);box-shadow:none}.ldot.unread::after{display:none}
+.from-inbox .result{padding-top:8px}
+
 /* Respect "Reduce transparency" */
 @media (prefers-reduced-transparency:reduce){
   .nav::before,.tabbar,.push,.actionbar,.toast,.offline{-webkit-backdrop-filter:none!important;backdrop-filter:none!important}

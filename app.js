@@ -35,14 +35,19 @@ const PIN_MAX_FAILS = 5;                   // FR-A4: wrong PINs before the sessi
 // Pakistani mobile numbers: Jazz 300–309 and 320–329, Zong 310–319, Ufone 330–339, Telenor 340–349, SCOM 355
 const PK_MOBILE = /^3(?:[0-4]\d|55)\d{7}$/;
 // FR-A1 one-time codes go through the server (/api/otp); the provider keys never reach the app (Rule 6).
+// Fetch with a time limit so a slow connection ends in a clear message instead of an endless spinner.
+async function fetchT(url, opts = {}, ms = 12000) {
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), ms);
+  try { return await fetch(url, { ...opts, signal: ctl.signal }); } finally { clearTimeout(t); }
+}
 async function otpCall(body) {
   for (const b of API_BASES) {
     try {
-      const r = await fetch(`${b}/api/otp`, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { cache: 'no-store' });
+      const r = await fetchT(`${b}/api/otp`, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : { cache: 'no-store' }, 15000);
       if (r.status === 404 || r.status === 405 || r.status === 501) continue;
       const d = await r.json().catch(() => null);
       if (d) return d;
-    } catch (e) { }
+    } catch (e) { if (e.name === 'AbortError') break; }   // timed out: say so now rather than wait on the next address
   }
   return { ok: false, error: 'unreachable' };
 }
@@ -324,7 +329,7 @@ function Splash({ onDone, rates, quick }) {
 /* ============================================================
    Login: mobile number + one-time code (FR-A1)
    ============================================================ */
-function Login({ S, note, onDone, onBrowse, onPin, onRetry }) {
+function Login({ S, note, intent, hasPin, onDone, onBrowse, onPin, onRetry }) {
   const [step, setStep] = useState('phone');
   const [dir, setDir] = useState('in');
   const [phone, setPhone] = useState(S.phone || '');
@@ -394,6 +399,7 @@ function Login({ S, note, onDone, onBrowse, onPin, onRetry }) {
     </div>
     <div class="sheet">
       ${note && html`<div class="notice warning" style="margin:0 0 16px;width:100%" role="alert"><${Icon} n="shield" c="sm"/><span>${note}</span></div>`}
+      ${!note && intent && html`<div class="notice" style="margin:0 0 16px;width:100%" role="status"><${Icon} n="info" c="sm"/><span>${intent}</span></div>`}
       ${down && html`<div class="notice danger" style="margin:0 0 16px;width:100%" role="alert"><${Icon} n="alert" c="sm"/><span class="grow">Can’t reach the login service. Check your connection and try again.</span><button class="linkbtn sm act" onClick=${onRetry}>Retry</button></div>`}
       ${step === 'phone' ? html`<div class=${dir === 'in' ? 'step-in' : 'step-back'} key="phone">
         <h2>Log in or sign up</h2>
@@ -421,7 +427,7 @@ function Login({ S, note, onDone, onBrowse, onPin, onRetry }) {
         ${demo && html`<p class="demo-line"><${Icon} n="info" c="sm"/><span>Demo mode: SMS isn’t connected yet, so no message is sent and any 6 digits will work.</span></p>`}
       </div>` : html`<div class="step-in" key="otp">
         <h2>${ok ? 'Verified' : 'Enter the code'}</h2>
-        <p class="sub">${demo ? 'Demo mode: no message was sent to' : `We sent a 6-digit code by ${viaName(sentVia)} to`} +92 ${shown(phone)}.
+        <p class="sub">${demo ? 'Demo mode: no message was sent to' : `We sent a 6-digit code by ${viaName(sentVia)} to`} +92 ${shown(phone)}.${' '}
           <button class="linkbtn sm" style="min-height:0;font-size:14px" onClick=${() => { setDir('back'); setStep('phone'); setErr(''); }}>Change number</button></p>
         <div class=${'otp' + (ok ? ' ok' : '') + (shake ? ' err' : '')} key=${'o' + shake} onClick=${() => otpRef.current && otpRef.current.focus()}>
           ${[0, 1, 2, 3, 4, 5].map(i => html`<div class=${'ob' + (i === otp.length && !ok && !busy ? ' cur' : '')} aria-hidden="true">${otp[i] || ''}</div>`)}
@@ -437,7 +443,7 @@ function Login({ S, note, onDone, onBrowse, onPin, onRetry }) {
       </div>`}
       <div class="login-links">
         <button class="linkbtn" onClick=${onBrowse}>Browse rates as a guest</button>
-        <button class="linkbtn sm" style="color:var(--text-2);font-weight:500" onClick=${onPin}>Already set up on this phone? Unlock with PIN</button>
+        ${hasPin && html`<button class="linkbtn sm" style="color:var(--text-2);font-weight:500" onClick=${onPin}>Already set up on this phone? Unlock with PIN</button>`}
       </div>
     </div>
   </div>`;
@@ -466,7 +472,7 @@ function PinPad({ onComplete, ok, err = 0, showFace, onFace, disabled }) {
 }
 
 // FR-A3 PIN with face unlock; FR-A4 pause after 3 wrong PINs, end the session after 5.
-function LockScreen({ pin, fails, lockUntil, now, biometric, note, onUnlock, onFail, onBrowse, onLogin }) {
+function LockScreen({ pin, fails, lockUntil, now, biometric, note, onUnlock, onFail, onBrowse, onLogin, onForgot }) {
   const [ok, setOk] = useState(false);
   const [scan, setScan] = useState(false);
   const locked = lockUntil > now;
@@ -480,13 +486,37 @@ function LockScreen({ pin, fails, lockUntil, now, biometric, note, onUnlock, onF
     <${Logo} size=${72} animate=${false} />
     <h2>${ok ? 'Unlocked' : 'Enter your PIN'}</h2>
     <div class=${'note' + (fails || locked ? ' warn' : '')} role="status">${msg || ''}</div>
-    <div class="hint-demo">Demo PIN ${PIN_DEFAULT}, unless you changed it</div>
+    ${pin === PIN_DEFAULT && html`<div class="hint-demo">Demo PIN ${PIN_DEFAULT}</div>`}
     <${PinPad} ok=${ok} err=${fails} onComplete=${check} showFace=${biometric && !locked} onFace=${face} disabled=${locked} />
     <div class="lock-links">
-      <button class="linkbtn" onClick=${onBrowse}>Browse rates as a guest</button>
-      <button class="linkbtn dim" onClick=${onLogin}>Log in with a different number</button>
+      <button class="linkbtn" onClick=${onForgot}>Forgot PIN?</button>
+      <div style="display:flex;gap:16px"><button class="linkbtn dim" onClick=${onBrowse}>Browse as guest</button><button class="linkbtn dim" onClick=${onLogin}>Use another number</button></div>
     </div>
     ${scan && html`<div class="scan" role="status" aria-label="Checking Face ID"><div class="scan-box"><${Icon} n="face"/></div></div>`}
+  </div>`;
+}
+
+// First login (and after "Forgot PIN"): the customer chooses the PIN they'll use to unlock the app on this phone.
+const WEAK_PINS = new Set(['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '0123', '9876', '1212', '2580']);
+function CreatePin({ reset, onDone }) {
+  const [step, setStep] = useState(0);
+  const [first, setFirst] = useState('');
+  const [ok, setOk] = useState(false);
+  const [err, setErr] = useState(0);
+  const [msg, setMsg] = useState('');
+  const done = p => {
+    if (step === 0) {
+      if (WEAK_PINS.has(p)) { setErr(e => e + 1); setMsg('That PIN is easy to guess. Choose a different one.'); return false; }
+      setFirst(p); setMsg(''); setStep(1); return false;
+    }
+    if (p !== first) { setErr(e => e + 1); setMsg('The PINs didn’t match. Choose your PIN again.'); setStep(0); return false; }
+    setOk(true); setTimeout(() => onDone(p), 500); return true;
+  };
+  return html`<div class="lock">
+    <${Coin} size=${56} />
+    <h2 key=${step}>${step === 0 ? (reset ? 'Choose a new PIN' : 'Create your PIN') : 'Enter the PIN again'}</h2>
+    <div class=${'note' + (msg ? ' warn' : '')} role="status">${msg || (step === 0 ? 'You’ll use this 4-digit PIN to unlock PGBX on this phone, instead of a code each time.' : 'To make sure it’s right.')}</div>
+    <${PinPad} key=${step} ok=${ok} err=${err} onComplete=${done} showFace=${false} />
   </div>`;
 }
 
@@ -617,6 +647,9 @@ function RatesHome({ S, A }) {
       <${RateCard} rates=${rates} metal="silver" onOpen=${() => A.openHistory('silver')} />
     </div>
     ${stale && html`<${StaleBanner}/>`}
+    ${!S.tips.rates && html`<div class="notice plain" role="note"><${Icon} n="info" c="sm"/><div class="grow"><b>Reading these prices</b>
+      <span style="display:block"><b style="display:inline">Buy</b> is what you pay PGBX per tola today. <b style="display:inline">Sell</b> is what your holdings are worth at today’s price. Prices refresh every 10 seconds; tap a card for its history.</span></div>
+      <button class="linkbtn sm act" onClick=${() => A.dismissTip('rates')}>Got it</button></div>`}
     ${guest && html`<div class="notice plain"><${Icon} n="lock" c="sm"/><div class="grow"><b>Log in to buy and redeem</b>Rates are free to browse.</div><button class="btn btn-primary btn-sm act" onClick=${A.login}>Log in</button></div>`}
     <${KycCta} S=${S} A=${A} />
 
@@ -833,7 +866,7 @@ function CartScreen({ S, A }) {
               <button disabled=${units >= MAX_UNITS} onClick=${() => A.cartUnits(l.pid, l.units + 1)} aria-label="Increase quantity"><${Icon} n="plus" c="sm"/></button>
             </div></div>
           <div style="text-align:right"><b>${fmt((prices[l.pid] || 0) * l.units)}</b>
-            <button class="iconbtn" style="margin:4px -10px 0 auto;color:var(--text-2)" onClick=${() => A.cartUnits(l.pid, 0)} aria-label=${`Remove ${pname(p)}`}><${Icon} n="trash" c="sm"/></button></div>
+            <button class="iconbtn" style="margin:4px -10px 0 auto;color:var(--text-2)" onClick=${() => A.removeLine(l.pid)} aria-label=${`Remove ${pname(p)}`}><${Icon} n="trash" c="sm"/></button></div>
         </div>`; })}
       </div>
       <${LimitBar} S=${S} add=${total} />
@@ -873,6 +906,7 @@ function PayScreen({ S, A }) {
         </div>
       </section>
       <${Notice} kind="plain" icon="shield">Metal is added to your wallet as soon as PGBX confirms your payment. If anything goes wrong, PGBX completes the order or refunds you.</${Notice}>
+      ${S.offline && html`<${Notice} kind="warning" icon="wifiOff" title="You’re offline">Connect to the internet to pay. Your order is kept on this screen.</${Notice}>`}
       ${over && html`<${Notice} kind="warning" title="Over today’s limit">This order would take you over today’s limit of ${fmt(DAY_LIMIT)}.</${Notice}>`}
       ${S.stale && html`<${StaleBanner}/>`}
       <${Demo} title="Simulate a problem">
@@ -882,7 +916,7 @@ function PayScreen({ S, A }) {
       </${Demo}>
     </div>
     <${ActionBar}>
-      <button class="btn btn-primary" disabled=${S.stale || S.paying || over} onClick=${A.pay}>${S.paying ? html`<span class="spin"></span> Processing` : html`<${Icon} n="lock" c="sm"/> Pay ${fmt(total)}`}</button>
+      <button class="btn btn-primary" disabled=${S.stale || S.paying || over || S.offline} onClick=${A.pay}>${S.paying ? html`<span class="spin"></span> Processing` : html`<${Icon} n="lock" c="sm"/> Pay ${fmt(total)}`}</button>
     </${ActionBar}>
   </div>`;
 }
@@ -903,13 +937,13 @@ function Processing({ fail }) {
   </div>`;
 }
 
-function Receipt({ S, A, oid }) {
+function Receipt({ S, A, oid, showBack }) {
   const o = S.orders.find(x => x.id === oid); const flagged = o.status === 'flagged';
   const share = async () => {
     const text = `PGBX receipt ${o.receipt}: ${linesText(o.lines)}, ${fmt(o.total)}, ${dt(o.ts)}`;
     try { if (navigator.share) await navigator.share({ title: 'PGBX receipt', text }); else { await navigator.clipboard.writeText(text); A.toast('Receipt details copied'); } } catch (e) { }
   };
-  return html`<div class="scroll">
+  const body = html`
     <div class="result">
       <div class=${'mark' + (flagged ? ' warning' : '')}>${flagged
         ? html`<${Icon} n="clock"/>`
@@ -929,9 +963,9 @@ function Receipt({ S, A, oid }) {
     <div class="pad stack-btns" style="margin-top:24px">
       <button class="btn btn-primary" onClick=${() => A.tab('wallet')}>View wallet</button>
       <button class="btn btn-secondary" onClick=${share}><${Icon} n="share" c="sm"/> Share receipt</button>
-      <button class="btn btn-tertiary" onClick=${() => A.tab('rates')}>Done</button>
-    </div>
-  </div>`;
+      ${!showBack && html`<button class="btn btn-tertiary" onClick=${() => A.tab('rates')}>Done</button>`}
+    </div>`;
+  return showBack ? html`<div class="page"><${TopBar} title="Receipt" onBack=${A.back} /><div class="scroll from-inbox">${body}</div></div>` : html`<div class="scroll">${body}</div>`;
 }
 
 /* ============================================================
@@ -966,6 +1000,8 @@ function KycScreen({ S, A, next }) {
     ${shot[k] ? html`<${IdCardArt} back=${back} /><span class="okmark"><${Icon} n="check" c="sm"/></span>`
       : busy ? html`<span class="scanline"></span><span>Hold steady…</span>` : html`<span>Place the ${back ? 'back' : 'front'} of your CNIC inside the frame</span>`}
   </div>`;
+  // The phone's back gesture goes to the previous step, like the back button, instead of abandoning the check
+  useEffect(() => { A.guard(step > 0 && step < 5 ? () => setStep(x => Math.max(0, x - 1)) : null); return () => A.guard(null); }, [step]);
   const F = (k, label, input) => html`<label class="field"><span class="lbl">${label}</span>${input}${show(k) && html`<div class="hint err">${msgs[k]}</div>`}</label>`;
   return html`<div class="page">
     <${TopBar} title=${step < 5 ? `Step ${Math.min(step + 1, 5)} of 5` : 'Identity'} onBack=${step > 0 && step < 5 ? () => setStep(step - 1) : A.back} />
@@ -975,7 +1011,7 @@ function KycScreen({ S, A, next }) {
         <h2 style="font-size:24px">${titles[step]}</h2>
         ${step === 0 && html`<p class="muted" style="margin-top:8px">${re ? 'You changed your identity details, so PGBX needs to check them again before your next purchase.' : 'PGBX checks your identity once, before your first purchase. It takes about 2 minutes.'}</p>
           <div class="group" style="margin:20px 0 0">${[['Your CNIC details', 'Number, name, date of birth and expiry'], ['Photos of your CNIC', 'Front and back'], ['A selfie', 'Matched to your CNIC photo']].map(([t, d], i) => html`<div class="row"><span class="kn">${i + 1}</span><div class="rt"><b>${t}</b><span>${d}</span></div></div>`)}</div>
-          <p class="small muted" style="margin-top:12px">Your details are encrypted and used only to verify your identity.</p>
+          <p class="small muted" style="margin-top:12px">Your details are encrypted and used only to verify your identity. We’ll ask to use your camera for the photos.</p>
           <button class="btn btn-primary" style="margin-top:24px" onClick=${() => setStep(1)}>Start</button>`}
         ${step === 1 && html`<div>
           ${F('cnic', 'CNIC number', html`<input class=${'inp' + (show('cnic') ? ' bad' : '')} inputmode="numeric" autocomplete="off" placeholder="00000-0000000-0" value=${fmtCnic(f.cnic)} onBlur=${() => setTouched(t => ({ ...t, cnic: true }))} onInput=${e => setF({ ...f, cnic: fmtCnic(e.target.value) })} />`)}
@@ -1032,6 +1068,11 @@ function ProfileScreen({ S, A }) {
   const emailBad = f.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email);
   const nameBad = f.name.trim().length < 3;
   const numOk = PK_MOBILE.test(ph.num);
+  // Leaving with unsaved edits asks first, whichever way the customer leaves (back, tab bar or the phone's back gesture)
+  useEffect(() => {
+    A.guard(dirty ? cont => A.confirm({ title: 'Discard your changes?', body: 'Your edits to personal details haven’t been saved.', confirm: 'Discard changes', cancel: 'Keep editing', danger: true, onConfirm: cont }) : null);
+    return () => A.guard(null);
+  }, [dirty]);
   return html`<div class="page">
     <${TopBar} title="Personal details" onBack=${A.back} />
     <div class="scroll">
@@ -1195,6 +1236,7 @@ function StatementScreen({ S, A }) {
       </div>
       ${d && html`<div class="card" style="margin-top:16px">
         <div class="kv"><span>Transactions</span><b>${d.entries.length}</b></div>
+        ${d.entries.length === 0 && html`<div class="hint" style="margin:0 0 4px">No activity in this period. Choose a longer period to include more.</div>`}
         <div class="kv"><span>Opening holdings</span><b style="max-width:60%">${holdText(d.opening)}</b></div>
         <div class="kv"><span>Closing holdings</span><b style="max-width:60%">${holdText(d.closing)}</b></div>
       </div>
@@ -1295,7 +1337,8 @@ function RedeemScreen({ S, A }) {
       </div>
       <${Notice} kind="plain" icon="idcard"><b>Bring your original CNIC</b>The dealer checks it against your account. Your code works once, and only at the dealer you choose.</${Notice}>
     </section>
-    <div class="pad" style="margin-top:24px"><button class="btn btn-primary" disabled=${!canConfirm} onClick=${() => A.redeem(pid, units, did)}>${did ? `Reserve ${units} bar${units > 1 ? 's' : ''} for collection` : 'Choose a dealer'}</button></div>
+    ${S.offline && html`<${Notice} kind="warning" icon="wifiOff" title="You’re offline">Connect to the internet to reserve a collection.</${Notice}>`}
+    <div class="pad" style="margin-top:24px"><button class="btn btn-primary" disabled=${!canConfirm || S.offline} onClick=${() => A.redeem(pid, units, did)}>${did ? `Reserve ${units} bar${units > 1 ? 's' : ''} for collection` : 'Choose a dealer'}</button></div>
     `}
     ${past.length > 0 && html`<section class="sec"><div class="sec-h"><h3>Past collections</h3></div><div class="group inset-thumb">${past.map(r => html`<${RedemptionRow} r=${r} S=${S} A=${A}/>`)}</div></section>`}
   </div>`;
@@ -1376,11 +1419,12 @@ function InboxScreen({ S, A }) {
     <${TopBar} title="Notifications" onBack=${A.back} right=${html`<button class="iconbtn" onClick=${() => A.push({ name: 'notifsettings' })} aria-label="Notification settings"><${Icon} n="sliders"/></button>`} />
     <div class="scroll">
       ${S.notifications.length === 0 ? html`<${Empty} icon="bell" title="No notifications yet" body="Purchases, collections, price alerts and security notices will appear here." />`
-        : html`<div class="group inset">${S.notifications.map(n => html`<div class="row" style="align-items:flex-start">
+        : html`<div class="group inset">${S.notifications.map(n => { const inner = html`
           <span class=${'ri' + (N_TONE[n.kind] || '')}><${Icon} n=${N_ICON[n.kind] || 'bell'} c="sm"/></span>
           <div class="rt"><b>${n.title}</b><span>${n.body}</span><span class="tiny" style="margin-top:4px">${rel(n.ts, S.now)}</span></div>
-          ${unreadAtOpen.has(n.id) && html`<span class="ldot" style="margin-top:6px;background:var(--danger);box-shadow:none" aria-label="Unread"></span>`}
-        </div>`)}</div>`}
+          ${unreadAtOpen.has(n.id) && html`<span class="ldot unread" aria-label="Unread"></span>`}
+          ${n.link && html`<${Icon} n="chev" c="sm chev"/>`}`;
+          return n.link ? html`<button class="row" style="align-items:flex-start" onClick=${() => A.openLink(n.link)}>${inner}</button>` : html`<div class="row" style="align-items:flex-start">${inner}</div>`; })}</div>`}
     </div>
   </div>`;
 }
@@ -1393,7 +1437,16 @@ function NotifSettings({ S, A }) {
         ${[['push', 'Push notifications', 'On this phone', 'bell'], ['sms', 'SMS', 'To your mobile number', 'phone'], ['email', 'Email', S.profile.email || 'Add an email in Personal details', 'mail']].map(([k, l, d, ic]) => html`<button class="row" onClick=${() => A.set(s => ({ notifPrefs: { ...s.notifPrefs, [k]: !s.notifPrefs[k] } }))} role="switch" aria-checked=${prefs[k]}>
           <span class="ri"><${Icon} n=${ic} c="sm"/></span><div class="rt"><b>${l}</b><span>${d}</span></div><${Switch} on=${prefs[k]} /></button>`)}
       </div>
-      <p class="foot">Purchases, collections, security notices and account changes always appear in the app. These settings control where else we send them.</p>
+      <p class="foot">Where we send notifications, besides the app.</p>
+      <section class="sec"><div class="sec-h"><h3>What we notify you about</h3></div>
+        <div class="group">
+          <button class="row" onClick=${() => A.set(s => ({ notifPrefs: { ...s.notifPrefs, alerts: s.notifPrefs.alerts === false } }))} role="switch" aria-checked=${prefs.alerts !== false}>
+            <div class="rt"><b>Price alerts</b><span>When a price reaches a target you set</span></div><${Switch} on=${prefs.alerts !== false} /></button>
+          <div class="row"><div class="rt"><b>Purchases and collections</b><span>Receipts, collection codes and dealer updates. Always on, because they’re about your money and metal.</span></div><span class="tag neutral">Always on</span></div>
+          <div class="row"><div class="rt"><b>Security</b><span>New logins, PIN and number changes. Always on to protect your account.</span></div><span class="tag neutral">Always on</span></div>
+        </div>
+        <p class="foot">PGBX doesn’t send marketing messages from this app.</p>
+      </section>
     </div>
   </div>`;
 }
@@ -1453,11 +1506,51 @@ function AccountScreen({ S, A }) {
         ${R({ icon: 'info', label: 'About this prototype', value: APP_VERSION.split(' ')[0], go: info('about') })}
       </div></section>
 
+    <section class="sec"><div class="sec-h"><h3>Your data</h3></div>
+      <div class="group inset">
+        ${R({ icon: 'download', label: 'Download your statement', go: () => A.push({ name: 'statement' }) })}
+        ${R({ icon: 'x', label: 'Close account', tone: 'danger', go: () => A.push({ name: 'closeaccount' }) })}
+      </div></section>
+
     <div class="pad stack-btns" style="margin-top:32px">
       <button class="btn btn-secondary" onClick=${A.lockNow}><${Icon} n="lock" c="sm"/> Lock app</button>
       <button class="btn btn-tertiary" style="color:var(--danger)" onClick=${logout}>Log out</button>
     </div>
     <p class="foot" style="text-align:center">PGBX ${APP_VERSION}</p>
+  </div>`;
+}
+
+// Closing an account: easy to find, clear about consequences, and guided when something must happen first.
+function CloseAccount({ S, A }) {
+  const bars = PRODUCTS.reduce((a, p) => a + (S.holdings[p.id] || 0), 0);
+  const active = S.redemptions.filter(r => ['requested', 'ready'].includes(S.statusOf(r))).length;
+  const pending = S.orders.filter(o => o.status === 'flagged').length;
+  const blockers = [
+    bars > 0 && { t: `You still hold ${bars} bar${bars > 1 ? 's' : ''} worth ${fmt(S.walletValue.total)}`, d: 'Collect them at a dealer first. Selling back to PGBX: ', tbc: true, act: 'Collect your bars', go: () => A.tab('redeem') },
+    active > 0 && { t: `${active} collection${active > 1 ? ' is' : 's are'} still open`, d: 'Collect or cancel them first.', act: 'View collections', go: () => A.tab('redeem') },
+    pending > 0 && { t: `${pending} order${pending > 1 ? ' is' : 's are'} still being completed`, d: 'Wait until PGBX operations completes it.', act: 'View wallet', go: () => A.tab('wallet') },
+  ].filter(Boolean);
+  const close = () => A.confirm({ title: 'Close your PGBX account?', body: 'You won’t be able to log in or buy with this account again. Your personal details are removed from this phone. This can’t be undone.', confirm: 'Close account', cancel: 'Keep my account', danger: true, onConfirm: A.closeAccount });
+  return html`<div class="page">
+    <${TopBar} title="Close account" onBack=${A.back} />
+    <div class="scroll">
+      <div class="pad"><p class="muted">We’re sorry to see you go. Here’s what closing your account means.</p></div>
+      ${blockers.length > 0 && html`<section class="sec"><div class="sec-h"><h3>Before you can close it</h3></div>
+        <div class="group">${blockers.map(b => html`<div class="row" style="align-items:flex-start"><span class="ri gold"><${Icon} n="alert" c="sm"/></span>
+          <div class="rt"><b>${b.t}</b><span>${b.d}${b.tbc && html`<${Tbc}/>`}</span>
+            <button class="btn btn-secondary btn-sm" style="margin-top:8px" onClick=${b.go}>${b.act}</button></div></div>`)}</div></section>`}
+      <section class="sec"><div class="sec-h"><h3>What happens</h3></div>
+        <div class="card prose" style="padding:16px">
+          <ul style="margin:0"><li>You can’t log in, buy or collect with this account again.</li>
+          <li>Your PIN, saved details and settings are removed from this phone.</li>
+          <li>PGBX keeps transaction records for as long as the law requires: <${Tbc}/></li>
+          <li>You can download your statement first from Account › Your data.</li></ul>
+        </div></section>
+      <div class="pad" style="margin-top:24px">
+        <button class="btn btn-danger" disabled=${blockers.length > 0} onClick=${close}>Close account</button>
+        ${blockers.length > 0 && html`<p class="hint" style="text-align:center">Available once the items above are done.</p>`}
+      </div>
+    </div>
   </div>`;
 }
 
@@ -1479,7 +1572,7 @@ function ChangePin({ S, A }) {
     <${Coin} size=${56} />
     <h2 key=${step}>${steps[step]}</h2>
     <div class=${'note' + (msg ? ' warn' : '')} role="status">${msg || (step === 0 ? '' : 'Avoid easy PINs like 1234 or your birth year.')}</div>
-    ${step === 0 && html`<div class="hint-demo">Demo PIN ${PIN_DEFAULT}, unless you changed it</div>`}
+    ${step === 0 && S.pin === PIN_DEFAULT && html`<div class="hint-demo">Demo PIN ${PIN_DEFAULT}</div>`}
     <${PinPad} key=${step} ok=${ok} err=${err} onComplete=${done} showFace=${false} />
   </div>`;
 }
@@ -1557,6 +1650,10 @@ function Report({ S, A }) {
   const opts = [...S.orders.map(o => ['o:' + o.id, `Order ${o.receipt}`]), ...S.redemptions.map(r => ['r:' + r.id, `Collection, code ${r.code}`])];
   const [ref, setRef] = useState(opts[0] ? opts[0][0] : 'general');
   const [text, setText] = useState('');
+  useEffect(() => {
+    A.guard(text.trim() ? cont => A.confirm({ title: 'Discard this report?', body: 'What you’ve written won’t be sent.', confirm: 'Discard report', cancel: 'Keep writing', danger: true, onConfirm: cont }) : null);
+    return () => A.guard(null);
+  }, [!!text.trim()]);
   return html`<div class="pad">
     <p class="muted">Tell us what went wrong. PGBX support will see the order or collection you choose.</p>
     <label class="field"><span class="lbl">What is it about?</span>
@@ -1566,7 +1663,7 @@ function Report({ S, A }) {
     <label class="field"><span class="lbl">What happened?</span>
       <textarea class="inp" rows="5" maxlength="1000" placeholder="For example: I paid but the bar isn’t in my wallet" value=${text} onInput=${e => setText(e.target.value)}></textarea></label>
     <div class="hint">${text.trim().length < 10 ? 'Please add a few more details.' : `${1000 - text.length} characters left`}</div>
-    <button class="btn btn-primary" style="margin-top:24px" disabled=${text.trim().length < 10} onClick=${() => { A.toast('Report sent to PGBX support (demo)'); A.back(); }}>Send report</button>
+    <button class="btn btn-primary" style="margin-top:24px" disabled=${text.trim().length < 10} onClick=${() => { A.guard(null); A.toast('Report sent to PGBX support (demo)'); A.back(); }}>Send report</button>
   </div>`;
 }
 
@@ -1574,11 +1671,12 @@ function Report({ S, A }) {
    App (shared state)
    ============================================================ */
 const TABS = [['rates', 'Rates'], ['buy', 'Buy'], ['wallet', 'Wallet'], ['redeem', 'Redeem'], ['account', 'Account']];
+const GUEST_REASON = { buy: 'Log in to buy gold and silver.', wallet: 'Log in to see your wallet.', redeem: 'Log in to collect your bars at a dealer.', account: 'Log in to manage your account.' };
 
 // Prototype data is kept in this browser so a refresh does not wipe the demo. Sample data only; nothing leaves the device.
 const STORE_KEY = 'pgbx-demo-v1';
 const KEEP = ['ledger', 'orders', 'redemptions', 'dealerStock', 'cart', 'profile', 'kyc', 'pin', 'pinFails', 'pinLockUntil', 'phone',
-  'notifications', 'notifPrefs', 'alerts', 'biometric', 'tab', 'buyMetal', 'loggedIn'];
+  'notifications', 'notifPrefs', 'alerts', 'biometric', 'tab', 'buyMetal', 'loggedIn', 'pinSet', 'tips'];
 function loadSaved() { try { const d = JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); return d && d.v === 1 && d.s && typeof d.s === 'object' ? sanitizeSaved(d.s) : null; } catch (e) { return null; } }
 
 // Saved data is untrusted (it may be damaged or from an older app version): keep only well-formed values,
@@ -1607,7 +1705,9 @@ function sanitizeSaved(s) {
   if (isObj(s.profile) && str(s.profile.name) && s.profile.name.trim().length >= 1)
     out.profile = { name: s.profile.name, cnic: str(s.profile.cnic) ? s.profile.cnic : '', dob: str(s.profile.dob) ? s.profile.dob : '', email: str(s.profile.email) ? s.profile.email : '', address: str(s.profile.address) ? s.profile.address : '' };
   if (isObj(s.kyc) && ['none', 'pending', 'verified', 'reverify'].includes(s.kyc.status)) out.kyc = { status: s.kyc.status === 'pending' ? 'none' : s.kyc.status, at: num(s.kyc.at) ? s.kyc.at : null, expiry: str(s.kyc.expiry) ? s.kyc.expiry : '' };
-  if (isObj(s.notifPrefs)) out.notifPrefs = { push: s.notifPrefs.push !== false, sms: s.notifPrefs.sms !== false, email: s.notifPrefs.email === true };
+  if (isObj(s.notifPrefs)) out.notifPrefs = { push: s.notifPrefs.push !== false, sms: s.notifPrefs.sms !== false, email: s.notifPrefs.email === true, alerts: s.notifPrefs.alerts !== false };
+  if (typeof s.pinSet === 'boolean') out.pinSet = s.pinSet;
+  if (isObj(s.tips)) out.tips = Object.fromEntries(Object.entries(s.tips).filter(([, v]) => typeof v === 'boolean'));
   if (str(s.pin) && /^\d{4}$/.test(s.pin)) out.pin = s.pin;
   if (int(s.pinFails, 0, PIN_MAX_FAILS)) out.pinFails = s.pinFails;
   if (num(s.pinLockUntil)) out.pinLockUntil = Math.min(s.pinLockUntil, Date.now() + 30000);
@@ -1621,6 +1721,8 @@ function sanitizeSaved(s) {
 function saveState(st) { try { localStorage.setItem(STORE_KEY, JSON.stringify({ v: 1, s: Object.fromEntries(KEEP.map(k => [k, st[k]])) })); } catch (e) { } }
 function clearSaved() { try { localStorage.removeItem(STORE_KEY); } catch (e) { } }
 const SAVED = loadSaved();
+// A one-off message carried across a reload (for example after closing an account)
+const CARRY_NOTE = (() => { try { const n = sessionStorage.getItem('pgbx-note'); sessionStorage.removeItem('pgbx-note'); return n || ''; } catch (e) { return ''; } })();
 
 function App() {
   const [phase, setPhase] = useState(START === 'home' ? 'app' : START === 'login' ? 'login' : START === 'pin' ? 'pin' : 'splash');
@@ -1629,11 +1731,15 @@ function App() {
     guest: false, tab: 'rates', stack: [], navDir: 'fade', buyMetal: 'gold', qty: 1, lock: null, method: 'bank', paying: false, phone: '',
     rates: initialRates(), ledger: initialLedger(), orders: [], redemptions: [], dealerStock: initialDealerStock(),
     biometric: true, toast: null, lockNote: '', loginNote: '',
+    // loginIntent: why the customer was sent to log in and where to take them afterwards ({ note, go: { tab } | { pid } })
+    loginIntent: CARRY_NOTE ? { note: CARRY_NOTE } : null, pinReset: false, tips: {},
+    // pinSet: whether this phone has a PIN the customer chose. Demo links that skip login use the demo PIN.
+    pinSet: !!SAVED || START === 'home' || START === 'pin',
     profile: { name: 'Ahmed Khan', cnic: KYC_START === 'verified' ? '42000-0000000-1' : '', dob: KYC_START === 'verified' ? '1990-01-01' : '', email: '', address: '' },
     kyc: { status: KYC_START, at: KYC_START === 'verified' ? Date.now() - 20 * 86400e3 : null },
     pin: PIN_DEFAULT, pinFails: 0, pinLockUntil: 0,
     cart: [], cartBump: 0, checkout: [], checkoutFrom: 'now', simCreditFail: false,
-    notifications: [], banner: null, notifPrefs: { push: true, sms: true, email: false },
+    notifications: [], banner: null, notifPrefs: { push: true, sms: true, email: false, alerts: true },
     alerts: [], history: {}, dialog: null, offline: typeof navigator !== 'undefined' && navigator.onLine === false,
     otpCfg: { checked: false, configured: false, channels: ['sms'] },
     loggedIn: false,
@@ -1647,6 +1753,9 @@ function App() {
   const committed = useRef(new Set(st.orders.map(o => o.id)));       // idempotency (Rule 2 / NFR-1), survives refresh
   const receipts = useRef(new Set(st.orders.map(o => o.receipt)));
   const histLoading = useRef({});
+  const guardRef = useRef(null);          // set by a screen with unsaved work; called with the navigation it would interrupt
+  const stRef = useRef(null);             // latest state for the system back handler
+  const histDepth = useRef(0), ignorePop = useRef(0);
 
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
   // Network state: tell the customer when they are offline instead of silently showing old prices
@@ -1702,12 +1811,14 @@ function App() {
   const stale = st.rates.mode !== 'connecting' && now - st.rates.updatedAt > STALE_MS;
   const top = st.stack[st.stack.length - 1];
 
-  function toast(msg) { set({ toast: { msg, id: Math.random() } }); }
+  // action: { label, fn } adds a button such as Undo to the toast
+  function toast(msg, action) { set({ toast: { msg, id: Math.random(), action } }); }
   // FR-N1: every notice lands in the inbox. A push banner shows only for things that happen in the background
   // (dealer updates, alerts, operations); `quiet` is for actions the customer just took and can already see confirmed.
-  function notify(kind, title, body, quiet) {
-    const n = { id: uid() + uid(), ts: Date.now(), kind, title, body, read: false };
-    set(s => ({ notifications: [n, ...s.notifications].slice(0, 60), banner: s.notifPrefs.push && !quiet ? n : s.banner }));
+  // link: the screen the notification opens (a collection, a receipt, a rate chart), so no notification is a dead end.
+  function notify(kind, title, body, quiet, link) {
+    const n = { id: uid() + uid(), ts: Date.now(), kind, title, body, read: false, link };
+    set(s => ({ notifications: [n, ...s.notifications].slice(0, 60), banner: s.notifPrefs.push && !quiet && !(kind === 'alert' && s.notifPrefs.alerts === false) ? n : s.banner }));
   }
 
   // FR-B2: refresh locked prices at zero while on product, cart or pay
@@ -1731,12 +1842,12 @@ function App() {
     const fired = st.alerts.filter(a => a.active && (a.dir === 'above' ? st.rates[a.metal].buy >= a.target : st.rates[a.metal].buy <= a.target));
     if (!fired.length) return;
     set(s => ({ alerts: s.alerts.map(a => (fired.some(f => f.id === a.id) ? { ...a, active: false, firedAt: Date.now() } : a)) }));
-    fired.forEach(a => notify('alert', `${metalName(a.metal)} is ${a.dir} ${fmt(a.target)}`, `Buy rate is now ${fmt(st.rates[a.metal].buy)} per tola.`));
+    fired.forEach(a => notify('alert', `${metalName(a.metal)} is ${a.dir} ${fmt(a.target)}`, `Buy rate is now ${fmt(st.rates[a.metal].buy)} per tola.`, false, { name: 'history', metal: a.metal }));
   }, [st.rates.tick, st.rates.updatedAt, st.alerts.length]);
 
   useEffect(() => { saveState(st); }, KEEP.map(k => st[k]));
 
-  useEffect(() => { if (!st.toast) return; const t = setTimeout(() => set({ toast: null }), 2800); return () => clearTimeout(t); }, [st.toast]);
+  useEffect(() => { if (!st.toast) return; const t = setTimeout(() => set({ toast: null }), st.toast.action ? 5000 : 2800); return () => clearTimeout(t); }, [st.toast]);
   useEffect(() => { if (!st.banner) return; const t = setTimeout(() => set({ banner: null }), 3800); return () => clearTimeout(t); }, [st.banner]);
 
   // Derived wallet state from the ledger (FR-W3)
@@ -1756,19 +1867,35 @@ function App() {
     // Confirmation sheet for consequential actions: { title, body, confirm, cancel, danger, onConfirm }
     confirm: d => set({ dialog: d }),
     closeDialog: () => set({ dialog: null }),
+    // Leaving a screen with unsaved work asks first (see `guard`); everything else navigates immediately.
+    leave: fn => (guardRef.current ? guardRef.current(fn) : fn()),
+    guard: fn => { guardRef.current = fn; },
     tab: t => {
-      if (st.guest && t !== 'rates') { A.login(); return; }
-      set(s => ({ tab: t, stack: [], navDir: s.stack.length ? 'back' : tabIndex(t) > tabIndex(s.tab) ? 'fwd' : tabIndex(t) < tabIndex(s.tab) ? 'back' : 'fade' }));
+      if (st.guest && t !== 'rates') { A.login(GUEST_REASON[t], { tab: t }); return; }
+      A.leave(() => set(s => ({ tab: t, stack: [], navDir: s.stack.length ? 'back' : tabIndex(t) > tabIndex(s.tab) ? 'fwd' : tabIndex(t) < tabIndex(s.tab) ? 'back' : 'fade' })));
     },
-    push: r => { if (st.guest) { A.login(); return; } set(s => ({ stack: [...s.stack, r], navDir: 'fwd' })); },
-    back: () => set(s => ({ stack: s.stack.slice(0, -1), navDir: 'back' })),
-    login: () => { set({ stack: [], loginNote: '' }); setPhase('login'); },
-    logout: () => { set({ stack: [], guest: false, tab: 'rates', loginNote: '', loggedIn: false }); setPhase('login'); },
+    push: r => { if (st.guest) { A.login('Log in to continue.'); return; } set(s => ({ stack: [...s.stack, r], navDir: 'fwd' })); },
+    back: () => A.leave(() => set(s => ({ stack: s.stack.slice(0, -1), navDir: 'back' }))),
+    // Open whatever a notification points to; receipts opened this way get a back button.
+    openLink: link => { if (!link) return; if (link.name === 'receipt' && !st.orders.some(o => o.id === link.oid)) return; if (link.name === 'code' && !st.redemptions.some(r => r.id === link.rid)) return;
+      set(s => ({ banner: null, navDir: 'fwd', stack: [...s.stack, link] })); },
+    // Guests are told why they need to log in, and taken where they were going afterwards.
+    login: (note, go) => { set({ stack: [], loginNote: '', loginIntent: note ? { note, go } : null }); setPhase('login'); },
+    logout: () => { set({ stack: [], guest: false, tab: 'rates', loginNote: '', loginIntent: { note: 'You’ve logged out. Your holdings are safe.' }, loggedIn: false }); setPhase('login'); },
+    forgotPin: () => { set({ pinReset: true, lockNote: '', loginNote: '', loginIntent: { note: 'Log in with your mobile number to choose a new PIN.' } }); setPhase('login'); },
+    dismissTip: k => set(s => ({ tips: { ...s.tips, [k]: true } })),
+    removeLine: pid => {
+      const line = st.cart.find(l => l.pid === pid); if (!line) return;
+      set(s => ({ cart: s.cart.filter(l => l.pid !== pid) }));
+      toast(`Removed ${pname(P[pid])}`, { label: 'Undo', fn: () => set(s => (s.cart.some(l => l.pid === pid) ? {} : { cart: [...s.cart, line] })) });
+    },
+    // Closing the account: in a real app the server closes it; here the demo data on this phone is erased.
+    closeAccount: () => { clearSaved(); try { sessionStorage.setItem('pgbx-note', 'Your PGBX account has been closed and your details were removed from this phone.'); } catch (e) { } location.href = location.pathname + '?start=login'; },
     resetDemo: () => { clearSaved(); location.href = location.pathname; },
     lockNow: () => { set({ lockNote: 'App locked', stack: [] }); setPhase('pin'); },
     openHistory: metal => set(s => ({ stack: [...s.stack, { name: 'history', metal }], navDir: 'fwd' })),
     openProduct: pid => {
-      if (st.guest) { A.login(); return; }
+      if (st.guest) { A.login(`Log in to buy ${pname(P[pid])}.`, { pid }); return; }
       const p = P[pid];
       set(s => ({ buyMetal: p.metal, qty: 1, navDir: 'fwd', stack: [...s.stack, { name: 'product', pid }], lock: lockFor(s, [pid]) }));
     },
@@ -1791,7 +1918,7 @@ function App() {
       set(s => ({ checkout: lines, checkoutFrom: from, paying: false, navDir: 'fwd', stack: [...s.stack, s.kyc.status === 'verified' ? { name: 'pay', orderKey } : { name: 'kyc', next: 'pay', orderKey }] }));
     },
     pay: () => {
-      if (stale || st.paying) return;
+      if (stale || st.paying || st.offline) return;
       const key = top.orderKey; const fail = st.simCreditFail;
       const lines = st.checkout.map(l => ({ ...l, unit: st.lock.prices[l.pid] }));
       const total = lines.reduce((a, l) => a + l.unit * l.units, 0);
@@ -1810,14 +1937,14 @@ function App() {
           cart: s.checkoutFrom === 'cart' ? [] : s.cart,
           stack: [{ name: 'receipt', oid: key }], lock: null,
         }));
-        if (fail) notify('purchase', 'Payment received, credit pending', `${rno} · ${fmt(total)}. PGBX operations is completing your order.`, true);
-        else notify('purchase', 'Purchase confirmed', `${linesText(lines)} · ${fmt(total)} · ${rno}`, true);
+        if (fail) notify('purchase', 'Payment received, credit pending', `${rno} · ${fmt(total)}. PGBX operations is completing your order.`, true, { name: 'receipt', oid: key, from: 'inbox' });
+        else notify('purchase', 'Purchase confirmed', `${linesText(lines)} · ${fmt(total)} · ${rno}`, true, { name: 'receipt', oid: key, from: 'inbox' });
       }, fail ? 5200 : 1800);
     },
     resolveOrder: id => {
       const o = st.orders.find(x => x.id === id); if (!o || o.status !== 'flagged') return;
       set(s => ({ orders: s.orders.map(x => (x.id === id ? { ...x, status: 'credited' } : x)), ledger: credit(s, o) }));
-      notify('purchase', 'Order credited', `${linesText(o.lines)} is now in your wallet · ${o.receipt}`);
+      notify('purchase', 'Order completed', `${linesText(o.lines)} is now in your wallet · ${o.receipt}`, false, { name: 'receipt', oid: o.id, from: 'inbox' });
     },
     submitKyc: f => { set(s => ({ kyc: { ...s.kyc, status: 'pending', expiry: f.expiry }, profile: { ...s.profile, name: f.name.trim(), cnic: f.cnic, dob: f.dob } })); notify('account', 'Identity check submitted', 'We are checking your CNIC and selfie.', true); },
     kycVerified: () => { set(s => ({ kyc: { ...s.kyc, status: 'verified', at: Date.now() } })); notify('account', 'Identity verified', 'You can now buy gold and silver.', true); },
@@ -1837,7 +1964,11 @@ function App() {
     setPin: p => { set({ pin: p }); notify('security', 'PIN changed', 'Your app PIN was changed on this device.', true); toast('PIN changed'); },
     markAllRead: () => set(s => ({ notifications: s.notifications.map(n => ({ ...n, read: true })) })),
     addAlert: (metal, dir, target) => { set(s => ({ alerts: [...s.alerts, { id: uid(), metal, dir, target, active: true }] })); toast(`We’ll notify you when ${metalName(metal).toLowerCase()} goes ${dir} ${fmt(target)}`); },
-    removeAlert: id => set(s => ({ alerts: s.alerts.filter(a => a.id !== id) })),
+    removeAlert: id => {
+      const a = st.alerts.find(x => x.id === id); if (!a) return;
+      set(s => ({ alerts: s.alerts.filter(x => x.id !== id) }));
+      toast('Alert deleted', { label: 'Undo', fn: () => set(s => (s.alerts.some(x => x.id === id) ? {} : { alerts: [...s.alerts, a] })) });
+    },
     loadHistory: async (metal, range) => {
       const key = metal + ':' + range; const h = st.history[key];
       if ((h && h.points && Date.now() - h.at < 120e3) || histLoading.current[key]) return;
@@ -1845,7 +1976,7 @@ function App() {
       set(s => ({ history: { ...s.history, [key]: { ...(s.history[key] || {}), error: false } } }));
       let got = null;
       for (const b of API_BASES) {
-        try { const r = await fetch(`${b}/api/history?metal=${metal}&range=${range}`); if (!r.ok) continue; const d = await r.json(); if (d.ok && d.points && d.points.length > 1) { got = d; break; } } catch (e) { }
+        try { const r = await fetchT(`${b}/api/history?metal=${metal}&range=${range}`, {}, 10000); if (!r.ok) continue; const d = await r.json(); if (d.ok && d.points && d.points.length > 1) { got = d; break; } } catch (e) { if (e.name === 'AbortError') break; }
       }
       histLoading.current[key] = false;
       set(s => ({ history: { ...s.history, [key]: got ? { points: got.points, source: got.source, usdPkr: got.usdPkr, at: Date.now() } : { error: true } } }));
@@ -1856,10 +1987,10 @@ function App() {
       const r = { id: 'RD-' + uid(), pid, units, dealerId, code, createdAt: Date.now(), expiresAt: Date.now() + RESERVE_MS, status: 'requested' };
       const d = DEALERS.find(x => x.id === dealerId);
       set(s => ({ redemptions: [...s.redemptions, r], navDir: 'fwd', stack: [...s.stack, { name: 'code', rid: r.id }] }));
-      notify('redemption', 'Reserved for collection', `${units} × ${pname(P[pid])} at ${d.name}. Code ${code}, valid for 24 hours.`, true);
+      notify('redemption', 'Reserved for collection', `${units} × ${pname(P[pid])} at ${d.name}. Code ${code}, valid for 24 hours.`, true, { name: 'code', rid: r.id });
     },
-    cancelRedemption: id => { const r = st.redemptions.find(x => x.id === id); set(s => ({ redemptions: s.redemptions.map(x => (x.id === id ? { ...x, status: 'cancelled' } : x)) })); notify('redemption', 'Collection cancelled', `${r.units} × ${pname(P[r.pid])} is back in your wallet.`, true); toast('Collection cancelled'); },
-    markReady: id => { const r = st.redemptions.find(x => x.id === id); set(s => ({ redemptions: s.redemptions.map(x => (x.id === id && x.status === 'requested' ? { ...x, status: 'ready' } : x)) })); notify('redemption', 'Ready for collection', `${pname(P[r.pid])} is ready at ${DEALERS.find(d => d.id === r.dealerId).name}. Bring your CNIC.`); },
+    cancelRedemption: id => { const r = st.redemptions.find(x => x.id === id); set(s => ({ redemptions: s.redemptions.map(x => (x.id === id ? { ...x, status: 'cancelled' } : x)) })); notify('redemption', 'Collection cancelled', `${r.units} × ${pname(P[r.pid])} is back in your wallet.`, true, { name: 'code', rid: id }); toast('Collection cancelled'); },
+    markReady: id => { const r = st.redemptions.find(x => x.id === id); set(s => ({ redemptions: s.redemptions.map(x => (x.id === id && x.status === 'requested' ? { ...x, status: 'ready' } : x)) })); notify('redemption', 'Ready for collection', `${pname(P[r.pid])} is ready at ${DEALERS.find(d => d.id === r.dealerId).name}. Bring your CNIC.`, false, { name: 'code', rid: id }); },
     handOver: id => {
       const r = st.redemptions.find(x => x.id === id);
       if (!r || r.status !== 'ready') return;            // a code works once (Rule 5)
@@ -1870,18 +2001,27 @@ function App() {
         ledger: [...s.ledger, { id: 'L-' + uid(), ts: Date.now(), pid: r.pid, delta: -r.units, reason: 'redemption', ref: r.id, dealer: d.name, serials }],
         dealerStock: { ...s.dealerStock, [d.id]: { ...s.dealerStock[d.id], [r.pid]: s.dealerStock[d.id][r.pid] - r.units } },
       }));
-      notify('redemption', 'Collected', `${r.units} × ${pname(p)} collected at ${d.name}. Serial ${serials.join(', ')}.`);
+      notify('redemption', 'Collected', `${r.units} × ${pname(p)} collected at ${d.name}. Serial ${serials.join(', ')}.`, false, { name: 'code', rid: id });
     },
   };
 
   const S = { ...st, now, stale, holdings, reserved, walletValue, statusOf, spentToday, unread };
   const framed = window.innerWidth > 500;
-  const enterApp = () => { lastActive.current = Date.now(); set({ guest: false, lockNote: '', loginNote: '', navDir: 'fade', pinFails: 0, pinLockUntil: 0, loggedIn: true }); setPhase('app'); };
-  const browse = () => { set({ guest: true, tab: 'rates', stack: [], lockNote: '', navDir: 'fade' }); setPhase('app'); };
+  const enterApp = () => {
+    lastActive.current = Date.now();
+    set(s => { const go = s.loginIntent && s.loginIntent.go;
+      return { guest: false, lockNote: '', loginNote: '', loginIntent: null, navDir: 'fade', pinFails: 0, pinLockUntil: 0, loggedIn: true,
+        ...(go && go.tab ? { tab: go.tab, stack: [] } : {}),
+        ...(go && go.pid ? { buyMetal: P[go.pid].metal, qty: 1, stack: [{ name: 'product', pid: go.pid }], lock: lockFor(s, [go.pid]) } : {}) }; });
+    setPhase('app');
+  };
+  // After the code is verified: a phone without a chosen PIN (first login, or "Forgot PIN") creates one first.
+  const afterLogin = () => { if (!st.pinSet || st.pinReset) setPhase('createpin'); else enterApp(); };
+  const browse = () => { set({ guest: true, tab: 'rates', stack: [], lockNote: '', loginIntent: null, navDir: 'fade' }); setPhase('app'); };
   const pinFail = () => {
     const f = st.pinFails + 1;
     if (f >= PIN_MAX_FAILS) {
-      set({ pinFails: 0, pinLockUntil: 0, stack: [], loggedIn: false, loginNote: `${PIN_MAX_FAILS} wrong PINs. For your security, log in again with your mobile number.` });
+      set({ pinFails: 0, pinLockUntil: 0, stack: [], loggedIn: false, pinReset: true, loginNote: `${PIN_MAX_FAILS} wrong PINs. For your security, log in again with your mobile number, then choose a new PIN.` });
       notify('security', 'Session ended after wrong PINs', `${PIN_MAX_FAILS} wrong PIN attempts on this device. If this wasn’t you, contact PGBX.`);
       setPhase('login'); return;
     }
@@ -1896,7 +2036,7 @@ function App() {
     else if (n === 'cart') content = html`<${CartScreen} S=${S} A=${A}/>`;
     else if (n === 'pay') content = html`<${PayScreen} S=${S} A=${A}/>`;
     else if (n === 'processing') content = html`<${Processing} fail=${top.fail}/>`;
-    else if (n === 'receipt') content = html`<${Receipt} S=${S} A=${A} oid=${top.oid}/>`;
+    else if (n === 'receipt') content = html`<${Receipt} S=${S} A=${A} oid=${top.oid} showBack=${top.from === 'inbox'}/>`;
     else if (n === 'code') content = html`<${CodeScreen} S=${S} A=${A} rid=${top.rid}/>`;
     else if (n === 'info') content = html`<${InfoScreen} S=${S} A=${A} kind=${top.kind}/>`;
     else if (n === 'changepin') content = html`<${ChangePin} S=${S} A=${A}/>`;
@@ -1906,6 +2046,7 @@ function App() {
     else if (n === 'inbox') content = html`<${InboxScreen} S=${S} A=${A}/>`;
     else if (n === 'notifsettings') content = html`<${NotifSettings} S=${S} A=${A}/>`;
     else if (n === 'statement') content = html`<${StatementScreen} S=${S} A=${A}/>`;
+    else if (n === 'closeaccount') content = html`<${CloseAccount} S=${S} A=${A}/>`;
   } else {
     const M = { rates: RatesHome, buy: BuyList, wallet: WalletScreen, redeem: RedeemScreen, account: AccountScreen }[st.tab];
     content = html`<${M} S=${S} A=${A}/>`;
@@ -1923,17 +2064,43 @@ function App() {
   const hideTabs = top && ['product', 'cart', 'pay', 'processing', 'receipt', 'kyc', 'changepin'].includes(top.name);
   const enterCls = st.navDir === 'fwd' ? 'enter-fwd' : st.navDir === 'back' ? 'enter-back' : 'enter';
 
+  // System back (Android back button, iOS edge swipe, browser back) walks back through the app's screens.
+  // Each pushed screen gets a history entry; going back in the app removes it again.
+  stRef.current = st;
+  useEffect(() => {
+    const want = phase === 'app' ? st.stack.length : 0, d = want - histDepth.current;
+    if (d > 0) { for (let i = 0; i < d; i++) history.pushState({ pgbx: histDepth.current + i + 1 }, ''); }
+    else if (d < 0) { ignorePop.current++; history.go(d); }
+    histDepth.current = want;
+  }, [st.stack.length, phase]);
+  useEffect(() => {
+    const onPop = () => {
+      if (ignorePop.current) { ignorePop.current--; return; }
+      histDepth.current = Math.max(0, histDepth.current - 1);
+      const s = stRef.current, top = s.stack[s.stack.length - 1];
+      const stay = () => { history.pushState({ pgbx: histDepth.current + 1 }, ''); histDepth.current++; };
+      if (s.dialog) { stay(); set({ dialog: null }); return; }              // back closes an open dialog first
+      if (!top) return;
+      if (top.name === 'processing') { stay(); return; }                     // never leave a payment half way
+      const pop = () => set(x => ({ stack: x.stack.slice(0, -1), navDir: 'back' }));
+      if (guardRef.current) { stay(); guardRef.current(pop); return; }       // unsaved work: ask first
+      pop();
+    };
+    addEventListener('popstate', onPop); return () => removeEventListener('popstate', onPop);
+  }, []);
+
   const active = () => { lastActive.current = Date.now(); };
   return html`<div class="device" onPointerDown=${active} onKeyDown=${active} onWheel=${active} onTouchMove=${active} onScrollCapture=${active} onInput=${active}>
     <div class="device-inner">
       <${StatusBar} light=${darkTop} />
       ${phase === 'splash' && html`<${Splash} rates=${st.rates} quick=${returning} onDone=${() => {  setPhase(returning ? 'pin' : 'login'); }} />`}
-      ${phase === 'login' && html`<${Login} S=${S} note=${st.loginNote} onRetry=${checkOtp} onDone=${phone => {
-        set({ phone }); enterApp();
+      ${phase === 'login' && html`<${Login} S=${S} note=${st.loginNote} intent=${st.loginIntent && st.loginIntent.note} hasPin=${st.pinSet && !st.pinReset} onRetry=${checkOtp} onDone=${phone => {
+        set({ phone }); afterLogin();
         notify('security', 'New login on this device', `Logged in with +92 ${phone.slice(0, 3)} ${phone.slice(3)}. If this wasn’t you, contact PGBX.`, true);
       }} onBrowse=${browse} onPin=${() => setPhase('pin')} />`}
       ${phase === 'pin' && html`<${LockScreen} pin=${st.pin} fails=${st.pinFails} lockUntil=${st.pinLockUntil} now=${now} biometric=${st.biometric} note=${st.lockNote}
-          onUnlock=${enterApp} onFail=${pinFail} onBrowse=${browse} onLogin=${() => { set({ lockNote: '', loginNote: '' }); setPhase('login'); }} />`}
+          onUnlock=${enterApp} onFail=${pinFail} onBrowse=${browse} onForgot=${A.forgotPin} onLogin=${() => { set({ lockNote: '', loginNote: '', loginIntent: null }); setPhase('login'); }} />`}
+      ${phase === 'createpin' && html`<${CreatePin} reset=${st.pinReset} onDone=${p => { set({ pin: p, pinSet: true, pinReset: false }); enterApp(); toast(st.pinReset ? 'New PIN saved. Use it to unlock PGBX on this phone.' : 'PIN created. Use it to unlock PGBX on this phone.'); }} />`}
       ${phase === 'app' && html`<div class=${'app' + (framed ? ' framed' : '') + (hideTabs ? ' no-tabs' : '')}>
         <div class="view"><div class=${enterCls} key=${routeKey} style="position:absolute;inset:0">${content}</div></div>
         ${!hideTabs && html`<nav class="tabbar" aria-label="Main"><div class="tabs">
@@ -1942,8 +2109,9 @@ function App() {
             <${Icon} n=${k}/>${l}${st.guest && k !== 'rates' ? html`<span class="lk" aria-label="Log in required"><${Icon} n="lock" c="xs"/></span>` : ''}</button>`)}
         </div></nav>`}
         ${st.offline && html`<div class="offline" role="status"><${Icon} n="wifiOff" c="sm"/> You’re offline. Prices will update when you reconnect.</div>`}
-        ${st.banner && html`<${PushBanner} n=${st.banner} onOpen=${() => set(s => ({ banner: null, stack: [...s.stack, { name: 'inbox' }], navDir: 'fwd' }))} />`}
-        ${st.toast && html`<div class="toast" key=${st.toast.id} role="status"><${Icon} n="check" c="sm"/>${st.toast.msg}</div>`}
+        ${st.banner && html`<${PushBanner} n=${st.banner} onOpen=${() => (st.banner.link ? A.openLink(st.banner.link) : set(s => ({ banner: null, stack: [...s.stack, { name: 'inbox' }], navDir: 'fwd' })))} />`}
+        ${st.toast && html`<div class="toast" key=${st.toast.id} role="status"><${Icon} n="check" c="sm"/><span class="grow">${st.toast.msg}</span>
+          ${st.toast.action && html`<button class="toast-act" onClick=${() => { st.toast.action.fn(); set({ toast: null }); }}>${st.toast.action.label}</button>`}</div>`}
         ${st.dialog && html`<${Dialog} d=${st.dialog} onClose=${A.closeDialog} />`}
       </div>`}
     </div>

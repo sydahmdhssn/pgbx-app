@@ -119,6 +119,19 @@ Rules the screens follow:
 - Offline state, delayed rates, failed history and service outages each have a plain-language message and a way forward.
 - Every control has an accessible name and a 40 px or larger target; focus is visible; `prefers-reduced-motion` and `prefers-reduced-transparency` are respected.
 
+## How the app behaves (UX rules)
+
+- **Back works like a phone app.** The phone's back button, iOS edge swipe and browser back step back through screens. Back closes an open dialog first, steps back inside identity verification, and never leaves a payment in progress.
+- **No lost work.** Leaving Personal details, a report or identity verification with unsaved input asks first ("Discard your changes?" / "Keep editing"), whether you leave by the back button, the tab bar or the phone's back gesture. The cart survives closing the app.
+- **PIN lifecycle.** The first login asks the customer to create their own PIN (easy PINs like 1234 are refused with a reason). "Forgot PIN?" and five wrong PINs both lead to an SMS login and a new PIN. "Unlock with PIN" only appears once a PIN exists.
+- **Guests are told why.** Tapping something that needs an account explains it ("Log in to buy 1 gram Gold.") and returns them there after logging in.
+- **Forgiving actions.** Removing a cart item or deleting a price alert shows Undo. Log out, cancel collection, close account and reset demo explain their consequences before confirming.
+- **No dead ends.** Notifications open what they're about (a collection, a receipt, a price chart). Empty states say what to do next; errors offer a retry.
+- **Slow or no internet.** Requests time out (code sending 15 s, rate history 10 s) with a plain message and a retry, instead of spinning forever; payment and reservations are disabled while offline, with the reason shown and the order kept.
+- **Close account** (Account › Your data) lists anything that must happen first (bars still held, open collections, orders being completed) with a button to do it, then explains what closing means before a final confirmation.
+- **Notifications** have channels (push, SMS, email) and topics: price alerts can be turned off; purchases, collections and security notices stay on, with the reason given. Actions the customer just took are confirmed on screen, not by a banner.
+- **Contextual help.** A one-time note on Rates explains Buy and Sell prices; it stays dismissed.
+
 ## Security headers
 
 `vercel.json` sends a Content-Security-Policy (scripts only from this site, connections only to this site and
