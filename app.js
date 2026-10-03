@@ -221,13 +221,13 @@ const Icon = ({ n, c = '', s }) => html`<svg class=${'icon ' + c} viewBox="0 0 2
    ============================================================ */
 // Rolling-digit price: each digit column slides (transform only). Rolls up from 0 on first view.
 const DIGITS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-function Odo({ value, prefix = 'Rs ', decimals = 0, flash }) {
+function Odo({ value, prefix = 'Rs ', decimals = 0, flash, dir }) {
   const [ready, setReady] = useState(false);
   useEffect(() => { let r2; const r = requestAnimationFrame(() => { r2 = requestAnimationFrame(() => setReady(true)); }); return () => { cancelAnimationFrame(r); cancelAnimationFrame(r2); }; }, []);
   const s = Number(value).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
   const chars = s.split('');
   return html`<span class="odo" role="text" aria-label=${prefix + s}>
-    ${flash != null && html`<span class="odo-fl" key=${'f' + flash} aria-hidden="true"></span>`}
+    ${flash != null && html`<span class=${'odo-fl' + (dir ? ' ' + dir : '')} key=${'f' + flash} aria-hidden="true"></span>`}
     <span aria-hidden="true" style=${{ marginRight: /\s$/.test(prefix) ? '.24em' : 0 }}>${prefix.trim()}</span>
     ${chars.map((c, i) => { const k = chars.length - i;
       return /\d/.test(c)
@@ -255,6 +255,12 @@ function Coin({ size = 200, animate = false, label = 'PGBX logo' }) {
   </svg>`;
 }
 
+// Logo stage for splash, login and lock: the mark draws in, then breathes with a soft glow and a passing light.
+const Logo = ({ size, animate = true }) => html`<div class="logo-stage" style=${{ width: size + 'px', height: size + 'px' }}>
+  <span class="halo" aria-hidden="true"></span>
+  <div class="floaty"><${Coin} size=${size} animate=${animate} /><span class="sheen" aria-hidden="true"><i></i></span></div>
+</div>`;
+
 function Ingot({ metal = 'gold', w = 72, label }) {
   const k = metal === 'gold' ? 'G' : 'S';
   const ink = metal === 'gold' ? '#7a5410' : '#59646b';
@@ -278,8 +284,8 @@ function Spark({ data, color, w = 112, h = 40 }) {
   const line = pts.map(p => p.map(n => n.toFixed(1)).join(',')).join(' ');
   const last = pts[pts.length - 1];
   return html`<svg class="spark" width=${w} height=${h} viewBox=${`0 0 ${w} ${h}`} aria-hidden="true">
-    <polygon points=${`0,${h} ${line} ${w},${h}`} fill=${color} fill-opacity=".14"/>
-    <polyline points=${line} fill="none" stroke=${color} stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+    <polygon class="sa" points=${`0,${h} ${line} ${w},${h}`} fill=${color} fill-opacity=".14"/>
+    <polyline class="sl" pathLength="1" points=${line} fill="none" stroke=${color} stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
     <circle cx=${last[0]} cy=${last[1]} r="3" fill=${color}/>
   </svg>`;
 }
@@ -300,7 +306,7 @@ function Splash({ onDone, rates, quick }) {
   const finish = () => { if (out) return; setOut(true); setTimeout(onDone, 350); };
   useEffect(() => { const t = setTimeout(finish, quick ? 800 : 2100); return () => clearTimeout(t); }, []);
   return html`<div class=${'splash on-dark' + (quick ? ' quick' : '') + (out ? ' out' : '')} onClick=${finish}>
-    <${Coin} size=${quick ? 112 : 140} animate=${!quick} />
+    <${Logo} size=${quick ? 112 : 140} animate=${!quick} />
     <h1>Pakistan Gold Bullion Exchange</h1>
     ${!quick && html`<p class="tagline">Gold and silver, held for you</p>`}
     ${!quick && html`<div class="splash-status" role="status"><span class=${'ldot' + (rates.mode === 'live' ? '' : ' sim')}></span>${rates.mode === 'live' ? 'Live rates connected' : rates.mode === 'sim' ? 'Using simulated rates' : 'Connecting to live rates'}</div>`}
@@ -365,8 +371,9 @@ function Login({ S, note, onDone, onBrowse, onPin, onRetry }) {
   const viaName = v => (v === 'whatsapp' ? 'WhatsApp' : 'SMS');
   const badNum = phone.length === 10 && !valid;
   return html`<div class=${'login' + (out ? ' out' : '')}>
+    <span class="amb-wrap" aria-hidden="true"><span class="amb a"></span><span class="amb b"></span></span>
     <div class="login-top on-dark">
-      <${Coin} size=${88} animate=${true} />
+      <${Logo} size=${88} />
       <h1>Pakistan Gold Bullion Exchange</h1>
       <p>Buy 999.0 gold and silver, held for you by PGBX. Collect it at any of 250 dealers.</p>
       <div class="ticker" aria-label="Current buy rates">
@@ -461,7 +468,7 @@ function LockScreen({ pin, fails, lockUntil, now, biometric, note, onUnlock, onF
   const msg = locked ? `Too many wrong PINs. Try again in ${Math.min(30, Math.ceil((lockUntil - now) / 1000))} seconds.`
     : fails ? `Wrong PIN. ${left} attempt${left === 1 ? '' : 's'} left before you need to log in again.` : note;
   return html`<div class="lock">
-    <${Coin} size=${72} />
+    <${Logo} size=${72} animate=${false} />
     <h2>${ok ? 'Unlocked' : 'Enter your PIN'}</h2>
     <div class=${'note' + (fails || locked ? ' warn' : '')} role="status">${msg || ''}</div>
     <div class="hint-demo">Demo PIN ${PIN_DEFAULT}, unless you changed it</div>
@@ -504,7 +511,8 @@ const Seg = ({ items, value, onChange, label }) => {
 };
 const Switch = ({ on }) => html`<span class=${'switch' + (on ? ' on' : '')} aria-hidden="true"><i></i></span>`;
 const Radio = ({ on }) => html`<span class=${'radio' + (on ? ' on' : '')} aria-hidden="true"></span>`;
-const Thumb = ({ p, w = 44 }) => html`<span class=${'thumb' + (p.metal === 'silver' ? ' silver' : '')}><${Ingot} metal=${p.metal} w=${w} label=${p.short} /></span>`;
+// `shine` (seconds) staggers a light sweep across the bar, used on the Buy list and Popular products
+const Thumb = ({ p, w = 44, shine }) => html`<span class=${'thumb' + (p.metal === 'silver' ? ' silver' : '') + (shine != null ? ' shine' : '')} style=${shine != null ? { '--shine-delay': shine + 's' } : null}><${Ingot} metal=${p.metal} w=${w} label=${p.short} /></span>`;
 const CartButton = ({ S, A }) => {
   const n = S.cart.reduce((a, l) => a + l.units, 0);
   return html`<button class="iconbtn" onClick=${A.openCart} aria-label=${n ? `Cart, ${n} unit${n > 1 ? 's' : ''}` : 'Cart, empty'}><${Icon} n="cart"/>${n > 0 && html`<span class="badge" key=${'n' + n}>${n}</span>`}</button>`;
@@ -536,10 +544,18 @@ function RateCard({ rates, metal, onOpen }) {
   const hist = rates[metal].hist;
   const showChg = !loading && hist.length > 1 && Math.abs(r.chg) >= 0.01;
   const col = metal === 'gold' ? '#C8962B' : '#8C979F';
+  // Tint the price green or red for a moment when it moves
+  // (only for real moves within the same feed, not the switch from placeholder to live prices)
+  const prev = useRef({ v: r.buyTola, mode: rates.mode }); const [dir, setDir] = useState(null);
+  useEffect(() => {
+    const pv = prev.current;
+    if (r.buyTola !== pv.v) setDir(pv.mode === rates.mode ? (r.buyTola > pv.v ? 'up' : 'down') : null);
+    prev.current = { v: r.buyTola, mode: rates.mode };
+  }, [r.buyTola, rates.mode]);
   const sk = (w, h) => html`<span class="sk" style=${{ width: w + 'px', height: h + 'px', marginTop: '4px' }}></span>`;
   return html`<button class="rc" onClick=${onOpen} aria-label=${`${metalName(metal)}: buy ${fmt(r.buyTola)} per tola. Open history and price alerts`}>
     <div class="rc-head">
-      <${Ingot} metal=${metal} w=${36} />
+      <span class="shine" style=${{ '--shine-delay': metal === 'gold' ? '1.2s' : '3.6s' }}><${Ingot} metal=${metal} w=${36} /></span>
       <div><div class="rc-name">${metalName(metal)} 24K</div><div class="rc-sub">999.0 · per tola (11.664 g)</div></div>
       <div class="end">
         ${showChg && html`<span class=${'tag ' + (r.chg >= 0 ? 'success' : 'danger')} title="Change since you opened the app">${pct(r.chg)}</span>`}
@@ -547,7 +563,7 @@ function RateCard({ rates, metal, onOpen }) {
       </div>
     </div>
     <div class="rc-main">
-      <div><div class="rc-lbl">Buy</div><div class="rc-price">${loading ? sk(160, 30) : html`<${Odo} value=${r.buyTola} flash=${rates.tick} />`}</div></div>
+      <div><div class="rc-lbl">Buy</div><div class="rc-price">${loading ? sk(160, 30) : html`<${Odo} value=${r.buyTola} flash=${rates.tick} dir=${dir} />`}</div></div>
       ${!loading && hist.length >= 6 && html`<${Spark} data=${hist} color=${col} w=${96} h=${36} />`}
     </div>
     <div class="rc-grid">
@@ -606,8 +622,8 @@ function RatesHome({ S, A }) {
     <section class="sec">
       <div class="sec-h"><h3>Popular products</h3><button class="linkbtn sm" onClick=${() => A.tab('buy')}>See all</button></div>
       <div class="hscroll">
-        ${featured.map(p => html`<button class="pcard" onClick=${() => A.openProduct(p.id)}>
-          <${Thumb} p=${p} w=${64} /><b>${pname(p)}</b><div class="p">${fmt(priceOf(p, rates))}</div>
+        ${featured.map((p, i) => html`<button class="pcard" onClick=${() => A.openProduct(p.id)}>
+          <${Thumb} p=${p} w=${64} shine=${1.6 + i * 0.35} /><b>${pname(p)}</b><div class="p">${fmt(priceOf(p, rates))}</div>
         </button>`)}
       </div>
     </section>
@@ -726,8 +742,8 @@ function BuyList({ S, A }) {
     ${S.stale && html`<${StaleBanner}/>`}
     <${KycCta} S=${S} A=${A} />
     <div class="group inset-thumb" style="margin-top:16px" key=${metal}>
-      ${list.map(p => html`<button class="row" onClick=${() => A.openProduct(p.id)}>
-        <${Thumb} p=${p} />
+      ${list.map((p, i) => html`<button class="row" onClick=${() => A.openProduct(p.id)}>
+        <${Thumb} p=${p} shine=${0.9 + i * 0.22} />
         <div class="rt"><b>${p.label}</b><span>${metalName(p.metal)} · ${p.metal === 'silver' ? fmtW(p.grams) : '999.0'}</span></div>
         <div class="rv"><b>${fmt(priceOf(p, S.rates))}</b><${Icon} n="chev" c="sm chev"/></div>
       </button>`)}
@@ -751,7 +767,10 @@ function ProductScreen({ S, A, pid }) {
   return html`<div class="page has-actions">
     <${TopBar} title=${pname(p)} onBack=${A.back} right=${html`<${CartButton} S=${S} A=${A} />`} />
     <div class="scroll">
-      <div class=${'p-hero' + (p.metal === 'silver' ? ' silver' : '')}><${Ingot} metal=${p.metal} w=${168} label=${p.short} /></div>
+      <div class=${'p-hero' + (p.metal === 'silver' ? ' silver' : '')}>
+        <span class="shadow" aria-hidden="true"></span>
+        <span class="bar"><span class="shine" style="border-radius:12px"><${Ingot} metal=${p.metal} w=${168} label=${p.short} /></span></span>
+      </div>
       <div class="specs">
         <div><span>Metal</span><b>${metalName(p.metal)}</b></div>
         <div><span>Weight</span><b>${p.metal === 'silver' ? p.label : fmtW(p.grams)}</b></div>
@@ -765,7 +784,7 @@ function ProductScreen({ S, A, pid }) {
           <div><b style="display:block">Quantity</b><span class="small muted">Up to ${MAX_UNITS} per order</span></div>
           <div class="stepper" role="group" aria-label="Quantity">
             <button disabled=${S.qty <= 1} onClick=${() => A.set({ qty: Math.max(1, S.qty - 1) })} aria-label="Decrease quantity"><${Icon} n="minus" c="sm"/></button>
-            <output aria-live="polite">${S.qty}</output>
+            <output aria-live="polite"><span key=${S.qty}>${S.qty}</span></output>
             <button disabled=${S.qty >= MAX_UNITS} onClick=${() => A.set({ qty: Math.min(MAX_UNITS, S.qty + 1) })} aria-label="Increase quantity"><${Icon} n="plus" c="sm"/></button>
           </div>
         </div>
@@ -800,7 +819,7 @@ function CartScreen({ S, A }) {
           <div class="rt"><b>${pname(p)}</b><span>${fmt(prices[l.pid] || 0)} each</span>
             <div class="stepper" role="group" aria-label=${`Quantity of ${pname(p)}`} style="margin-top:8px">
               <button disabled=${l.units <= 1} onClick=${() => A.cartUnits(l.pid, l.units - 1)} aria-label="Decrease quantity"><${Icon} n="minus" c="sm"/></button>
-              <output aria-live="polite">${l.units}</output>
+              <output aria-live="polite"><span key=${l.units}>${l.units}</span></output>
               <button disabled=${units >= MAX_UNITS} onClick=${() => A.cartUnits(l.pid, l.units + 1)} aria-label="Increase quantity"><${Icon} n="plus" c="sm"/></button>
             </div></div>
           <div style="text-align:right"><b>${fmt((prices[l.pid] || 0) * l.units)}</b>
@@ -1236,7 +1255,7 @@ function RedeemScreen({ S, A }) {
         <div class="rt"><b>Quantity</b></div>
         <div class="stepper" role="group" aria-label="Quantity to collect">
           <button disabled=${units <= 1} onClick=${() => setUnits(u => u - 1)} aria-label="Decrease quantity"><${Icon} n="minus" c="sm"/></button>
-          <output aria-live="polite">${units}</output>
+          <output aria-live="polite"><span key=${units}>${units}</span></output>
           <button disabled=${!pid || units >= avail(pid)} onClick=${() => setUnits(u => u + 1)} aria-label="Increase quantity"><${Icon} n="plus" c="sm"/></button>
         </div>
       </div></div>
@@ -1908,6 +1927,7 @@ function App() {
       ${phase === 'app' && html`<div class=${'app' + (framed ? ' framed' : '') + (hideTabs ? ' no-tabs' : '')}>
         <div class="view"><div class=${enterCls} key=${routeKey} style="position:absolute;inset:0">${content}</div></div>
         ${!hideTabs && html`<nav class="tabbar" aria-label="Main"><div class="tabs">
+          <span class="tab-ind" style=${{ transform: `translateX(${Math.max(0, tabIndex(st.tab)) * 100}%)` }} aria-hidden="true"><i></i></span>
           ${TABS.map(([k, l]) => html`<button class=${'tab' + (st.tab === k ? ' on' : '')} onClick=${() => A.tab(k)} aria-current=${st.tab === k ? 'page' : null}>
             <${Icon} n=${k}/>${l}${st.guest && k !== 'rates' ? html`<span class="lk" aria-label="Log in required"><${Icon} n="lock" c="xs"/></span>` : ''}</button>`)}
         </div></nav>`}

@@ -107,7 +107,7 @@ All styles live in `index.html` as tokens and one set of components, so every sc
 | Spacing | 4, 8, 12, 16, 20, 24, 32, 40, 48 (16 px side gutter) |
 | Radius | 6 tags, 8 thumbnails, 12 buttons and inputs, 16 cards and lists, 24 sheets; nested controls use outer radius minus padding |
 | Elevation | `--e1` resting cards, `--e2` floating (tab bar, rate cards), `--e3` overlays (dialogs, toasts) |
-| Motion | 120 ms press, 200 ms state, 300 ms screen; one easing curve; no looping decoration (only spinners, skeletons and the cursor loop) |
+| Motion | 120 ms press, 200 ms state, 300 ms screen. Entrances: screen content rises in and list rows cascade, once per screen. Ambient (slow, low intensity): the logo breathes with a glow and a passing light, soft drifting lights on login, light sweeps over bars, the green header and the wallet card, the live dot pulses, the product bar floats. Feedback: prices tint green or red when they move, sliding tab indicator with a small spring, charts draw in, one ring on success. All off under reduced motion |
 
 Components: large title (root tabs), navigation bar (pushed screens), grouped list rows, cards, brand card (wallet value), buttons (primary, secondary, tertiary, danger, accent on dark; with pressed, focus, disabled and loading states), fields with inline errors, segmented control, stepper, radio, switch, tags, notices, empty states, skeletons, sticky action bar, confirmation sheet, toast, push banner and a "Demo" panel that keeps prototype-only controls visibly separate from the product.
 

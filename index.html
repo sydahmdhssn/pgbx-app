@@ -377,7 +377,7 @@ button.notice{transition:transform var(--t1)}button.notice:active{transform:scal
 .splash.out{animation:fadeOut .35s var(--ease) forwards}
 
 /* ---------- login ---------- */
-.login{position:absolute;inset:0;display:flex;flex-direction:column;overflow-y:auto;scrollbar-width:none;color:#fff;background:linear-gradient(180deg,var(--green-700) 0%,var(--green-800) 38%,var(--green-900) 100%);animation:fade var(--t3) both}
+.login{position:absolute;inset:0;display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;scrollbar-width:none;color:#fff;background:linear-gradient(180deg,var(--green-700) 0%,var(--green-800) 38%,var(--green-900) 100%);animation:fade var(--t3) both}
 .login-top{flex:1 0 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:calc(var(--top) + 16px) 24px 24px;text-align:center}
 .login-top h1{margin-top:16px;font-size:22px;color:#fff;animation:rise .5s .5s var(--ease) both}
 .login-top p{margin-top:8px;font-size:14px;line-height:1.45;color:var(--on-dark-2);max-width:300px;animation:rise .5s .6s var(--ease) both}
@@ -457,6 +457,7 @@ button.notice{transition:transform var(--t1)}button.notice:active{transform:scal
 .pcard .p{margin-top:2px;font-size:15px;color:var(--text-2)}
 .thumb{width:56px;height:44px;border-radius:var(--r-sm);display:grid;place-items:center;flex:none;background:var(--gold-50)}
 .thumb.silver{background:#EFF1F2}
+.thumb.shine{display:grid;border-radius:var(--r-sm)}
 
 /* ---------- product ---------- */
 .p-hero{margin:8px var(--gutter) 0;height:188px;border-radius:var(--r-lg);display:grid;place-items:center;background:radial-gradient(80% 90% at 50% 30%,#FFFDF7 0%,var(--gold-50) 100%)}
@@ -560,6 +561,97 @@ button.notice{transition:transform var(--t1)}button.notice:active{transform:scal
 .prose ul{margin:4px 0 0;padding-left:20px;color:var(--text-2)}
 .prose li{margin:4px 0}
 
+
+/* =====================================================================
+   Motion layer: ambient life, entrances and feedback.
+   Slow loops (5–10 s) at low intensity; entrances once per screen.
+   All of it is switched off by prefers-reduced-motion below.
+   ===================================================================== */
+:root{--spring:cubic-bezier(.34,1.45,.64,1)}
+@keyframes breathe{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+@keyframes glowPulse{0%,100%{opacity:.5;transform:scale(.94)}50%{opacity:.9;transform:scale(1.06)}}
+@keyframes sweep{0%{transform:translateX(-160%) skewX(-18deg)}38%,100%{transform:translateX(360%) skewX(-18deg)}}
+@keyframes drift1{to{transform:translate(70px,50px) scale(1.12)}}
+@keyframes drift2{to{transform:translate(-60px,-40px) scale(1.1)}}
+@keyframes ping{0%{transform:scale(1);opacity:.55}100%{transform:scale(2.8);opacity:0}}
+@keyframes ringOut{0%{transform:scale(.9);opacity:.6}100%{transform:scale(1.9);opacity:0}}
+@keyframes tabPop{0%{transform:scale(1)}40%{transform:scale(1.18) translateY(-1px)}100%{transform:scale(1)}}
+@keyframes floatBar{0%,100%{transform:translateY(-5px)}50%{transform:translateY(5px)}}
+@keyframes shadowBreath{0%,100%{transform:scale(.86);opacity:.55}50%{transform:scale(1);opacity:.9}}
+
+/* logo stage: draw-in, then gentle breathing, glow and a passing light */
+.logo-stage{position:relative;display:grid;place-items:center}
+.logo-stage .halo{position:absolute;inset:-34%;border-radius:50%;background:radial-gradient(circle,rgba(226,182,90,.34),rgba(226,182,90,0) 62%);animation:glowPulse 5s ease-in-out infinite,fade 1.2s .3s both;pointer-events:none}
+.logo-stage .floaty{position:relative;animation:breathe 6s 1.4s ease-in-out infinite}
+.logo-stage .sheen{position:absolute;inset:7%;border-radius:50%;overflow:hidden;pointer-events:none}
+.logo-stage .sheen i{position:absolute;top:-10%;bottom:-10%;left:0;width:32%;background:linear-gradient(100deg,transparent,rgba(255,240,200,.42),transparent);animation:sweep 5.5s 1.6s var(--ease) infinite;transform:translateX(-160%) skewX(-18deg)}
+
+/* login ambience: two very soft lights drifting */
+.login{position:absolute;isolation:isolate}
+.amb-wrap{position:absolute;inset:0;overflow:hidden;z-index:-1;pointer-events:none}
+.amb{position:absolute;width:420px;height:420px;border-radius:50%;pointer-events:none;z-index:-1;will-change:transform}
+.amb.a{left:-180px;top:-140px;background:radial-gradient(circle,rgba(226,182,90,.18),rgba(226,182,90,0) 65%);animation:drift1 16s ease-in-out infinite alternate}
+.amb.b{right:-200px;top:120px;background:radial-gradient(circle,rgba(60,170,110,.26),rgba(60,170,110,0) 65%);animation:drift2 19s ease-in-out infinite alternate}
+.login-links{animation:rise .5s .55s var(--ease) both}
+.tick{transition:transform var(--t2) var(--ease)}
+
+/* entrances: screen content rises in, list rows cascade (once per screen) */
+.view .scroll>*,.view .group>.row,.view .group>.faq,.view .hscroll>*{animation:rise .45s var(--ease) both}
+.view .scroll>:nth-child(1){animation-delay:20ms}.view .scroll>:nth-child(2){animation-delay:60ms}.view .scroll>:nth-child(3){animation-delay:100ms}
+.view .scroll>:nth-child(4){animation-delay:140ms}.view .scroll>:nth-child(5){animation-delay:180ms}.view .scroll>:nth-child(6){animation-delay:220ms}
+.view .scroll>:nth-child(n+7){animation-delay:260ms}
+.view .group>:nth-child(1),.view .hscroll>:nth-child(1){animation-delay:90ms}.view .group>:nth-child(2),.view .hscroll>:nth-child(2){animation-delay:130ms}
+.view .group>:nth-child(3),.view .hscroll>:nth-child(3){animation-delay:170ms}.view .group>:nth-child(4),.view .hscroll>:nth-child(4){animation-delay:210ms}
+.view .group>:nth-child(5),.view .hscroll>:nth-child(5){animation-delay:250ms}.view .group>:nth-child(6){animation-delay:290ms}
+.view .group>:nth-child(7){animation-delay:330ms}.view .group>:nth-child(n+8){animation-delay:360ms}
+.view .rates>*{animation:rise .5s var(--ease) both}.view .rates>:nth-child(2){animation-delay:90ms}
+
+/* tab bar: sliding indicator with a little spring; icon pops when selected */
+.tabs{position:relative;gap:0}
+.tab-ind{position:absolute;top:0;bottom:0;left:0;width:20%;padding:0 2px;transition:transform .5s var(--spring);pointer-events:none}
+.tab-ind i{display:block;height:100%;border-radius:24px;background:var(--green-50)}
+.tab.on{background:transparent}
+.tab .icon{transition:transform var(--t2) var(--ease)}
+.tab.on .icon{animation:tabPop .45s var(--spring)}
+.seg .knob{transition:transform .45s var(--spring)}
+.stepper output span{display:inline-block;animation:pop .25s var(--ease)}
+
+/* live dot pulse */
+.ldot{position:relative}
+.ldot::after{content:'';position:absolute;inset:0;border-radius:50%;background:inherit;animation:ping 2.2s var(--ease) infinite}
+.ldot.stale::after{display:none}
+
+/* price movement: tint green or red for a moment */
+.odo-fl.up{background:rgba(29,119,68,.2)}.odo-fl.down{background:rgba(174,58,40,.18)}
+.on-dark .odo-fl.up{background:rgba(120,220,160,.24)}.on-dark .odo-fl.down{background:rgba(255,150,130,.24)}
+
+/* light passing over metal and brand surfaces */
+.shine{position:relative;display:inline-grid;place-items:center;isolation:isolate;overflow:hidden;border-radius:var(--r-xs)}
+.shine::after{content:'';position:absolute;top:-20%;bottom:-20%;left:0;width:40%;background:linear-gradient(100deg,transparent,rgba(255,255,255,.95),transparent);mix-blend-mode:overlay;transform:translateX(-160%) skewX(-18deg);animation:sweep 4.8s var(--shine-delay,1.2s) var(--ease) infinite;pointer-events:none}
+.home-head{position:relative;overflow:hidden;isolation:isolate}
+.home-head::after,.brand-card::after{content:'';position:absolute;top:0;bottom:0;left:0;width:40%;background:linear-gradient(100deg,transparent,rgba(255,236,190,.09),transparent);transform:translateX(-160%) skewX(-18deg);animation:sweep 9s 2s var(--ease) infinite;pointer-events:none;z-index:-1}
+.brand-card{position:relative;overflow:hidden;isolation:isolate}
+.brand-card::after{z-index:0;animation-delay:3.5s}
+.brand-card>*{position:relative;z-index:1}
+
+/* product: the bar floats slowly over a breathing shadow */
+.p-hero{position:relative;overflow:hidden}
+.p-hero .bar{animation:floatBar 5s ease-in-out infinite}
+.p-hero .shadow{position:absolute;bottom:34px;width:150px;height:14px;border-radius:50%;background:radial-gradient(closest-side,rgba(60,40,0,.2),rgba(60,40,0,0));animation:shadowBreath 5s ease-in-out infinite}
+
+/* charts draw themselves in */
+.ch-line{stroke-dasharray:1;stroke-dashoffset:1;animation:draw 1.1s .1s var(--ease) forwards}
+.ch-area{animation:fade .8s .5s var(--ease) both}
+.spark .sl{stroke-dasharray:1;stroke-dashoffset:1;animation:draw 1s .3s var(--ease) forwards}
+.spark .sa{animation:fade .8s .6s both}
+
+/* success: one ring goes out */
+.mark{position:relative}
+.mark::after{content:'';position:absolute;inset:0;border-radius:50%;border:2px solid currentColor;opacity:0;animation:ringOut 1s .35s var(--ease) both}
+
+/* desktop pointer: cards lift slightly */
+@media (hover:hover){.pcard:hover,.rc:hover{transform:translateY(-2px);box-shadow:var(--e2)}.pcard,.rc{transition:transform var(--t2) var(--ease),box-shadow var(--t2)}}
+
 /* Respect "Reduce transparency" */
 @media (prefers-reduced-transparency:reduce){
   .nav::before,.tabbar,.push,.actionbar,.toast,.offline{-webkit-backdrop-filter:none!important;backdrop-filter:none!important}
@@ -567,7 +659,8 @@ button.notice{transition:transform var(--t1)}button.notice:active{transform:scal
 }
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;animation-delay:0ms!important;transition-duration:.01ms!important}
-  .coin .ring,.mark svg path{stroke-dashoffset:0}
+  .coin .ring,.mark svg path,.ch-line,.spark .sl{stroke-dashoffset:0}
+  .ldot::after,.shine::after,.home-head::after,.brand-card::after,.amb,.logo-stage .sheen{display:none}
 }
 </style>
 </head>
