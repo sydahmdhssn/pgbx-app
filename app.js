@@ -951,7 +951,7 @@ function KycScreen({ S, A, next }) {
   const capture = k => { setBusy(true); setTimeout(() => { setShot(s => ({ ...s, [k]: true })); setBusy(false); }, 1500); };
   const submit = () => { setStep(5); A.submitKyc(f); setTimeout(() => { A.kycVerified(); setStep(6); }, 2600); };
   const titles = [re ? 'Verify your identity again' : 'Verify your identity', 'Your CNIC details', 'Front of your CNIC', 'Back of your CNIC', 'Take a selfie', 'Checking your details', 'You’re verified'];
-  const Frame = ({ k, back }) => html`<div class="idframe">
+  const Frame = (k, back) => html`<div class="idframe">
     <span class="cn a"></span><span class="cn b"></span><span class="cn c"></span><span class="cn d"></span>
     ${shot[k] ? html`<${IdCardArt} back=${back} /><span class="okmark"><${Icon} n="check" c="sm"/></span>`
       : busy ? html`<span class="scanline"></span><span>Hold steady…</span>` : html`<span>Place the ${back ? 'back' : 'front'} of your CNIC inside the frame</span>`}
@@ -976,7 +976,7 @@ function KycScreen({ S, A, next }) {
           </div>
           <button class="btn btn-primary" style="margin-top:24px" onClick=${() => (ok ? setStep(2) : setTouched({ all: true }))}>Continue</button></div>`}
         ${(step === 2 || step === 3) && html`<p class="muted" style="margin-top:8px">Use good light and avoid glare. All four corners should be visible.</p>
-          <${Frame} k=${step === 2 ? 'front' : 'back'} back=${step === 3} />
+          ${Frame(step === 2 ? 'front' : 'back', step === 3)}
           <p class="tiny muted" style="text-align:center;margin-top:8px">Demo: the camera is simulated and no photo is taken.</p>
           <div style="margin-top:16px">${shot[step === 2 ? 'front' : 'back']
             ? html`<button class="btn btn-primary" onClick=${() => setStep(step + 1)}>Continue</button>`
@@ -1397,6 +1397,7 @@ function AccountScreen({ S, A }) {
   const masked = S.phone ? `+92 ${S.phone.slice(0, 3)} ••• ${S.phone.slice(-4)}` : '+92 3•• ••• 4521';
   const initials = S.profile.name.split(' ').filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('');
   const activeAlerts = S.alerts.filter(a => a.active).length;
+  // Plain function (not a component defined in render) so rows keep their identity across the app's 1 s re-renders
   const R = ({ icon, label, value, go, tone }) => html`<button class="row" onClick=${go}><span class=${'ri' + (tone ? ' ' + tone : '')}><${Icon} n=${icon} c="sm"/></span><div class="rt"><b>${label}</b></div><span class="rv">${value || ''}<${Icon} n="chev" c="sm chev"/></span></button>`;
   const info = kind => () => A.push({ name: 'info', kind });
   const logout = () => A.confirm({ title: 'Log out of PGBX?', body: 'You’ll need your mobile number and a one-time code to log in again. Your holdings stay safe.', confirm: 'Log out', danger: true, onConfirm: A.logout });
@@ -1410,14 +1411,13 @@ function AccountScreen({ S, A }) {
 
     <section class="sec"><div class="sec-h"><h3>Profile</h3></div>
       <div class="group inset">
-        <${R} icon="user" label="Personal details" go=${() => A.push({ name: 'profile' })} />
-        <${R} icon="idcard" label="Identity verification" value=${html`<span class=${'tag ' + KYC_TAG[S.kyc.status]}>${KYC_LABEL[S.kyc.status]}</span>`}
-          go=${() => S.kyc.status === 'verified' ? A.toast(`Verified${S.kyc.at ? ' ' + rel(S.kyc.at, S.now).toLowerCase() : ''} · CNIC ${maskCnic(S.profile.cnic)}`) : A.push({ name: 'kyc' })} />
+        ${R({ icon: 'user', label: 'Personal details', go: () => A.push({ name: 'profile' }) })}
+        ${R({ icon: 'idcard', label: 'Identity verification', value: html`<span class=${'tag ' + KYC_TAG[S.kyc.status]}>${KYC_LABEL[S.kyc.status]}</span>`, go: () => S.kyc.status === 'verified' ? A.toast(`Verified${S.kyc.at ? ' ' + rel(S.kyc.at, S.now).toLowerCase() : ''} · CNIC ${maskCnic(S.profile.cnic)}`) : A.push({ name: 'kyc' }) })}
       </div></section>
 
     <section class="sec"><div class="sec-h"><h3>Security</h3></div>
       <div class="group inset">
-        <${R} icon="key" label="Change PIN" go=${() => A.push({ name: 'changepin' })} />
+        ${R({ icon: 'key', label: 'Change PIN', go: () => A.push({ name: 'changepin' }) })}
         <button class="row" onClick=${() => A.set({ biometric: !S.biometric })} role="switch" aria-checked=${S.biometric}>
           <span class="ri"><${Icon} n="face" c="sm"/></span><div class="rt"><b>Unlock with Face ID</b></div><${Switch} on=${S.biometric} /></button>
         <div class="row"><span class="ri"><${Icon} n="clock" c="sm"/></span><div class="rt"><b>Auto-lock</b><span>After 2 minutes without activity</span></div></div>
@@ -1425,22 +1425,22 @@ function AccountScreen({ S, A }) {
 
     <section class="sec"><div class="sec-h"><h3>Preferences</h3></div>
       <div class="group inset">
-        <${R} icon="bell" label="Notifications" value=${S.unread ? `${S.unread} new` : ''} go=${() => A.push({ name: 'inbox' })} />
-        <${R} icon="chart" label="Price alerts" value=${activeAlerts ? `${activeAlerts} active` : ''} go=${() => A.openHistory('gold')} />
+        ${R({ icon: 'bell', label: 'Notifications', value: S.unread ? `${S.unread} new` : '', go: () => A.push({ name: 'inbox' }) })}
+        ${R({ icon: 'chart', label: 'Price alerts', value: activeAlerts ? `${activeAlerts} active` : '', go: () => A.openHistory('gold') })}
       </div></section>
 
     <section class="sec"><div class="sec-h"><h3>Help</h3></div>
       <div class="group inset">
-        <${R} icon="help" label="Questions and answers" go=${info('faq')} />
-        <${R} icon="call" label="Contact PGBX" go=${info('contact')} />
-        <${R} icon="flag" label="Report a problem" go=${info('report')} />
+        ${R({ icon: 'help', label: 'Questions and answers', go: info('faq') })}
+        ${R({ icon: 'call', label: 'Contact PGBX', go: info('contact') })}
+        ${R({ icon: 'flag', label: 'Report a problem', go: info('report') })}
       </div></section>
 
     <section class="sec"><div class="sec-h"><h3>Legal</h3></div>
       <div class="group inset">
-        <${R} icon="receipt" label="Fees and limits" go=${info('fees')} />
-        <${R} icon="doc" label="Terms and privacy" go=${info('terms')} />
-        <${R} icon="info" label="About this prototype" value=${APP_VERSION.split(' ')[0]} go=${info('about')} />
+        ${R({ icon: 'receipt', label: 'Fees and limits', go: info('fees') })}
+        ${R({ icon: 'doc', label: 'Terms and privacy', go: info('terms') })}
+        ${R({ icon: 'info', label: 'About this prototype', value: APP_VERSION.split(' ')[0], go: info('about') })}
       </div></section>
 
     <div class="pad stack-btns" style="margin-top:32px">
