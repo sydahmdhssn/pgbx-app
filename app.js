@@ -1,10 +1,9 @@
 // htm + Preact, self-hosted (no third-party CDN at runtime); licences in vendor/LICENSES.txt
 import { html, render, useState, useEffect, useRef, useMemo, useErrorBoundary } from './vendor/htm-preact-standalone-3.1.1.module.js';
 
-// Liquid Glass refraction needs SVG filters inside backdrop-filter, which only Chromium supports; others get blur only.
-try { if (navigator.userAgentData && navigator.userAgentData.brands.some(b => /Chromium/.test(b.brand))) document.documentElement.classList.add('lg-refract'); } catch (e) { }
-
 // Fonts: Apple system families (SF Pro, SF Compact, SF Mono, New York) via CSS; nothing is downloaded.
+// Requirement IDs (FR-*, NFR-*, CMP-*) live in code comments only; customers never see them.
+const APP_VERSION = '0.9 (prototype)';
 
 /* ============================================================
    Constants (SRS references in comments)
@@ -95,6 +94,16 @@ const pct = n => (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
 const uid = () => Math.random().toString(36).slice(2, 8).toUpperCase();
 const dt = ts => new Date(ts).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 const ago = ms => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s ago` : `${Math.floor(s / 60)}m ${s % 60}s ago`; };
+// Human-readable time for lists: "Just now", "5 min ago", "Today, 14:05", "Yesterday, 09:10", "28 Sept, 16:40"
+const rel = (ts, now = Date.now()) => {
+  const m = Math.floor((now - ts) / 60000), d = new Date(ts);
+  const hm = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  if (m < 1) return 'Just now';
+  if (m < 60) return `${m} min ago`;
+  if (sameDay(ts, now)) return `Today, ${hm}`;
+  if (sameDay(ts, now - 86400e3)) return `Yesterday, ${hm}`;
+  return `${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}, ${hm}`;
+};
 const dur = ms => { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 3600)}h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}m ${String(s % 60).padStart(2, '0')}s`; };
 const buzz = () => { try { navigator.vibrate && navigator.vibrate(6); } catch (e) { } };
 function mulberry(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
@@ -201,6 +210,9 @@ const PATHS = {
   edit: 'M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4',
   chart: 'M4 19.5h16M6.5 16l3.5-4.5 3 2.5 4.5-6',
   globe: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3.5 9h17M3.5 15h17M12 3c2.5 2.6 3.7 5.6 3.7 9s-1.2 6.4-3.7 9c-2.5-2.6-3.7-5.6-3.7-9S9.5 5.6 12 3z',
+  sliders: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4',
+  wifiOff: 'M3 3l18 18M8.5 16.5a5 5 0 0 1 7 0M5 12.5a10 10 0 0 1 4.2-2.3M19 12.5a10 10 0 0 0-3-1.9M2 8.8a15 15 0 0 1 4.3-2.6M22 8.8A15 15 0 0 0 10.6 5M12 20h.01',
+  wa: 'M4 20l1.3-4A8 8 0 1 1 8 18.7L4 20zM9 9.5c0 3 2.5 5.5 5.5 5.5l1.2-1.4-1.9-.9-.8.8a3.5 3.5 0 0 1-2.4-2.4l.8-.8-.9-1.9L9 9.5z',
 };
 const Icon = ({ n, c = '', s }) => html`<svg class=${'icon ' + c} viewBox="0 0 24 24" style=${s} aria-hidden="true"><path d=${PATHS[n]} /></svg>`;
 
@@ -223,32 +235,24 @@ function Odo({ value, prefix = 'Rs ', decimals = 0, flash }) {
         : html`<span key=${'s' + k} aria-hidden="true">${c}</span>`; })}
   </span>`;
 }
-const Letters = ({ text, delay = 0, step = 0.028 }) => {
-  let n = 0; const words = text.split(' ');
-  return html`<span class="letters" aria-label=${text}>${words.map((w, wi) => html`<span class="w" aria-hidden="true">${w.split('').map(ch => html`<span class="l" style=${{ animationDelay: (delay + (n++) * step).toFixed(3) + 's' }}>${ch}</span>`)}</span>${wi < words.length - 1 ? ' ' : ''}`)}</span>`;
-};
 
 /* ============================================================
    Brand visuals
    ============================================================ */
-function Coin({ size = 200, glow = false, sweep = false, sweepDelay, still = false }) {
+// The PGBX mark. `animate` draws it in once (splash and login only); everywhere else it is static.
+function Coin({ size = 200, animate = false, label = 'PGBX logo' }) {
   const star = (cx, cy, R, r) => { let pts = []; for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r : R; pts.push((cx + rr * Math.cos(a)).toFixed(2) + ',' + (cy + rr * Math.sin(a)).toFixed(2)); } return pts.join(' '); };
-  return html`<div class="coin-wrap" style=${{ width: size + 'px', height: size + 'px' }}>
-    ${glow && html`<div class="glow"></div>`}
-    <svg class=${'coin' + (still ? ' static' : '')} viewBox="0 0 200 200" width=${size} height=${size} role="img" aria-label="PGBX logo">
-      <circle class="dots" cx="100" cy="100" r="97" fill="none" stroke="#E2B65A" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="0.1 7" opacity=".85"/>
-      <circle class="face" cx="100" cy="100" r="82" fill="url(#coinFace)"/>
-      <circle class="ring" cx="100" cy="100" r="86" fill="none" stroke="url(#goldMetal)" stroke-width="5.5" pathLength="1" transform="rotate(-90 100 100)"/>
-      <g class="emblem">
-        <circle cx="100" cy="100" r="74" fill="none" stroke="#E2B65A" stroke-width=".8" opacity=".45"/>
-        <circle cx="92" cy="80" r="30" fill="url(#goldMetal)" mask="url(#crescentMask)"/>
-        <polygon points=${star(124, 62, 10, 4.2)} fill="url(#goldMetal)"/>
-        <text x="100" y="146" text-anchor="middle" font-family="ui-serif, 'New York', Georgia, serif" font-weight="700" font-size="34" letter-spacing="3" fill="url(#goldText)">PGBX</text>
-        <g clip-path="url(#pgbxClip)"><rect class="shine" x="30" y="110" width="44" height="50" fill="url(#shineGrad)" transform="translate(-140 0)"/></g>
-      </g>
-    </svg>
-    ${sweep && html`<div class="coin-sweep" style=${sweepDelay ? { '--sweep-delay': sweepDelay } : null}><i></i></div>`}
-  </div>`;
+  return html`<svg class=${'coin' + (animate ? ' anim' : '')} viewBox="0 0 200 200" width=${size} height=${size} role="img" aria-label=${label}>
+    <circle cx="100" cy="100" r="97" fill="none" stroke="#E2B65A" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="0.1 7" opacity=".7"/>
+    <circle class="face" cx="100" cy="100" r="82" fill="url(#coinFace)"/>
+    <circle class="ring" cx="100" cy="100" r="86" fill="none" stroke="url(#goldMetal)" stroke-width="5.5" pathLength="1" transform="rotate(-90 100 100)"/>
+    <g class="emblem">
+      <circle cx="100" cy="100" r="74" fill="none" stroke="#E2B65A" stroke-width=".8" opacity=".45"/>
+      <circle cx="92" cy="80" r="30" fill="url(#goldMetal)" mask="url(#crescentMask)"/>
+      <polygon points=${star(124, 62, 10, 4.2)} fill="url(#goldMetal)"/>
+      <text x="100" y="146" text-anchor="middle" font-family="ui-serif, 'New York', Georgia, serif" font-weight="700" font-size="34" letter-spacing="3" fill="url(#goldText)">PGBX</text>
+    </g>
+  </svg>`;
 }
 
 function Ingot({ metal = 'gold', w = 72, label }) {
@@ -280,18 +284,9 @@ function Spark({ data, color, w = 112, h = 40 }) {
   </svg>`;
 }
 
-function QR({ code }) {
-  const N = 25, r = mulberry(+code * 7919 + 13); const cells = [];
-  const finder = (x, y) => (x >= 0 && x < 7 && y >= 0 && y < 7);
-  const inF = (x, y) => finder(x, y) || finder(x - (N - 7), y) || finder(x, y - (N - 7));
-  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { if (!inF(x, y) && r() > 0.52) cells.push(html`<rect x=${x} y=${y} width="1" height="1"/>`); }
-  const F = (x, y) => html`<g transform=${`translate(${x} ${y})`}><rect width="7" height="7" rx="1.2"/><rect x="1" y="1" width="5" height="5" rx=".8" fill="#fff"/><rect x="2" y="2" width="3" height="3" rx=".5"/></g>`;
-  return html`<svg class="qr" viewBox=${`0 0 ${N} ${N}`} shape-rendering="crispEdges" aria-label="Redemption code pattern" fill="#0B4A2C">${cells}${F(0, 0)}${F(N - 7, 0)}${F(0, N - 7)}</svg>`;
-}
-
 const feedLabel = (rates, stale, now) => {
-  if (rates.mode === 'connecting') return 'Connecting to live rates…';
-  if (stale) return `Delayed · last update ${ago(now - rates.updatedAt)}`;
+  if (rates.mode === 'connecting') return 'Connecting to live rates';
+  if (stale) return `Rates delayed · last update ${ago(now - rates.updatedAt)}`;
   return `${rates.mode === 'live' ? 'Live' : 'Simulated'} · updated ${ago(now - rates.updatedAt)}`;
 };
 const dotClass = (rates, stale) => 'ldot' + (stale ? ' stale' : rates.mode !== 'live' ? ' sim' : '');
@@ -299,34 +294,16 @@ const dotClass = (rates, stale) => 'ldot' + (stale ? ' stale' : rates.mode !== '
 /* ============================================================
    Splash
    ============================================================ */
+// First launch: the mark draws in once (about 2 s). Returning customers get a short splash before the PIN.
 function Splash({ onDone, rates, quick }) {
   const [out, setOut] = useState(false);
-  const parts = useMemo(() => Array.from({ length: 22 }, (_, i) => ({
-    left: (i * 37 % 100) + '%', dur: 5 + (i * 13 % 50) / 10, delay: (i * 7 % 30) / 10, dx: ((i * 23 % 60) - 30) + 'px', size: 2 + (i % 4),
-  })), []);
-  const sparks = useMemo(() => Array.from({ length: 18 }, (_, i) => { const a = (i / 18) * Math.PI * 2, r = 120 + (i % 3) * 26; return { x: Math.cos(a) * r, y: Math.sin(a) * r, d: (i % 4) * 0.04 }; }), []);
-  const finish = () => { if (out) return; setOut(true); setTimeout(onDone, 700); };
-  useEffect(() => { const t = setTimeout(finish, quick ? 1200 : 3900); return () => clearTimeout(t); }, []);
-  const status = rates.mode === 'live' ? html`<b>●</b> Live rates connected` : rates.mode === 'sim' ? 'Using simulated rates' : 'Connecting to live rates…';
-  if (quick) return html`<div class=${'splash quick' + (out ? ' out' : '')} onClick=${finish}>
-    <div class="rays"></div><div class="vignette"></div>
-    <div class="splash-center">
-      <div class="coin-stage"><${Coin} size=${150} glow=${true} still=${true} /></div>
-      <h1 class="splash-title">Pakistan Gold Bullion Exchange</h1>
-    </div>
-  </div>`;
-  return html`<div class=${'splash' + (out ? ' out' : '')} onClick=${finish}>
-    <div class="rays"></div><div class="vignette"></div>
-    <div class="particles">${parts.map(p => html`<span class="particle" style=${{ left: p.left, width: p.size + 'px', height: p.size + 'px', animationDuration: p.dur + 's', animationDelay: p.delay + 's', '--dx': p.dx }}></span>`)}</div>
-    <div class="splash-center">
-      <div class="coin-stage">
-        <div class="burst">${sparks.map(s => html`<span class="ember" style=${{ '--x': s.x + 'px', '--y': s.y + 'px', animationDelay: (1.42 + s.d) + 's' }}></span>`)}</div>
-        <div class="coin-flip"><${Coin} size=${190} glow=${true} sweep=${true} /></div>
-      </div>
-      <h1 class="splash-title"><${Letters} text="Pakistan Gold Bullion Exchange" delay=${1.7} step=${0.026} /></h1>
-      <div class="splash-tag">${['LIVE RATES', 'BUY', 'WALLET', 'REDEEM'].map((w, i) => html`${i ? html`<i style=${{ animationDelay: (2.45 + i * 0.12) + 's' }}></i>` : ''}<span style=${{ animationDelay: (2.4 + i * 0.12) + 's' }}>${w}</span>`)}</div>
-    </div>
-    <div class="splash-load"><div class="bar"><i></i></div><span>${status}</span></div>
+  const finish = () => { if (out) return; setOut(true); setTimeout(onDone, 350); };
+  useEffect(() => { const t = setTimeout(finish, quick ? 800 : 2100); return () => clearTimeout(t); }, []);
+  return html`<div class=${'splash on-dark' + (quick ? ' quick' : '') + (out ? ' out' : '')} onClick=${finish}>
+    <${Coin} size=${quick ? 112 : 140} animate=${!quick} />
+    <h1>Pakistan Gold Bullion Exchange</h1>
+    ${!quick && html`<p class="tagline">Gold and silver, held for you</p>`}
+    ${!quick && html`<div class="splash-status" role="status"><span class=${'ldot' + (rates.mode === 'live' ? '' : ' sim')}></span>${rates.mode === 'live' ? 'Live rates connected' : rates.mode === 'sim' ? 'Using simulated rates' : 'Connecting to live rates'}</div>`}
   </div>`;
 }
 
@@ -386,64 +363,65 @@ function Login({ S, note, onDone, onBrowse, onPin, onRetry }) {
   const g = rateOf(S.rates, 'gold'), s = rateOf(S.rates, 'silver');
   const connecting = S.rates.mode === 'connecting';
   const viaName = v => (v === 'whatsapp' ? 'WhatsApp' : 'SMS');
+  const badNum = phone.length === 10 && !valid;
   return html`<div class=${'login' + (out ? ' out' : '')}>
-    <div class="aurora a"></div><div class="aurora b"></div>
-    <div class="login-top">
-      <div class="halo two"></div><div class="halo"></div>
-      <div class="login-logo"><div class="in"><div class="float">
-        <div class="orbit"><i></i></div>
-        <${Coin} size=${128} glow=${true} sweep=${true} sweepDelay="2s" />
-      </div></div></div>
-      <h1><${Letters} text="Welcome to PGBX" delay=${0.75} step=${0.035} /></h1>
-      <p>Gold and silver, held for you. Collect at 250 dealers.</p>
-      <div class="ticker">
-        ${[['gold', g, ''], ['silver', s, ' sil']].map(([m, r, c]) => html`<div class=${'tick' + c}>
-          <span class="lv"><span class=${dotClass(S.rates, S.stale)}></span>${metalName(m)} · per tola</span>
-          ${connecting ? html`<span class="sk" style="width:96px;height:18px;margin-top:2px"></span>` : html`<b><${Odo} value=${r.buyTola} flash=${S.rates.tick} /></b>`}
+    <div class="login-top on-dark">
+      <${Coin} size=${88} animate=${true} />
+      <h1>Pakistan Gold Bullion Exchange</h1>
+      <p>Buy 999.0 gold and silver, held for you by PGBX. Collect it at any of 250 dealers.</p>
+      <div class="ticker" aria-label="Current buy rates">
+        ${[['gold', g], ['silver', s]].map(([m, r]) => html`<div class="tick">
+          <span><span class=${dotClass(S.rates, S.stale)}></span>${metalName(m)} · per tola</span>
+          ${connecting ? html`<span class="sk" style="width:96px;height:20px;margin-top:4px"></span>` : html`<b><${Odo} value=${r.buyTola} flash=${S.rates.tick} /></b>`}
         </div>`)}
       </div>
     </div>
-    <div class="sheet glass">
-      <div class="grab"></div>
-      ${note && html`<div class="login-note" role="alert"><${Icon} n="shield" c="sm"/><span>${note}</span></div>`}
-      ${down && html`<div class="login-note" role="alert"><${Icon} n="alert" c="sm"/><span style="flex:1">Can’t reach the login service. Check your connection.</span><button class="linkbtn" style="min-height:0;font-size:13px" onClick=${onRetry}>Retry</button></div>`}
-      ${demo && html`<div class="login-note"><${Icon} n="info" c="sm"/><span><b style="display:inline">Demo mode.</b> The SMS provider isn’t connected yet, so no message is sent and any 6 digits work.</span></div>`}
+    <div class="sheet">
+      ${note && html`<div class="notice warning" style="margin:0 0 16px;width:100%" role="alert"><${Icon} n="shield" c="sm"/><span>${note}</span></div>`}
+      ${down && html`<div class="notice danger" style="margin:0 0 16px;width:100%" role="alert"><${Icon} n="alert" c="sm"/><span class="grow">Can’t reach the login service. Check your connection and try again.</span><button class="linkbtn sm act" onClick=${onRetry}>Retry</button></div>`}
       ${step === 'phone' ? html`<div class=${dir === 'in' ? 'step-in' : 'step-back'} key="phone">
-        <h2>Log in or create an account</h2>
-        <p class="sub">Enter your Pakistani mobile number. We’ll send you a one-time code (FR-A1).</p>
-        <label class=${'field' + (phone.length === 10 && !valid ? ' bad' : '')}>
-          <span class="cc">PK +92</span>
-          <input ref=${phoneRef} type="tel" inputmode="numeric" autocomplete="tel-national" placeholder="3XX XXXXXXX" aria-label="Mobile number" aria-invalid=${phone.length === 10 && !valid}
-            value=${shown(phone)} onInput=${e => { let v = e.target.value.replace(/\D/g, ''); if (v.startsWith('92')) v = v.slice(2); if (v.startsWith('0')) v = v.slice(1); setPhone(v.slice(0, 10)); setErr(''); }}
-            onKeyDown=${e => { if (e.key === 'Enter') send(); }} />
-          ${valid && html`<span class="okc"><${Icon} n="check"/></span>`}
+        <h2>Log in or sign up</h2>
+        <p class="sub">Enter your Pakistani mobile number and we’ll send you a one-time code.</p>
+        <label class="field">
+          <span class="lbl">Mobile number</span>
+          <span class=${'phone' + (badNum ? ' bad' : '')}>
+            <span class="cc">+92</span>
+            <input ref=${phoneRef} type="tel" inputmode="numeric" autocomplete="tel-national" placeholder="300 1234567" aria-invalid=${badNum} aria-describedby="phone-hint"
+              value=${shown(phone)} onInput=${e => { let v = e.target.value.replace(/\D/g, ''); if (v.startsWith('92')) v = v.slice(2); if (v.startsWith('0')) v = v.slice(1); setPhone(v.slice(0, 10)); setErr(''); }}
+              onKeyDown=${e => { if (e.key === 'Enter') send(); }} />
+            ${valid && html`<span class="ok" aria-hidden="true"><${Icon} n="check"/></span>`}
+          </span>
         </label>
-        ${phone.length === 10 && !valid ? html`<div class="hint err">That isn’t a Pakistani mobile number. Mobile numbers start with 30–34 or 355, for example 300 1234567.</div>`
-          : phone && phone[0] !== '3' ? html`<div class="hint err">Mobile numbers start with 3, for example 300 1234567.</div>` : ''}
-        <div style="margin-top:14px">
-          <div class="small muted" style="margin-bottom:6px">Send my code by</div>
-          <${Seg} items=${[['sms', 'SMS'], ['whatsapp', channels.includes('whatsapp') ? 'WhatsApp' : 'WhatsApp · soon']]} value=${channel} onChange=${v => { if (channels.includes(v)) { setChannel(v); setErr(''); } else setErr('WhatsApp codes need PGBX’s WhatsApp Business number, which isn’t connected yet. Use SMS for now.'); }} />
+        <div id="phone-hint">${badNum ? html`<div class="hint err">This isn’t a Pakistani mobile number. Numbers start with 30–34 or 355.</div>`
+          : phone && phone[0] !== '3' ? html`<div class="hint err">Mobile numbers start with 3, for example 300 1234567.</div>` : ''}</div>
+        <div class="field">
+          <span class="lbl">Send the code by</span>
+          <${Seg} label="Send the code by" items=${[['sms', 'SMS'], ['whatsapp', channels.includes('whatsapp') ? 'WhatsApp' : html`WhatsApp <span class="soon">· soon</span>`]]} value=${channel}
+            onChange=${v => { if (channels.includes(v)) { setChannel(v); setErr(''); } else setErr('WhatsApp codes aren’t available yet. Use SMS for now.'); }} />
         </div>
         ${err && html`<div class="hint err" role="alert">${err}</div>`}
-        <div style="margin-top:14px"><button class="btn btn-gold" disabled=${!valid || !cfg.checked || down} onClick=${() => send()}>${busy ? html`<span class="mini-spin"></span> Sending code` : !cfg.checked ? html`<span class="mini-spin"></span> Connecting` : html`Send code by ${viaName(channel)} <${Icon} n="chev" c="sm"/>`}</button></div>
+        <button class="btn btn-primary" style="margin-top:20px" disabled=${!valid || !cfg.checked || down || busy} onClick=${() => send()}>
+          ${busy ? html`<span class="spin"></span> Sending code` : !cfg.checked ? html`<span class="spin"></span> Connecting` : `Send code`}</button>
+        ${demo && html`<p class="demo-line"><${Icon} n="info" c="sm"/><span>Demo mode: SMS isn’t connected yet, so no message is sent and any 6 digits will work.</span></p>`}
       </div>` : html`<div class="step-in" key="otp">
-        <h2>${ok ? 'Verified' : 'Enter the 6-digit code'}</h2>
-        <p class="sub">${demo ? 'Demo: no message was sent to' : `Sent by ${viaName(sentVia)} to`} +92 ${shown(phone)} · <button class="linkbtn" style="min-height:0;font-size:13px" onClick=${() => { setDir('back'); setStep('phone'); setErr(''); }}>Change</button></p>
+        <h2>${ok ? 'Verified' : 'Enter the code'}</h2>
+        <p class="sub">${demo ? 'Demo mode: no message was sent to' : `We sent a 6-digit code by ${viaName(sentVia)} to`} +92 ${shown(phone)}.
+          <button class="linkbtn sm" style="min-height:0;font-size:14px" onClick=${() => { setDir('back'); setStep('phone'); setErr(''); }}>Change number</button></p>
         <div class=${'otp' + (ok ? ' ok' : '') + (shake ? ' err' : '')} key=${'o' + shake} onClick=${() => otpRef.current && otpRef.current.focus()}>
-          ${[0, 1, 2, 3, 4, 5].map(i => html`<div class=${'ob' + (i === otp.length && !ok ? ' cur' : '')} style=${ok ? { animationDelay: (i * 0.05) + 's' } : null}>${otp[i] ? html`<span key=${i + otp[i]}>${otp[i]}</span>` : ''}</div>`)}
-          <input ref=${otpRef} type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" aria-label="One-time code" value=${otp} disabled=${ok || busy}
+          ${[0, 1, 2, 3, 4, 5].map(i => html`<div class=${'ob' + (i === otp.length && !ok && !busy ? ' cur' : '')} aria-hidden="true">${otp[i] || ''}</div>`)}
+          <input ref=${otpRef} type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" aria-label="6-digit code" value=${otp} disabled=${ok || busy}
             onInput=${e => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))} />
         </div>
         ${err && html`<div class="hint err" role="alert">${err}</div>`}
-        <div class="between" style="margin-top:12px">
-          <span class="small muted">${busy ? 'Verifying…' : ok ? 'Signing you in' : demo ? 'Demo: any 6 digits work' : 'The code expires in 10 minutes'}</span>
-          <button class="linkbtn" style="min-height:36px;font-size:13px" disabled=${resendIn > 0 || busy} onClick=${() => send(sentVia)}>${resendIn > 0 ? `Resend in ${resendIn}s` : `Resend by ${viaName(sentVia)}`}</button>
+        <div class="between" style="margin-top:8px">
+          <span class="small muted" role="status">${busy ? 'Checking the code…' : ok ? 'Logging you in…' : demo ? 'Any 6 digits will work' : 'The code expires in 10 minutes'}</span>
+          <button class="linkbtn sm" disabled=${resendIn > 0 || busy} onClick=${() => send(sentVia)}>${resendIn > 0 ? `Resend in ${resendIn}s` : 'Resend code'}</button>
         </div>
-        ${resendIn === 0 && channels.length > 1 && html`<button class="linkbtn" style="min-height:36px;font-size:13px" disabled=${busy} onClick=${() => { const v = sentVia === 'sms' ? 'whatsapp' : 'sms'; setChannel(v); send(v); }}>Send by ${viaName(sentVia === 'sms' ? 'whatsapp' : 'sms')} instead</button>`}
+        ${resendIn === 0 && channels.length > 1 && html`<button class="linkbtn sm" disabled=${busy} onClick=${() => { const v = sentVia === 'sms' ? 'whatsapp' : 'sms'; setChannel(v); send(v); }}>Send by ${viaName(sentVia === 'sms' ? 'whatsapp' : 'sms')} instead</button>`}
       </div>`}
       <div class="login-links">
-        <button class="linkbtn" onClick=${onBrowse}><${Icon} n="rates" c="sm"/> Browse live rates without logging in</button>
-        <button class="linkbtn" style="color:var(--muted);font-weight:400;font-size:13px;min-height:36px" onClick=${onPin}>Already set up on this phone? Unlock with PIN</button>
+        <button class="linkbtn" onClick=${onBrowse}>Browse rates as a guest</button>
+        <button class="linkbtn sm" style="color:var(--text-2);font-weight:500" onClick=${onPin}>Already set up on this phone? Unlock with PIN</button>
       </div>
     </div>
   </div>`;
@@ -459,15 +437,14 @@ function PinPad({ onComplete, ok, err = 0, showFace, onFace, disabled }) {
   const press = d => { if (disabled) return; buzz(); setPin(p => (p.length < 4 ? p + d : p)); };
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'face', '0', 'del'];
   return html`
-    <div class=${'dots4' + (ok ? ' ok' : '') + (err ? ' err' : '')} key=${'e' + err} aria-label=${`${pin.length} of 4 digits entered`}>
+    <div class=${'dots4' + (ok ? ' ok' : '') + (err ? ' err' : '')} key=${'e' + err} role="status" aria-label=${`${pin.length} of 4 digits entered`}>
       ${[0, 1, 2, 3].map(i => html`<span class=${'dot' + (pin.length > i || ok ? ' on' : '')}></span>`)}
     </div>
     <div class=${'keypad' + (disabled ? ' off' : '')}>
-      ${keys.map((k, i) => {
-        const st = { animationDelay: (0.25 + i * 0.045) + 's' };
-        if (k === 'face') return showFace ? html`<button class="key plain" style=${st} onClick=${onFace} aria-label="Unlock with face"><div style="display:grid;justify-items:center"><${Icon} n="face"/><span class="kl">Face</span></div></button>` : html`<span></span>`;
-        if (k === 'del') return html`<button class="key plain" style=${st} onClick=${() => setPin(p => p.slice(0, -1))} aria-label="Delete"><${Icon} n="del"/></button>`;
-        return html`<button class="key" style=${st} onClick=${() => press(k)}>${k}</button>`;
+      ${keys.map(k => {
+        if (k === 'face') return showFace ? html`<button class="key plain" onClick=${onFace} aria-label="Unlock with Face ID"><span><${Icon} n="face"/><span class="kl">Face ID</span></span></button>` : html`<span></span>`;
+        if (k === 'del') return html`<button class="key plain" onClick=${() => setPin(p => p.slice(0, -1))} aria-label="Delete digit"><${Icon} n="del"/></button>`;
+        return html`<button class="key" onClick=${() => press(k)}>${k}</button>`;
       })}
     </div>`;
 }
@@ -481,40 +458,60 @@ function LockScreen({ pin, fails, lockUntil, now, biometric, note, onUnlock, onF
   const check = p => { if (locked) return false; if (p === pin) { unlock(); return true; } onFail(); return false; };
   const face = () => { if (locked) return; setScan(true); setTimeout(() => { setScan(false); unlock(); }, 900); };
   const left = PIN_MAX_FAILS - fails;
-  const msg = locked ? `Too many wrong PINs. Try again in ${Math.min(30, Math.ceil((lockUntil - now) / 1000))}s`
-    : fails ? `Wrong PIN · ${left} attempt${left === 1 ? '' : 's'} left before you must log in again` : note;
+  const msg = locked ? `Too many wrong PINs. Try again in ${Math.min(30, Math.ceil((lockUntil - now) / 1000))} seconds.`
+    : fails ? `Wrong PIN. ${left} attempt${left === 1 ? '' : 's'} left before you need to log in again.` : note;
   return html`<div class="lock">
-    <${Coin} size=${112} glow=${true} sweep=${true} sweepDelay="1.6s" />
-    <h2>${ok ? 'Welcome back' : 'Enter your PIN'}</h2>
-    <div class="proto">Prototype PIN: ${PIN_DEFAULT} (unless you changed it)</div>
+    <${Coin} size=${72} />
+    <h2>${ok ? 'Unlocked' : 'Enter your PIN'}</h2>
     <div class=${'note' + (fails || locked ? ' warn' : '')} role="status">${msg || ''}</div>
+    <div class="hint-demo">Demo PIN ${PIN_DEFAULT}, unless you changed it</div>
     <${PinPad} ok=${ok} err=${fails} onComplete=${check} showFace=${biometric && !locked} onFace=${face} disabled=${locked} />
-    <button class="browse press" onClick=${onBrowse}><${Icon} n="rates" c="sm"/> Browse live rates without logging in</button>
-    <button class="browse dim press" onClick=${onLogin}>Log in with a different number</button>
-    ${scan && html`<div class="scan"><div class="scan-box"><${Icon} n="face"/></div></div>`}
+    <div class="lock-links">
+      <button class="linkbtn" onClick=${onBrowse}>Browse rates as a guest</button>
+      <button class="linkbtn dim" onClick=${onLogin}>Log in with a different number</button>
+    </div>
+    ${scan && html`<div class="scan" role="status" aria-label="Checking Face ID"><div class="scan-box"><${Icon} n="face"/></div></div>`}
   </div>`;
 }
 
 /* ============================================================
    Shared bits
    ============================================================ */
-const TopBar = ({ title, onBack, right }) => html`<div class="topbar">
-  <button class="iconbtn glass" onClick=${onBack} aria-label="Back"><${Icon} n="back"/></button><h2>${title}</h2><div style="margin-left:auto;display:flex;align-items:center;gap:6px">${right || ''}</div>
+// Navigation bar for pushed screens: back, centred title, optional trailing control.
+const TopBar = ({ title, onBack, right }) => html`<div class="nav">
+  <button class="iconbtn" onClick=${onBack} aria-label="Back"><${Icon} n="back"/></button><h2>${title}</h2><div class="end">${right || ''}</div>
 </div>`;
-const TabHead = ({ title, sub, right }) => html`<div class="tabhead enter"><div class="between"><h1>${title}</h1>${right || ''}</div>${sub && html`<p>${sub}</p>`}</div>`;
-const StaleBanner = () => html`<div class="banner warn enter" role="alert"><${Icon} n="alert"/><div><b>Rates are delayed</b>Buying is paused until fresh rates arrive from PGBX (FR-R4).</div></div>`;
-const Seg = ({ items, value, onChange }) => {
+// Large title for the five root tabs.
+const TabHead = ({ title, sub, right }) => html`<div class="lt"><div><h1>${title}</h1>${sub && html`<p>${sub}</p>`}</div>${right || ''}</div>`;
+// Inline notice: kind = info | warning | danger | plain
+const Notice = ({ kind = 'info', icon, title, children, style }) => html`<div class=${'notice ' + kind} role=${kind === 'danger' || kind === 'warning' ? 'alert' : null} style=${style}>
+  <${Icon} n=${icon || (kind === 'info' || kind === 'plain' ? 'info' : 'alert')} c="sm"/><div class="grow">${title && html`<b>${title}</b>`}${children}</div></div>`;
+const StaleBanner = () => html`<${Notice} kind="warning" title="Rates are delayed">Buying is paused until fresh prices arrive. This usually takes a few seconds.</${Notice}>`;
+// Empty state: what is missing, why it matters, what to do next.
+const Empty = ({ icon, title, body, action, onAction }) => html`<div class="empty rise">
+  <div class="ei"><${Icon} n=${icon}/></div><b>${title}</b><p>${body}</p>
+  ${action && html`<button class="btn btn-primary" onClick=${onAction}>${action}</button>`}</div>`;
+// Demo-only controls, visibly separate from the product.
+const Demo = ({ title, body, children }) => html`<div class="demo"><div class="demo-h"><${Icon} n="sliders" c="xs"/> Demo · ${title}</div>${body && html`<p>${body}</p>`}${children}</div>`;
+const Tbc = () => html`<span class="tbc">${TBC}</span>`;
+const Sample = () => html`<span class="tag neutral">Sample</span>`;
+const Seg = ({ items, value, onChange, label }) => {
   const idx = Math.max(0, items.findIndex(x => x[0] === value));
-  return html`<div class="segn" style=${{ '--n': items.length }} role="tablist">
-    <span class="knob" style=${{ transform: `translateX(${idx * 100}%)` }}><i key=${'k' + idx}></i></span>
-    ${items.map(([k, l]) => html`<button class=${value === k ? 'on' : ''} onClick=${() => onChange(k)} role="tab" aria-selected=${value === k}>${l}</button>`)}
+  return html`<div class="seg" style=${{ '--n': items.length }} role="radiogroup" aria-label=${label}>
+    <span class="knob" style=${{ transform: `translateX(${idx * 100}%)` }}></span>
+    ${items.map(([k, l]) => html`<button class=${value === k ? 'on' : ''} onClick=${() => onChange(k)} role="radio" aria-checked=${value === k}>${l}</button>`)}
   </div>`;
 };
-const Switch = ({ on }) => html`<span class=${'switch' + (on ? ' on' : '')}><i></i></span>`;
+const Switch = ({ on }) => html`<span class=${'switch' + (on ? ' on' : '')} aria-hidden="true"><i></i></span>`;
+const Radio = ({ on }) => html`<span class=${'radio' + (on ? ' on' : '')} aria-hidden="true"></span>`;
+const Thumb = ({ p, w = 44 }) => html`<span class=${'thumb' + (p.metal === 'silver' ? ' silver' : '')}><${Ingot} metal=${p.metal} w=${w} label=${p.short} /></span>`;
 const CartButton = ({ S, A }) => {
   const n = S.cart.reduce((a, l) => a + l.units, 0);
-  return html`<button class="cartbtn glass" onClick=${A.openCart} aria-label=${`Cart, ${n} units`}><span key=${'c' + S.cartBump} class=${S.cartBump ? 'bump' : ''}><${Icon} n="cart"/></span>${n > 0 && html`<span class="badge lt" key=${'n' + n}>${n}</span>`}</button>`;
+  return html`<button class="iconbtn" onClick=${A.openCart} aria-label=${n ? `Cart, ${n} unit${n > 1 ? 's' : ''}` : 'Cart, empty'}><${Icon} n="cart"/>${n > 0 && html`<span class="badge" key=${'n' + n}>${n}</span>`}</button>`;
 };
+// Sticky bottom actions for checkout screens, with an optional summary line (label + amount).
+const ActionBar = ({ label, amount, children }) => html`<div class="actionbar">
+  ${label && html`<div class="ab-meta"><span>${label}</span><b>${amount}</b></div>`}${children}</div>`;
 const linesTotal = (lines, prices) => lines.reduce((a, l) => a + (prices[l.pid] || 0) * l.units, 0);
 const linesUnits = lines => lines.reduce((a, l) => a + l.units, 0);
 const linesText = lines => lines.map(l => `${l.units} × ${pname(P[l.pid])}`).join(', ');
@@ -523,56 +520,58 @@ const maskCnic = c => (c ? c.slice(0, 5) + '-•••••••-' + c.slice(-
 const isoDay = ts => { const d = new Date(ts); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const LimitBar = ({ S, add = 0 }) => {
   const used = S.spentToday + add, p = Math.min(1, used / DAY_LIMIT);
-  return html`<div class="lockbox" style="padding:12px 14px">
-    <div class="between small"><span class="muted">Today’s purchases (limit ${fmt(DAY_LIMIT)}, sample)</span><b class=${used > DAY_LIMIT ? 'down' : ''} style="white-space:nowrap">${fmt(used)}</b></div>
-    <div class=${'limitbar' + (p > 0.85 ? ' hi' : '')}><i style=${{ transform: `scaleX(${p})` }}></i></div>
-    <div class="tiny muted" style="margin-top:6px">Per order: up to ${MAX_UNITS} units (sample). Real limits by verification level: <span class="tbc">${TBC}</span></div>
+  return html`<div class="card" style="margin-top:12px">
+    <div class="between small"><span class="muted">Daily purchase limit</span><span><b class=${used > DAY_LIMIT ? 'down' : ''}>${fmt(used)}</b><span class="muted"> of ${fmt(DAY_LIMIT)}</span></span></div>
+    <div class=${'meter' + (p > 0.85 ? ' hi' : '')} role="progressbar" aria-valuemin="0" aria-valuemax=${DAY_LIMIT} aria-valuenow=${Math.round(used)} aria-label="Daily purchase limit used"><i style=${{ transform: `scaleX(${p})` }}></i></div>
+    <div class="tiny muted" style="margin-top:8px">Up to ${MAX_UNITS} units per order. Sample limits; see Fees and limits.</div>
   </div>`;
 };
 
 /* ============================================================
    Rates
    ============================================================ */
-function RateCard({ rates, metal, i, onOpen }) {
+function RateCard({ rates, metal, onOpen }) {
   const r = rateOf(rates, metal);
   const loading = rates.mode === 'connecting';
-  const col = metal === 'gold' ? '#E2B65A' : '#E8EDF0';
-  return html`<div class=${'rate ' + metal} style=${{ '--i': i }} role="button" tabindex="0" onClick=${onOpen} onKeyDown=${e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }} aria-label=${`${metalName(metal)} rate history and price alerts`}>
-    <div class="top">
-      <${Ingot} metal=${metal} w=${44} />
-      <div><div class="metal">${metalName(metal)} 24K</div><div class="pur">999.0 · per tola (11.664 g)</div></div>
-      ${!loading && html`<span class=${'chip chg ' + (r.chg >= 0 ? 'upc' : 'downc')}>${pct(r.chg)}</span>`}
+  const hist = rates[metal].hist;
+  const showChg = !loading && hist.length > 1 && Math.abs(r.chg) >= 0.01;
+  const col = metal === 'gold' ? '#C8962B' : '#8C979F';
+  const sk = (w, h) => html`<span class="sk" style=${{ width: w + 'px', height: h + 'px', marginTop: '4px' }}></span>`;
+  return html`<button class="rc" onClick=${onOpen} aria-label=${`${metalName(metal)}: buy ${fmt(r.buyTola)} per tola. Open history and price alerts`}>
+    <div class="rc-head">
+      <${Ingot} metal=${metal} w=${36} />
+      <div><div class="rc-name">${metalName(metal)} 24K</div><div class="rc-sub">999.0 · per tola (11.664 g)</div></div>
+      <div class="end">
+        ${showChg && html`<span class=${'tag ' + (r.chg >= 0 ? 'success' : 'danger')} title="Change since you opened the app">${pct(r.chg)}</span>`}
+        <${Icon} n="chev" c="sm chev"/>
+      </div>
     </div>
-    <div class="mid">
-      <div><div class="lbl">Buy / tola</div><div class="price-big">${loading ? html`<span class="sk" style="width:170px;height:30px;margin-top:4px"></span>` : html`<${Odo} value=${r.buyTola} flash=${rates.tick} />`}</div></div>
-      ${loading ? html`<span class="sk" style="width:112px;height:40px"></span>` : html`<div style="text-align:right"><${Spark} data=${rates[metal].hist} color=${col} />${rates.mode === 'live' && rates[metal].hist.length < 6 ? html`<div class="tiny" style="color:rgba(255,255,255,.5);margin-top:2px">chart builds live</div>` : ''}</div>`}
+    <div class="rc-main">
+      <div><div class="rc-lbl">Buy</div><div class="rc-price">${loading ? sk(160, 30) : html`<${Odo} value=${r.buyTola} flash=${rates.tick} />`}</div></div>
+      ${!loading && hist.length >= 6 && html`<${Spark} data=${hist} color=${col} w=${96} h=${36} />`}
     </div>
-    <div class="grid3">
-      ${[['Sell / tola', r.sellTola], ['Buy / gram', r.buyGram], ['Sell / gram', r.sellGram]].map(([l, v], k) => html`<div><div class="lbl">${l}</div>
-        <b>${loading ? html`<span class="sk" style="width:72px;height:16px;margin-top:3px"></span>` : k === 0 ? html`<${Odo} value=${v} flash=${rates.tick} />` : fmt(v)}</b></div>`)}
+    <div class="rc-grid">
+      ${[['Sell', r.sellTola], ['Buy per gram', r.buyGram], ['Sell per gram', r.sellGram]].map(([l, v]) => html`<div><div class="rc-lbl">${l}</div>
+        <b>${loading ? sk(72, 16) : fmt(v)}</b></div>`)}
     </div>
-    <div class="rate-more">History · price alerts <${Icon} n="chev" c="xs"/></div>
-  </div>`;
+  </button>`;
 }
 
 function WorldMarkets({ rates }) {
-  if (rates.mode !== 'live' || !rates.world.length) {
-    return html`<div class="card dealers-card"><div class="badge-ico"><${Icon} n="globe"/></div><div class="small muted">${rates.mode === 'connecting' ? 'Loading world spot prices…' : 'World spot prices appear when the live feed is connected.'}</div></div>`;
-  }
-  return html`<div class="hscroll cascade">${rates.world.map((w, i) => { const ch = (w.usd / w.open - 1) * 100; return html`<div class="card wcard" style=${{ '--i': i }}>
-    <div class="between"><span class="sym">${w.symbol}</span><span class="wdot" style=${{ background: WORLD_COLORS[w.symbol] }}></span></div>
-    <div class="small" style="font-weight:700;margin-top:6px">${w.name}</div>
-    <b><${Odo} value=${w.usd} prefix="$" decimals=${w.usd < 100 ? 2 : 0} /></b>
-    <div class="tiny muted">per ${w.unit} · <span class=${ch >= 0 ? 'up' : 'down'}>${pct(ch)}</span></div>
-    <div style="margin-top:6px"><${Spark} data=${w.hist} color=${WORLD_COLORS[w.symbol]} w=${120} h=${26} /></div>
-  </div>`; })}</div>`;
+  if (rates.mode === 'connecting') return html`<div class="group">${[0, 1, 2].map(() => html`<div class="row"><span class="sk" style="width:120px;height:16px"></span><span class="sk" style="width:64px;height:16px;margin-left:auto"></span></div>`)}</div>`;
+  if (rates.mode !== 'live' || !rates.world.length) return html`<div class="group"><div class="row"><span class="ri"><${Icon} n="globe" c="sm"/></span><div class="rt"><span style="margin:0">World prices appear when the live feed is connected.</span></div></div></div>`;
+  return html`<div class="group">${rates.world.map(w => { const ch = (w.usd / w.open - 1) * 100;
+    return html`<div class="row" style="min-height:52px">
+      <div class="rt"><b>${w.name}</b><span>${w.symbol} · per ${w.unit}</span></div>
+      <div class="rv" style="flex-direction:column;align-items:flex-end;gap:2px"><b><${Odo} value=${w.usd} prefix="$" decimals=${w.usd < 100 ? 2 : 0} /></b>${Math.abs(ch) >= 0.01 && html`<span class=${'tiny ' + (ch >= 0 ? 'up' : 'down')}>${pct(ch)}</span>`}</div>
+    </div>`; })}</div>`;
 }
 
-const KycCta = ({ S, A }) => S.guest || S.kyc.status === 'verified' ? null : html`<button class="cta-card press enter" onClick=${() => A.push({ name: 'kyc' })}>
-  <div class="badge-ico"><${Icon} n="idcard"/></div>
-  <div style="flex:1"><b style="font-size:15px">${S.kyc.status === 'pending' ? 'Verification in progress' : S.kyc.status === 'reverify' ? 'Re-verify your identity' : 'Verify your identity to start buying'}</b>
-    <div class="small muted" style="margin-top:2px">CNIC and a selfie, about 2 minutes (FR-A2)</div></div>
-  <${Icon} n="chev" c="sm" s="color:var(--muted)"/>
+const KycCta = ({ S, A }) => S.guest || S.kyc.status === 'verified' ? null : html`<button class="notice warning" onClick=${() => A.push({ name: 'kyc' })}>
+  <${Icon} n="idcard" c="sm"/>
+  <div class="grow"><b>${S.kyc.status === 'pending' ? 'Verification in progress' : S.kyc.status === 'reverify' ? 'Verify your identity again' : 'Verify your identity to start buying'}</b>
+    ${S.kyc.status === 'reverify' ? 'You changed your identity details. It takes about 2 minutes.' : 'You’ll need your CNIC and a selfie. It takes about 2 minutes.'}</div>
+  <${Icon} n="chev" c="sm chev"/>
 </button>`;
 
 function RatesHome({ S, A }) {
@@ -580,47 +579,51 @@ function RatesHome({ S, A }) {
   const featured = ['g-1g', 'g-5g', 'g-100mg', 's-1t', 's-10t'].map(id => P[id]);
   const wv = S.walletValue;
   return html`<div class="scroll">
-    <div class="hero">
-      <div class="brand enter"><${Coin} size=${40} still=${true} /><div><b>PGBX</b><small>Pakistan Gold Bullion Exchange</small></div>
-        ${!guest && html`<button class="iconbtn glass dark" style="margin-left:auto;color:#fff" aria-label=${`Notifications, ${S.unread} unread`} onClick=${() => A.push({ name: 'inbox' })}><${Icon} n="bell"/>${S.unread > 0 && html`<span class="badge" key=${'u' + S.unread}>${S.unread}</span>`}</button>`}</div>
-      <div class="live"><span class=${dotClass(rates, stale)}></span>${feedLabel(rates, stale, now)}</div>
-      <h1 class="enter">${guest ? 'Today’s rates' : `Assalam-o-Alaikum, ${S.profile.name.split(' ')[0]}`}</h1>
-    </div>
-    <div class="rate-stack cascade">
-      <${RateCard} rates=${rates} metal="gold" i=${0} onOpen=${() => A.openHistory('gold')} />
-      <${RateCard} rates=${rates} metal="silver" i=${1} onOpen=${() => A.openHistory('silver')} />
+    <header class="home-head on-dark">
+      <div class="hh-top"><${Coin} size=${32} /><span class="wm">PGBX</span>
+        ${!guest && html`<span class="end"><button class="iconbtn on-dark" aria-label=${S.unread ? `Notifications, ${S.unread} unread` : 'Notifications'} onClick=${() => A.push({ name: 'inbox' })}><${Icon} n="bell"/>${S.unread > 0 && html`<span class="badge">${S.unread}</span>`}</button></span>`}</div>
+      <p class="hh-greet">${guest ? 'Browsing as a guest' : `Assalam-o-Alaikum, ${S.profile.name.split(' ')[0]}`}</p>
+      <h1>Today’s rates</h1>
+      <div class="hh-live" role="status"><span class=${dotClass(rates, stale)}></span>${feedLabel(rates, stale, now)}</div>
+    </header>
+    <div class="rates">
+      <${RateCard} rates=${rates} metal="gold" onOpen=${() => A.openHistory('gold')} />
+      <${RateCard} rates=${rates} metal="silver" onOpen=${() => A.openHistory('silver')} />
     </div>
     ${stale && html`<${StaleBanner}/>`}
-    ${guest && html`<div class="guest-bar enter"><${Icon} n="lock" c="sm"/><span>Browsing as a guest</span><button class="press" onClick=${A.login}>Log in</button></div>`}
+    ${guest && html`<div class="notice plain"><${Icon} n="lock" c="sm"/><div class="grow"><b>Log in to buy and redeem</b>Rates are free to browse.</div><button class="btn btn-primary btn-sm act" onClick=${A.login}>Log in</button></div>`}
     <${KycCta} S=${S} A=${A} />
 
-    <div class="section-title"><h3>Featured products</h3><span>Whole units · 999.0</span></div>
-    <div class="hscroll cascade">
-      ${featured.map((p, i) => html`<button class=${'card feat press' + (p.metal === 'silver' ? ' sil' : '')} style=${{ '--i': i }} onClick=${() => A.openProduct(p.id)}>
-        <div class="ing"><${Ingot} metal=${p.metal} w=${70} label=${p.short} /></div>
-        <b>${pname(p)}</b><div class="p">${fmt(priceOf(p, rates))}</div><div class="tiny muted">999.0 purity</div>
-      </button>`)}
-    </div>
+    ${!guest && html`<section class="sec">
+      <div class="sec-h"><h3>Your wallet</h3></div>
+      <button class="brand-card on-dark" onClick=${() => A.tab('wallet')}>
+        <div class="between"><span class="bc-label">Value at today’s sell price</span><${Icon} n="chev" c="sm"/></div>
+        <div class="bc-value"><${Odo} value=${wv.total} /></div>
+        <div class="bc-sub">${fmtW(wv.goldG)} gold · ${(wv.silverG / TOLA).toFixed(2)} tola silver</div>
+      </button>
+    </section>`}
 
-    ${!guest && html`<div class="section-title"><h3>Your wallet</h3><span>Sell value</span></div>
-    <button class="wallet-sum press enter" onClick=${() => A.tab('wallet')}>
-      <div class="between"><span class="tiny" style="color:rgba(255,255,255,.65);text-transform:uppercase;letter-spacing:.08em;font-weight:900">Total at current sell price</span><${Icon} n="chev" c="sm"/></div>
-      <div class="v"><${Odo} value=${wv.total} /></div>
-      <div class="small" style="color:rgba(255,255,255,.75);margin-top:6px">${fmtW(wv.goldG)} gold · ${(wv.silverG / TOLA).toFixed(2)} tola silver</div>
-    </button>`}
+    <section class="sec">
+      <div class="sec-h"><h3>Popular products</h3><button class="linkbtn sm" onClick=${() => A.tab('buy')}>See all</button></div>
+      <div class="hscroll">
+        ${featured.map(p => html`<button class="pcard" onClick=${() => A.openProduct(p.id)}>
+          <${Thumb} p=${p} w=${64} /><b>${pname(p)}</b><div class="p">${fmt(priceOf(p, rates))}</div>
+        </button>`)}
+      </div>
+    </section>
 
-    <div class="section-title"><h3>World spot</h3><span>USD · live</span></div>
-    <${WorldMarkets} rates=${rates} />
+    <section class="sec">
+      <div class="sec-h"><h3>World markets</h3><span class="aside">USD</span></div>
+      <${WorldMarkets} rates=${rates} />
+    </section>
 
-    <button class="card dealers-card press enter" onClick=${() => A.tab('redeem')}>
-      <div class="badge-ico"><${Icon} n="store"/></div>
-      <div><b>Collect at any of 250 dealers</b><div class="small muted" style="margin-top:3px">Redeem your holdings for the physical product. Bring your CNIC.</div></div>
-      <${Icon} n="chev" c="sm" s="color:var(--muted);margin-left:auto"/>
-    </button>
+    ${guest && html`<section class="sec"><div class="group"><button class="row" onClick=${() => A.tab('redeem')}>
+      <span class="ri gold"><${Icon} n="store" c="sm"/></span><div class="rt"><b>Collect at 250 dealers</b><span>Swap your holdings for the physical bar at a PGBX dealer.</span></div><${Icon} n="chev" c="sm chev"/>
+    </button></div></section>`}
 
-    <p class="foot-note">${rates.mode === 'live'
-      ? html`Live international spot from ${rates.source || 'gold-api.com'}, converted at USD/PKR ${rates.usdPkr ? rates.usdPkr.rate.toFixed(2) : ''} (${rates.usdPkr ? rates.usdPkr.source : 'open.er-api.com'}) by the PGBX prototype server and refreshed every 10 s. Local Sarafa rates may differ. Change % is since you opened the app. Sell prices use a <b>sample</b> spread and product prices a <b>sample</b> premium; PGBX will set both (FR-M1, FR-M2).`
-      : html`The live feed is not connected, so rates are <b>simulated</b> from the Pakistan Sarafa 24K rate of 1 Oct 2026 (gold Rs 438,636 / silver Rs 6,528 per tola) with random ticks every 5 s. In the real app every price is set by the PGBX server (FR-R3).`}</p>
+    <p class="foot">${rates.mode === 'live'
+      ? `Indicative prices: international spot converted at USD/PKR ${rates.usdPkr ? rates.usdPkr.rate.toFixed(2) : ''}, refreshed every 10 seconds. Local Sarafa rates may differ. Sell prices and product premiums are sample values until PGBX sets them.`
+      : `Live prices are unavailable, so these rates are simulated from the Sarafa 24K rate of 1 Oct 2026. Buying uses PGBX’s server prices in the real app.`}</p>
   </div>`;
 }
 
@@ -640,7 +643,7 @@ function Chart({ points, color, range }) {
   const grid = [0.25, 0.5, 0.75].map(f => lo + (hi - lo) * f);
   return html`<div class="chart-wrap">
     <svg ref=${ref} class="chart" viewBox=${`0 0 ${W} ${H}`} onPointerMove=${move} onPointerDown=${move} onPointerLeave=${() => setHover(null)} role="img" aria-label=${`Chart from ${fmt(points[0][1])} to ${fmt(points[points.length - 1][1])}`}>
-      <defs><linearGradient id="chFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color=${color} stop-opacity=".28"/><stop offset="1" stop-color=${color} stop-opacity="0"/></linearGradient></defs>
+      <defs><linearGradient id="chFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color=${color} stop-opacity=".16"/><stop offset="1" stop-color=${color} stop-opacity="0"/></linearGradient></defs>
       ${grid.map(v => html`<line class="ch-grid" x1="0" x2=${W} y1=${y(v)} y2=${y(v)}/><text class="ch-lbl" x=${W - 2} y=${y(v) - 4} text-anchor="end">${Math.round(v).toLocaleString('en-US')}</text>`)}
       <path class="ch-area" d=${d + `L${W},${H}L0,${H}Z`} fill="url(#chFill)"/>
       <path class="ch-line" d=${d} stroke=${color} pathLength="1"/>
@@ -665,39 +668,46 @@ function HistoryScreen({ S, A, metal: m0 }) {
   const valid = t > 0 && (dir === 'above' ? t > r.buyTola : t < r.buyTola);
   const preset = f => setTarget(String(Math.round(r.buyTola * (1 + f))));
   const mine = S.alerts.filter(a => a.metal === metal);
+  const rangeName = { day: 'today', week: 'this week', month: 'this month' }[range];
   return html`<div class="page">
     <${TopBar} title="Rate history" onBack=${A.back} />
-    <div class="scroll" style="top:calc(var(--top) + 60px)">
-      <div class="pad enter"><${Seg} items=${[['gold', 'Gold'], ['silver', 'Silver']]} value=${metal} onChange=${setMetal} /></div>
-      <div class="card summary enter" style="margin-top:12px">
-        <div class="between"><div><div class="tiny muted" style="text-transform:uppercase;letter-spacing:.06em;font-weight:900">${metalName(metal)} buy / tola now</div>
-          <div style="font-family:var(--serif);font-size:24px;font-weight:700;color:var(--g800)"><${Odo} value=${r.buyTola} flash=${S.rates.tick} /></div></div>
-          ${stats && html`<span class=${'chip ' + (stats.chg >= 0 ? 'up' : 'down')} style=${{ background: stats.chg >= 0 ? 'rgba(31,138,76,.1)' : 'rgba(179,65,46,.1)' }}>${pct(stats.chg)} · ${range}</span>`}</div>
-        <div style="margin-top:12px"><${Seg} items=${[['day', 'Day'], ['week', 'Week'], ['month', 'Month']]} value=${range} onChange=${setRange} /></div>
-        ${pts ? html`<${Chart} key=${key + ':' + pts.length} points=${pts} color=${metal === 'gold' ? '#C8962B' : '#7f8a92'} range=${range} />`
-          : h.error ? html`<div class="empty" style="margin:14px 0 0">History is unavailable right now. Nothing is shown rather than a made-up chart.</div>`
-          : html`<span class="sk dk" style="height:180px;margin-top:14px;background:rgba(29,43,34,.06)"></span>`}
+    <div class="scroll">
+      <div class="pad"><${Seg} label="Metal" items=${[['gold', 'Gold'], ['silver', 'Silver']]} value=${metal} onChange=${setMetal} /></div>
+      <div class="card" style="margin-top:12px">
+        <div class="between" style="align-items:flex-start">
+          <div><div class="small muted">${metalName(metal)} buy price per tola</div>
+            <div style="font:600 28px/1.2 var(--serif);color:var(--green-900);margin-top:2px"><${Odo} value=${r.buyTola} flash=${S.rates.tick} /></div></div>
+          ${stats && html`<span class=${'tag ' + (stats.chg >= 0 ? 'success' : 'danger')}>${pct(stats.chg)} ${rangeName}</span>`}
+        </div>
+        <div style="margin-top:16px"><${Seg} label="Period" items=${[['day', 'Day'], ['week', 'Week'], ['month', 'Month']]} value=${range} onChange=${setRange} /></div>
+        ${pts ? html`<${Chart} key=${key + ':' + pts.length} points=${pts} color=${metal === 'gold' ? '#B8862A' : '#7F8A92'} range=${range} />`
+          : h.error ? html`<div style="text-align:center;padding:40px 16px 24px"><b style="display:block">History isn’t available right now</b><p class="small muted" style="margin-top:4px">We couldn’t load past prices. Live rates are unaffected.</p>
+              <button class="btn btn-secondary btn-sm" style="margin-top:12px" onClick=${() => A.loadHistory(metal, range, true)}><${Icon} n="refresh" c="sm"/> Try again</button></div>`
+          : html`<span class="sk" style="height:180px;margin-top:16px" aria-label="Loading chart"></span>`}
         ${stats && html`<div class="stats4">${[['Open', stats.open], ['High', stats.high], ['Low', stats.low], ['Last', pts[pts.length - 1][1]]].map(([l, v]) => html`<div><span>${l}</span><b>${fmt(v)}</b></div>`)}</div>`}
-        ${pts && html`<p class="tiny muted" style="margin:10px 0 0">Indicative history: ${h.source}, converted at USD/PKR ${h.usdPkr ? h.usdPkr.toFixed(2) : ''}. PGBX’s own buy rate differs; the real history will come from PGBX’s rate source (FR-R5).</p>`}
       </div>
+      ${pts && html`<p class="foot">Indicative history from ${h.source}, converted at USD/PKR ${h.usdPkr ? h.usdPkr.toFixed(2) : ''}. PGBX’s own buy rate differs slightly.</p>`}
 
-      <div class="section-title"><h3>Price alerts</h3><span>FR-R6</span></div>
-      <div class="card summary">
-        <div class="small muted">Tell me when ${metalName(metal).toLowerCase()} buy price per tola goes</div>
-        <div style="margin-top:8px"><${Seg} items=${[['above', 'Above'], ['below', 'Below']]} value=${dir} onChange=${v => { setDir(v); setTarget(''); }} /></div>
-        <div style="margin-top:10px"><input class=${'inp' + (target && !valid ? ' bad' : '')} inputmode="numeric" placeholder=${`Target price, now ${fmt(r.buyTola)}`} aria-label="Target price per tola"
-          value=${t ? 'Rs ' + t.toLocaleString('en-US') : ''} onInput=${e => setTarget(e.target.value.replace(/\D/g, ''))} /></div>
-        <div class="chips" style="margin-top:8px">${(dir === 'above' ? [0.005, 0.01, 0.02] : [-0.005, -0.01, -0.02]).map(f => html`<button class="chipb" onClick=${() => preset(f)}>${f > 0 ? '+' : '−'}${Math.abs(f * 100)}%</button>`)}</div>
-        ${target && !valid && html`<div class="hint err">Choose a price ${dir} today’s ${fmt(r.buyTola)}.</div>`}
-        <div style="margin-top:12px"><button class="btn btn-green" disabled=${!valid} onClick=${() => { A.addAlert(metal, dir, t); setTarget(''); }}><${Icon} n="bell" c="sm"/> Create alert</button></div>
-      </div>
-      ${mine.length > 0 && html`<div class="card list cascade" style="margin-top:12px">${mine.map((a, i) => html`<div class="alert-row" style=${{ '--i': i }}>
-        <div class="badge-ico" style="width:38px;height:38px"><${Icon} n="bell" c="sm"/></div>
-        <div style="flex:1"><b style="font-size:14px">${a.dir === 'above' ? 'Above' : 'Below'} ${fmt(a.target)}</b>
-          <div class="tiny muted">${a.active ? 'Active · checks every rate update' : `Triggered ${dt(a.firedAt)}`}</div></div>
-        <button class="rmbtn" onClick=${() => A.removeAlert(a.id)} aria-label="Delete alert"><${Icon} n="trash" c="sm"/></button>
-      </div>`)}</div>`}
-      <p class="foot-note">Alerts arrive as notifications in the app (and by push, SMS or email per your settings). In this prototype they are checked while the app is open.</p>
+      <section class="sec">
+        <div class="sec-h"><h3>Price alert</h3></div>
+        <div class="card">
+          <div class="small muted">Notify me when the ${metalName(metal).toLowerCase()} buy price per tola goes</div>
+          <div style="margin-top:8px"><${Seg} label="Direction" items=${[['above', 'Above'], ['below', 'Below']]} value=${dir} onChange=${v => { setDir(v); setTarget(''); }} /></div>
+          <label class="field"><span class="lbl">Target price</span>
+            <input class=${'inp' + (target && !valid ? ' bad' : '')} inputmode="numeric" placeholder=${`Now ${fmt(r.buyTola)}`}
+              value=${t ? 'Rs ' + t.toLocaleString('en-US') : ''} onInput=${e => setTarget(e.target.value.replace(/\D/g, ''))} /></label>
+          <div class="chips" style="margin-top:8px">${(dir === 'above' ? [0.005, 0.01, 0.02] : [-0.005, -0.01, -0.02]).map(f => html`<button class="chipb" onClick=${() => preset(f)}>${f > 0 ? '+' : '−'}${Math.abs(f * 100)}%</button>`)}</div>
+          ${target && !valid && html`<div class="hint err">Choose a price ${dir} today’s ${fmt(r.buyTola)}.</div>`}
+          <button class="btn btn-primary" style="margin-top:16px" disabled=${!valid} onClick=${() => { A.addAlert(metal, dir, t); setTarget(''); }}>Create alert</button>
+        </div>
+      </section>
+      ${mine.length > 0 && html`<section class="sec"><div class="sec-h"><h3>Your ${metalName(metal).toLowerCase()} alerts</h3></div>
+        <div class="group inset">${mine.map(a => html`<div class="row">
+          <span class=${'ri' + (a.active ? ' gold' : '')}><${Icon} n="bell" c="sm"/></span>
+          <div class="rt"><b>${a.dir === 'above' ? 'Above' : 'Below'} ${fmt(a.target)}</b><span>${a.active ? 'Active' : `Triggered ${rel(a.firedAt, S.now)}`}</span></div>
+          <button class="iconbtn" onClick=${() => A.removeAlert(a.id)} aria-label=${`Delete alert ${a.dir} ${fmt(a.target)}`}><${Icon} n="trash" c="sm"/></button>
+        </div>`)}</div></section>`}
+      <p class="foot">Alerts arrive in your notifications. In this prototype they’re checked while the app is open.</p>
     </div>
   </div>`;
 }
@@ -710,72 +720,64 @@ function BuyList({ S, A }) {
   const list = PRODUCTS.filter(p => p.metal === metal);
   const r = rateOf(S.rates, metal);
   return html`<div class="scroll">
-    <${TabHead} title="Buy" sub="Choose a product. Whole units only, 999.0 purity." right=${!S.guest && html`<${CartButton} S=${S} A=${A} />`} />
-    <div class="seg" role="tablist">
-      <span class="knob" style=${{ transform: `translateX(${metal === 'gold' ? 0 : 100}%)` }}><i key=${'k' + metal}></i></span>
-      <button class=${metal === 'gold' ? 'on' : ''} onClick=${() => A.set({ buyMetal: 'gold' })} role="tab" aria-selected=${metal === 'gold'}>Gold · 7</button>
-      <button class=${metal === 'silver' ? 'on' : ''} onClick=${() => A.set({ buyMetal: 'silver' })} role="tab" aria-selected=${metal === 'silver'}>Silver · 4</button>
-    </div>
-    <div class="pad small muted" style="margin-top:8px;display:flex;align-items:center;gap:6px"><span class=${dotClass(S.rates, S.stale)}></span>${metalName(metal)} ${fmt(r.buyTola)}/tola · ${fmt(r.buyGram)}/g · ${S.rates.mode === 'live' ? 'live' : 'simulated'}</div>
+    <${TabHead} title="Buy" sub="Whole bars only, 999.0 purity" right=${!S.guest && html`<${CartButton} S=${S} A=${A} />`} />
+    <div class="pad" style="margin-top:16px"><${Seg} label="Metal" items=${[['gold', 'Gold'], ['silver', 'Silver']]} value=${metal} onChange=${v => A.set({ buyMetal: v })} /></div>
+    <div class="pad small muted" style="margin-top:12px;display:flex;align-items:center;gap:8px"><span class=${dotClass(S.rates, S.stale)}></span>${metalName(metal)} ${fmt(r.buyTola)} per tola · ${fmt(r.buyGram)} per gram</div>
     ${S.stale && html`<${StaleBanner}/>`}
     <${KycCta} S=${S} A=${A} />
-    <div class="plist cascade" key=${metal}>
-      ${list.map((p, i) => html`<button class=${'card pcard press' + (metal === 'silver' ? ' sil' : '')} style=${{ '--i': i }} onClick=${() => A.openProduct(p.id)}>
-        <div class="ing"><${Ingot} metal=${p.metal} w=${64} label=${p.short} /></div>
-        <div><b>${p.label}</b><div class="small muted">${metalName(p.metal)} · 999.0 · ${fmtW(p.grams)}</div></div>
-        <div class="pp"><b>${fmt(priceOf(p, S.rates))}</b><span class="tiny muted">per unit</span></div>
+    <div class="group inset-thumb" style="margin-top:16px" key=${metal}>
+      ${list.map(p => html`<button class="row" onClick=${() => A.openProduct(p.id)}>
+        <${Thumb} p=${p} />
+        <div class="rt"><b>${p.label}</b><span>${metalName(p.metal)} · ${p.metal === 'silver' ? fmtW(p.grams) : '999.0'}</span></div>
+        <div class="rv"><b>${fmt(priceOf(p, S.rates))}</b><${Icon} n="chev" c="sm chev"/></div>
       </button>`)}
     </div>
-    <div class="offline"><${Icon} n="info" c="sm"/><span>Larger bars are sold offline only and are not available in the app (FR-P6). Gold and silver can be combined in one order using the cart (FR-B8).</span></div>
-    <p class="foot-note">Price = metal rate × weight + PGBX premium, calculated by the server (Rule 1). Premiums are <b>sample</b> values.</p>
+    <p class="foot">Prices include the PGBX premium (sample values). You can mix gold and silver in one order. Larger bars are sold at PGBX offline only.</p>
   </div>`;
 }
 
-const LockBox = ({ S }) => {
+// Price lock shown on product, cart and payment (60 s, then refreshed to the latest rate)
+const LockLine = ({ S }) => {
   const remain = S.lock ? Math.min(LOCK_S, Math.max(0, Math.ceil((S.lock.expiresAt - S.now) / 1000))) : LOCK_S;
-  return html`<div class="lockbox enter">
-    <div class="between"><div class="row" style="gap:8px"><${Icon} n="lock" c="sm" s="color:var(--gold-d)"/><b style="font-size:14px">Price locked for ${remain}s</b></div><span class="small muted">FR-B2</span></div>
-    <div class=${'bar' + (remain <= 10 ? ' low' : '')}><i style=${{ transform: `scaleX(${remain / LOCK_S})` }}></i></div>
-    <div class="tiny muted" style="margin-top:6px">Refreshes to the latest rate when the timer reaches zero.</div>
+  return html`<div>
+    <div class="lockline" role="timer" aria-live="off"><${Icon} n="lock" c="xs"/><span>Price locked for <b style="color:var(--text)">${remain}s</b>, then updated to the latest rate</span></div>
+    <div class=${'lockbar' + (remain <= 10 ? ' low' : '')}><i style=${{ transform: `scaleX(${remain / LOCK_S})` }}></i></div>
   </div>`;
 };
 
 function ProductScreen({ S, A, pid }) {
   const p = P[pid]; const unit = S.lock && S.lock.prices[pid];
   const total = (unit || 0) * S.qty;
-  return html`<div class="page">
+  return html`<div class="page has-actions">
     <${TopBar} title=${pname(p)} onBack=${A.back} right=${html`<${CartButton} S=${S} A=${A} />`} />
-    <div class="scroll" style="top:calc(var(--top) + 60px)">
-      <div class=${'stage-ing enter' + (p.metal === 'silver' ? ' sil' : '')}>
-        <div class="shadow"></div>
-        <div class="float"><${Ingot} metal=${p.metal} w=${180} label=${p.short} /></div>
-      </div>
-      <div class="tiles cascade">
-        <div class="tile" style="--i:0"><span>Metal</span><b>${metalName(p.metal)}</b></div>
-        <div class="tile" style="--i:1"><span>Weight</span><b>${p.metal === 'silver' ? p.label : fmtW(p.grams)}</b><div class="tiny muted">${fmtW(p.grams)}</div></div>
-        <div class="tile" style="--i:2"><span>Purity</span><b>999.0</b></div>
+    <div class="scroll">
+      <div class=${'p-hero' + (p.metal === 'silver' ? ' silver' : '')}><${Ingot} metal=${p.metal} w=${168} label=${p.short} /></div>
+      <div class="specs">
+        <div><span>Metal</span><b>${metalName(p.metal)}</b></div>
+        <div><span>Weight</span><b>${p.metal === 'silver' ? p.label : fmtW(p.grams)}</b></div>
+        <div><span>Purity</span><b>999.0</b></div>
       </div>
       ${S.stale && html`<${StaleBanner}/>`}
-      <${LockBox} S=${S} />
-      <div class="lockbox enter between">
-        <div><b style="font-size:15px">Unit price</b><div class="tiny muted">Locked for you</div></div>
-        <b style="font-family:var(--serif);font-size:18px">${unit && html`<${Odo} value=${unit} flash=${S.lock.expiresAt} />`}</b>
-      </div>
-      <div class="lockbox enter between">
-        <div><b style="font-size:15px">Units</b><div class="tiny muted">Whole units only · max ${MAX_UNITS} per order (sample)</div></div>
-        <div class="stepper">
-          <button disabled=${S.qty <= 1} onClick=${() => A.set({ qty: Math.max(1, S.qty - 1) })} aria-label="Fewer"><${Icon} n="minus" c="sm"/></button>
-          <output><span key=${S.qty}>${S.qty}</span></output>
-          <button disabled=${S.qty >= MAX_UNITS} onClick=${() => A.set({ qty: Math.min(MAX_UNITS, S.qty + 1) })} aria-label="More"><${Icon} n="plus" c="sm"/></button>
+      <div class="card" style="margin-top:12px">
+        <div class="between"><span class="muted">Price per bar</span><b style="font-size:17px">${unit ? html`<${Odo} value=${unit} flash=${S.lock.expiresAt} />` : '—'}</b></div>
+        <div style="margin-top:12px"><${LockLine} S=${S} /></div>
+        <div class="between" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+          <div><b style="display:block">Quantity</b><span class="small muted">Up to ${MAX_UNITS} per order</span></div>
+          <div class="stepper" role="group" aria-label="Quantity">
+            <button disabled=${S.qty <= 1} onClick=${() => A.set({ qty: Math.max(1, S.qty - 1) })} aria-label="Decrease quantity"><${Icon} n="minus" c="sm"/></button>
+            <output aria-live="polite">${S.qty}</output>
+            <button disabled=${S.qty >= MAX_UNITS} onClick=${() => A.set({ qty: Math.min(MAX_UNITS, S.qty + 1) })} aria-label="Increase quantity"><${Icon} n="plus" c="sm"/></button>
+          </div>
         </div>
       </div>
-      <div class="total"><span class="muted">Total · ${S.qty} × ${p.label}</span><b><${Odo} value=${total} /></b></div>
-      <div class="cta" style="display:grid;grid-template-columns:1fr 1.25fr;gap:10px">
-        <button class="btn btn-ghost" disabled=${S.stale} onClick=${() => A.addToCart(pid, S.qty)}><${Icon} n="cart" c="sm"/> Add to cart</button>
-        <button class="btn btn-gold" disabled=${S.stale} onClick=${() => A.checkout('now')}>Buy now <${Icon} n="chev" c="sm"/></button>
-      </div>
-      <div class="pad tiny muted" style="margin-top:10px">Minimum purchase: <span class="tbc">${TBC}</span></div>
+      <p class="foot">Each bar is backed one-to-one by metal held by PGBX. Collect it at a dealer whenever you like.</p>
     </div>
+    <${ActionBar} label=${`Total for ${S.qty} bar${S.qty > 1 ? 's' : ''}`} amount=${html`<${Odo} value=${total} />`}>
+      <div class="ab-btns">
+        <button class="btn btn-secondary" disabled=${S.stale} onClick=${() => A.addToCart(pid, S.qty)}>Add to cart</button>
+        <button class="btn btn-primary" disabled=${S.stale} onClick=${() => A.checkout('now')}>Buy now</button>
+      </div>
+    </${ActionBar}>
   </div>`;
 }
 
@@ -784,81 +786,90 @@ function CartScreen({ S, A }) {
   const lines = S.cart; const prices = (S.lock && S.lock.prices) || {};
   const total = linesTotal(lines, prices); const units = linesUnits(lines);
   const over = S.spentToday + total > DAY_LIMIT;
-  return html`<div class="page">
+  if (lines.length === 0) return html`<div class="page">
     <${TopBar} title="Cart" onBack=${A.back} />
-    <div class="scroll" style="top:calc(var(--top) + 60px)">
-      ${lines.length === 0 ? html`<div class="empty">Your cart is empty.<br/><button class="btn btn-gold" style="margin-top:12px" onClick=${() => A.tab('buy')}>Browse products</button></div>` : html`
-      <${LockBox} S=${S} />
-      <div class="card list cascade" style="margin-top:14px">
-        ${lines.map((l, i) => { const p = P[l.pid]; return html`<div class="line" style=${{ '--i': i }} key=${l.pid}>
-          <${Ingot} metal=${p.metal} w=${50} label=${p.short} />
-          <div style="flex:1;min-width:0"><b style="font-size:14px">${pname(p)}</b><div class="tiny muted">${fmt(prices[l.pid] || 0)} each</div>
-            <div style="margin-top:6px" class="stepper" role="group" aria-label="Units">
-              <button disabled=${l.units <= 1} onClick=${() => A.cartUnits(l.pid, l.units - 1)} aria-label="Fewer"><${Icon} n="minus" c="sm"/></button>
-              <output><span key=${l.units}>${l.units}</span></output>
-              <button disabled=${units >= MAX_UNITS} onClick=${() => A.cartUnits(l.pid, l.units + 1)} aria-label="More"><${Icon} n="plus" c="sm"/></button>
+    <div class="scroll"><${Empty} icon="cart" title="Your cart is empty" body="Add gold and silver bars to buy them together in one payment." action="Browse products" onAction=${() => A.tab('buy')} /></div>
+  </div>`;
+  return html`<div class="page has-actions">
+    <${TopBar} title="Cart" onBack=${A.back} />
+    <div class="scroll">
+      <div class="pad"><${LockLine} S=${S} /></div>
+      <div class="group" style="margin-top:16px">
+        ${lines.map(l => { const p = P[l.pid]; return html`<div class="row" key=${l.pid} style="align-items:flex-start">
+          <${Thumb} p=${p} />
+          <div class="rt"><b>${pname(p)}</b><span>${fmt(prices[l.pid] || 0)} each</span>
+            <div class="stepper" role="group" aria-label=${`Quantity of ${pname(p)}`} style="margin-top:8px">
+              <button disabled=${l.units <= 1} onClick=${() => A.cartUnits(l.pid, l.units - 1)} aria-label="Decrease quantity"><${Icon} n="minus" c="sm"/></button>
+              <output aria-live="polite">${l.units}</output>
+              <button disabled=${units >= MAX_UNITS} onClick=${() => A.cartUnits(l.pid, l.units + 1)} aria-label="Increase quantity"><${Icon} n="plus" c="sm"/></button>
             </div></div>
-          <div style="text-align:right"><b style="font-size:14px">${fmt((prices[l.pid] || 0) * l.units)}</b>
-            <div><button class="rmbtn" style="margin-left:auto" onClick=${() => A.cartUnits(l.pid, 0)} aria-label="Remove"><${Icon} n="trash" c="sm"/></button></div></div>
+          <div style="text-align:right"><b>${fmt((prices[l.pid] || 0) * l.units)}</b>
+            <button class="iconbtn" style="margin:4px -10px 0 auto;color:var(--text-2)" onClick=${() => A.cartUnits(l.pid, 0)} aria-label=${`Remove ${pname(p)}`}><${Icon} n="trash" c="sm"/></button></div>
         </div>`; })}
       </div>
-      <div class="total"><span class="muted">${units} unit${units > 1 ? 's' : ''} · ${new Set(lines.map(l => P[l.pid].metal)).size > 1 ? 'gold and silver' : metalName(P[lines[0].pid].metal).toLowerCase()}</span><b><${Odo} value=${total} /></b></div>
       <${LimitBar} S=${S} add=${total} />
-      ${over && html`<div class="banner warn"><${Icon} n="alert" c="sm"/><div><b>Daily limit reached</b>You can buy up to ${fmt(Math.max(0, DAY_LIMIT - S.spentToday))} more today (FR-B6).</div></div>`}
+      ${over && html`<${Notice} kind="warning" title="Over today’s limit">You can buy up to ${fmt(Math.max(0, DAY_LIMIT - S.spentToday))} more today. Remove a bar to continue.</${Notice}>`}
       ${S.stale && html`<${StaleBanner}/>`}
-      <div class="cta" style="margin-top:14px"><button class="btn btn-gold" disabled=${S.stale || over || units > MAX_UNITS} onClick=${() => A.checkout('cart')}>Checkout ${fmt(total)} <${Icon} n="chev" c="sm"/></button></div>`}
     </div>
+    <${ActionBar} label=${`${units} bar${units > 1 ? 's' : ''} · ${new Set(lines.map(l => P[l.pid].metal)).size > 1 ? 'gold and silver' : metalName(P[lines[0].pid].metal).toLowerCase()}`} amount=${html`<${Odo} value=${total} />`}>
+      <button class="btn btn-primary" disabled=${S.stale || over || units > MAX_UNITS} onClick=${() => A.checkout('cart')}>Continue to payment</button>
+    </${ActionBar}>
   </div>`;
 }
 
 const METHODS = [
-  { id: 'bank', icon: 'bank', name: 'Instant bank transfer', sub: 'Pay from your bank app' },
-  { id: 'card', icon: 'card', name: 'Debit or credit card', sub: 'Card details are never stored in the app (NFR-7)' },
-  { id: 'mwallet', icon: 'phone', name: 'Mobile wallet', sub: 'Pay with your mobile wallet' },
+  { id: 'bank', icon: 'bank', name: 'Bank transfer', sub: 'Pay instantly from your bank app' },
+  { id: 'card', icon: 'card', name: 'Debit or credit card', sub: 'Card details are never stored in the app' },
+  { id: 'mwallet', icon: 'phone', name: 'Mobile wallet', sub: 'Pay from your mobile wallet' },
 ];
 function PayScreen({ S, A }) {
   const lines = S.checkout; const prices = S.lock.prices;
   const total = linesTotal(lines, prices);
   const over = S.spentToday + total > DAY_LIMIT;
-  return html`<div class="page">
-    <${TopBar} title="Pay" onBack=${A.back} />
-    <div class="scroll" style="top:calc(var(--top) + 60px)">
-      <div class="card summary enter">
-        ${lines.map(l => { const p = P[l.pid]; return html`<div class="row" style="padding:6px 0">
-          <${Ingot} metal=${p.metal} w=${48} label=${p.short}/><div style="flex:1"><b style="font-size:14px">${l.units} × ${pname(p)}</b><div class="tiny muted">999.0 · <${Odo} value=${prices[l.pid]} flash=${S.lock.expiresAt} /> each</div></div>
-          <b style="font-size:14px">${fmt(prices[l.pid] * l.units)}</b></div>`; })}
-        <div class="kv" style="border-top:1px solid var(--line);margin-top:6px;padding-top:12px"><span style="color:var(--ink);font-weight:700">Total</span><b style="font-family:var(--serif);font-size:20px;color:var(--g800)"><${Odo} value=${total} /></b></div>
+  return html`<div class="page has-actions">
+    <${TopBar} title="Payment" onBack=${A.back} />
+    <div class="scroll">
+      <div class="sec-h"><h3>Order</h3></div>
+      <div class="card">
+        ${lines.map(l => { const p = P[l.pid]; return html`<div class="kv"><span>${l.units} × ${pname(p)}</span><b>${fmt(prices[l.pid] * l.units)}</b></div>`; })}
+        <div class="kv total"><span>Total</span><b><${Odo} value=${total} /></b></div>
+        <div style="margin-top:12px"><${LockLine} S=${S} /></div>
       </div>
-      <${LockBox} S=${S} />
-      <div class="section-title"><h3>Payment method</h3><span>FR-B3</span></div>
-      <div class="methods cascade">
-        ${METHODS.map((m, i) => html`<button class=${'method' + (S.method === m.id ? ' on' : '')} style=${{ '--i': i }} onClick=${() => A.set({ method: m.id })} role="radio" aria-checked=${S.method === m.id}>
-          <div class="mi"><${Icon} n=${m.icon}/></div><div><b style="font-size:15px">${m.name}</b><div class="tiny muted" style="margin-top:2px">${m.sub}</div></div><span class="radio"><i></i></span>
-        </button>`)}
-      </div>
-      <div class="pad tiny muted" style="margin-top:10px">Which payment channels are enabled, and their providers: <span class="tbc">${TBC}</span></div>
-      <div class="banner info enter"><${Icon} n="shield" c="sm" s="color:var(--g700)"/><div>Your wallet is credited only after PGBX confirms the payment (FR-B4). If crediting fails, PGBX retries and then hands the order to operations, so money and metal are never left unmatched (FR-B5).</div></div>
-      <button class="protobox" style="text-align:left;width:calc(100% - 36px);display:flex;gap:12px;align-items:center" onClick=${() => A.set({ simCreditFail: !S.simCreditFail })} role="switch" aria-checked=${S.simCreditFail}>
-        <div style="flex:1"><b>Prototype: simulate a problem</b>Payment succeeds but crediting the wallet fails (FR-B5)</div><${Switch} on=${S.simCreditFail} />
-      </button>
-      ${over && html`<div class="banner warn"><${Icon} n="alert" c="sm"/><div><b>Daily limit reached</b>This order would take you over today’s sample limit of ${fmt(DAY_LIMIT)} (FR-B6).</div></div>`}
+      <section class="sec">
+        <div class="sec-h"><h3>Pay with</h3></div>
+        <div class="group inset" role="radiogroup" aria-label="Payment method">
+          ${METHODS.map(m => html`<button class="row" onClick=${() => A.set({ method: m.id })} role="radio" aria-checked=${S.method === m.id}>
+            <span class="ri"><${Icon} n=${m.icon} c="sm"/></span><div class="rt"><b>${m.name}</b><span>${m.sub}</span></div><${Radio} on=${S.method === m.id} />
+          </button>`)}
+        </div>
+      </section>
+      <${Notice} kind="plain" icon="shield">Metal is added to your wallet as soon as PGBX confirms your payment. If anything goes wrong, PGBX completes the order or refunds you.</${Notice}>
+      ${over && html`<${Notice} kind="warning" title="Over today’s limit">This order would take you over today’s limit of ${fmt(DAY_LIMIT)}.</${Notice}>`}
       ${S.stale && html`<${StaleBanner}/>`}
-      <div class="cta" style="margin-top:16px"><button class="btn btn-gold" disabled=${S.stale || S.paying || over} onClick=${A.pay}><${Icon} n="lock" c="sm"/> Pay ${fmt(total)}</button></div>
+      <${Demo} title="Simulate a problem">
+        <button class="row" onClick=${() => A.set({ simCreditFail: !S.simCreditFail })} role="switch" aria-checked=${S.simCreditFail}>
+          <div class="rt"><b>Payment succeeds, crediting fails</b><span>Shows retries and hand-off to PGBX operations</span></div><${Switch} on=${S.simCreditFail} />
+        </button>
+      </${Demo}>
     </div>
+    <${ActionBar}>
+      <button class="btn btn-primary" disabled=${S.stale || S.paying || over} onClick=${A.pay}>${S.paying ? html`<span class="spin"></span> Processing` : html`<${Icon} n="lock" c="sm"/> Pay ${fmt(total)}`}</button>
+    </${ActionBar}>
   </div>`;
 }
 
 function Processing({ fail }) {
   const steps = fail
-    ? [['ok', 'Payment received'], ['bad', 'Crediting your wallet failed'], ['ok', 'Retrying (1 of 3)…'], ['ok', 'Retrying (2 of 3)…'], ['ok', 'Retrying (3 of 3)…'], ['flag', 'Handed to PGBX operations']]
-    : [['ok', 'Payment confirmed'], ['ok', 'Crediting your wallet'], ['ok', 'Issuing receipt']];
+    ? [['ok', 'Payment received'], ['bad', 'Couldn’t add the metal to your wallet'], ['ok', 'Retrying (1 of 3)'], ['ok', 'Retrying (2 of 3)'], ['ok', 'Retrying (3 of 3)'], ['flag', 'Passed to PGBX operations']]
+    : [['ok', 'Payment confirmed'], ['ok', 'Adding metal to your wallet'], ['ok', 'Issuing your receipt']];
   const [n, setN] = useState(0);
-  useEffect(() => { const t = setInterval(() => setN(v => v + 1), fail ? 800 : 550); return () => clearInterval(t); }, []);
-  return html`<div class="center-screen">
-    <svg class="spinner" viewBox="0 0 50 50"><circle cx="25" cy="25" r="21" fill="none" stroke="rgba(11,74,44,.12)" stroke-width="4"/><circle cx="25" cy="25" r="21" fill="none" stroke="url(#goldMetal)" stroke-width="4" stroke-linecap="round" stroke-dasharray="40 200"/></svg>
-    <h2 style="margin-top:22px;font-size:22px;color:var(--g800)" class="enter">${fail ? 'Processing your order' : 'Confirming payment'}</h2>
-    <div class="proc-steps" style="text-align:left">
-      ${steps.slice(0, n + 1).map(([k, t]) => html`<div class="row" style="gap:8px"><span style=${{ color: k === 'bad' ? 'var(--down)' : k === 'flag' ? 'var(--gold-d)' : 'var(--up)' }}><${Icon} n=${k === 'bad' ? 'x' : k === 'flag' ? 'flag' : 'check'} c="sm"/></span>${t}</div>`)}
+  useEffect(() => { const t = setInterval(() => setN(v => Math.min(v + 1, steps.length - 1)), fail ? 800 : 550); return () => clearInterval(t); }, []);
+  return html`<div class="center-screen" role="status" aria-live="polite">
+    <div class="spinner" aria-hidden="true"></div>
+    <h2 style="margin-top:24px;font-size:22px">${fail ? 'Processing your order' : 'Confirming your payment'}</h2>
+    <p class="small muted" style="margin-top:4px">Please keep the app open.</p>
+    <div class="proc-steps">
+      ${steps.slice(0, n + 1).map(([k, t]) => html`<div><span style=${{ color: k === 'bad' ? 'var(--danger)' : k === 'flag' ? 'var(--warning)' : 'var(--success)', display: 'flex' }}><${Icon} n=${k === 'bad' ? 'x' : k === 'flag' ? 'flag' : 'check'} c="sm"/></span>${t}</div>`)}
     </div>
   </div>`;
 }
@@ -870,26 +881,26 @@ function Receipt({ S, A, oid }) {
     try { if (navigator.share) await navigator.share({ title: 'PGBX receipt', text }); else { await navigator.clipboard.writeText(text); A.toast('Receipt details copied'); } } catch (e) { }
   };
   return html`<div class="scroll">
-    <div class="check-wrap">${!flagged && html`<span class="ripple"></span><span class="ripple"></span><span class="ripple"></span>`}
-      <div class="check-disc" style=${flagged ? { background: 'linear-gradient(150deg,#C8962B,#8A6414)' } : null}>${flagged
-        ? html`<svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><path d=${PATHS.clock}/></svg>`
-        : html`<svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="#E2B65A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d=${PATHS.check} pathLength="1"/></svg>`}</div>
+    <div class="result">
+      <div class=${'mark' + (flagged ? ' warning' : '')}>${flagged
+        ? html`<${Icon} n="clock"/>`
+        : html`<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d=${PATHS.check} pathLength="1"/></svg>`}</div>
+      <h1>${flagged ? 'Payment received' : 'Payment confirmed'}</h1>
+      <p>${flagged ? 'We couldn’t add the metal to your wallet yet. PGBX operations will complete your order or refund you. Your money is safe.' : `${linesText(o.lines)} ${o.lines.length > 1 || o.lines[0].units > 1 ? 'are' : 'is'} now in your wallet.`}</p>
     </div>
-    <div style="text-align:center;margin-top:16px;padding:0 24px" class="enter"><h1 style="font-size:24px;color:var(--g800)">${flagged ? 'Payment received, credit pending' : 'Payment confirmed'}</h1>
-      <p class="muted" style="margin:6px 0 0;font-size:14px">${flagged ? 'Crediting your wallet failed after 3 retries. PGBX operations will credit the metal or refund you; your money is safe (FR-B5).' : `${linesText(o.lines)} added to your wallet`}</p></div>
-    <div class="card receipt cascade">
-      <div class="kv" style="--i:0"><span>Receipt no. (FR-B7)</span><b class="rno">${o.receipt}</b></div>
-      ${o.lines.map((l, i) => html`<div class="kv" style=${{ '--i': i + 1 }}><span>${l.units} × ${pname(P[l.pid])}</span><b>${fmt(l.unit * l.units)}</b></div>`)}
-      <div class="kv" style="--i:4"><span>Method</span><b>${METHODS.find(m => m.id === o.method).name}</b></div>
-      <div class="kv" style="--i:5"><span>Date</span><b>${dt(o.ts)}</b></div>
-      <div class="kv" style="--i:6"><span>Status</span><b class=${flagged ? '' : 'up'} style=${flagged ? { color: 'var(--gold-d)' } : null}>${flagged ? 'Flagged for operations' : 'Credited to wallet'}</b></div>
-      <div class="kv" style="--i:7;border-top:1px solid var(--line);margin-top:4px;padding-top:12px"><span style="color:var(--ink);font-weight:700">Total paid</span><b style="font-family:var(--serif);font-size:20px;color:var(--g800)">${fmt(o.total)}</b></div>
-      <div class="tiny muted" style="--i:8;padding:6px 0">Tax and legal details on receipts (CMP-7): <span class="tbc">${TBC}</span></div>
+    <div class="card" style="margin-top:24px">
+      <div class="kv"><span>Receipt</span><b class="mono">${o.receipt}</b></div>
+      ${o.lines.map(l => html`<div class="kv"><span>${l.units} × ${pname(P[l.pid])}</span><b>${fmt(l.unit * l.units)}</b></div>`)}
+      <div class="kv"><span>Paid with</span><b>${METHODS.find(m => m.id === o.method).name}</b></div>
+      <div class="kv"><span>Date</span><b>${dt(o.ts)}</b></div>
+      <div class="kv"><span>Status</span><span class=${'tag ' + (flagged ? 'warning' : 'success')}>${flagged ? 'With operations' : 'In your wallet'}</span></div>
+      <div class="kv total"><span>Total paid</span><b>${fmt(o.total)}</b></div>
+      <div class="small muted" style="margin-top:8px">Tax and legal details: <${Tbc}/></div>
     </div>
-    <div class="cta" style="display:grid;gap:10px;margin-top:16px">
-      <button class="btn btn-green" onClick=${() => A.tab('wallet')}><${Icon} n="wallet" c="sm"/> View wallet</button>
-      <button class="btn btn-ghost" onClick=${share}><${Icon} n="share" c="sm"/> Share receipt</button>
-      <button class="btn btn-ghost" style="border:0" onClick=${() => A.tab('rates')}>Back to rates</button>
+    <div class="pad stack-btns" style="margin-top:24px">
+      <button class="btn btn-primary" onClick=${() => A.tab('wallet')}>View wallet</button>
+      <button class="btn btn-secondary" onClick=${share}><${Icon} n="share" c="sm"/> Share receipt</button>
+      <button class="btn btn-tertiary" onClick=${() => A.tab('rates')}>Done</button>
     </div>
   </div>`;
 }
@@ -910,56 +921,63 @@ function KycScreen({ S, A, next }) {
   const re = S.kyc.status === 'reverify';
   const [step, setStep] = useState(0);
   const [f, setF] = useState({ cnic: S.profile.cnic || '', name: S.profile.name || '', dob: S.profile.dob || '', expiry: S.kyc.expiry || '' });
+  const [touched, setTouched] = useState({});
   const [shot, setShot] = useState({ front: false, back: false, selfie: false });
   const [busy, setBusy] = useState(false);
   const age = f.dob ? (Date.now() - Date.parse(f.dob)) / (365.25 * 86400e3) : 0;
   const errs = { cnic: f.cnic.replace(/\D/g, '').length !== 13, name: f.name.trim().length < 3, dob: !(age >= 18 && age < 120), expiry: !(Date.parse(f.expiry) > Date.now()) };
+  const msgs = { cnic: 'Enter all 13 digits of your CNIC.', name: 'Enter your full name as printed on your CNIC.', dob: f.dob ? 'You must be 18 or older.' : 'Enter your date of birth.', expiry: f.expiry ? 'This CNIC has expired.' : 'Enter the expiry date.' };
   const ok = !Object.values(errs).some(Boolean);
+  const show = k => (touched[k] || touched.all) && errs[k];
   const capture = k => { setBusy(true); setTimeout(() => { setShot(s => ({ ...s, [k]: true })); setBusy(false); }, 1500); };
   const submit = () => { setStep(5); A.submitKyc(f); setTimeout(() => { A.kycVerified(); setStep(6); }, 2600); };
-  const titles = ['Verify your identity', 'CNIC details', 'Front of your CNIC', 'Back of your CNIC', 'Take a selfie', 'Checking', 'You’re verified'];
+  const titles = [re ? 'Verify your identity again' : 'Verify your identity', 'Your CNIC details', 'Front of your CNIC', 'Back of your CNIC', 'Take a selfie', 'Checking your details', 'You’re verified'];
   const Frame = ({ k, back }) => html`<div class="idframe">
     <span class="cn a"></span><span class="cn b"></span><span class="cn c"></span><span class="cn d"></span>
     ${shot[k] ? html`<${IdCardArt} back=${back} /><span class="okmark"><${Icon} n="check" c="sm"/></span>`
       : busy ? html`<span class="scanline"></span><span>Hold steady…</span>` : html`<span>Place the ${back ? 'back' : 'front'} of your CNIC inside the frame</span>`}
   </div>`;
+  const F = (k, label, input) => html`<label class="field"><span class="lbl">${label}</span>${input}${show(k) && html`<div class="hint err">${msgs[k]}</div>`}</label>`;
   return html`<div class="page">
-    <${TopBar} title=${re ? 'Re-verify identity' : 'Identity verification'} onBack=${step > 0 && step < 5 ? () => setStep(step - 1) : A.back} />
-    <div class="scroll" style="top:calc(var(--top) + 60px)">
-      <div class="kprog"><i style=${{ transform: `scaleX(${Math.min(1, step / 6)})` }}></i></div>
-      <div class="pad step-in" key=${step} style="margin-top:16px">
-        <h2 style="font-size:22px;color:var(--g800)">${titles[step]}</h2>
-        ${step === 0 && html`<p class="muted" style="font-size:14px;margin:6px 0 14px">${re ? 'You changed identity details, so PGBX needs to check them again before you can buy (FR-N2).' : 'PGBX must verify your identity before your first purchase (FR-A2). It takes about 2 minutes.'}</p>
-          <div class="card list">${[['idcard', 'Your CNIC details', 'Number, name, date of birth, expiry'], ['camera', 'Photos of your CNIC', 'Front and back'], ['user', 'A selfie', 'Matched against your CNIC photo']].map(([ic, t, d], i) => html`<div class="kstep"><span class="kn">${i + 1}</span><div><b style="font-size:14px">${t}</b><div class="tiny muted">${d}</div></div><${Icon} n=${ic} c="sm" s="margin-left:auto;color:var(--muted)"/></div>`)}</div>
-          <p class="tiny muted" style="margin-top:12px">Identity verification provider: <span class="tbc">${TBC}</span>. Sanctions and watch-list screening runs on the server (CMP-1).</p>
-          <div style="margin-top:14px"><button class="btn btn-gold" onClick=${() => setStep(1)}>Start</button></div>`}
-        ${step === 1 && html`<div style="margin-top:8px">
-          <label class="f">CNIC number</label><input class=${'inp' + (f.cnic && errs.cnic ? ' bad' : '')} inputmode="numeric" placeholder="00000-0000000-0" value=${fmtCnic(f.cnic)} onInput=${e => setF({ ...f, cnic: fmtCnic(e.target.value) })} />
-          <label class="f">Full name (as on CNIC)</label><input class="inp" value=${f.name} onInput=${e => setF({ ...f, name: e.target.value })} />
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-            <div><label class="f">Date of birth</label><input class=${'inp' + (f.dob && errs.dob ? ' bad' : '')} type="date" value=${f.dob} onInput=${e => setF({ ...f, dob: e.target.value })} /></div>
-            <div><label class="f">CNIC expiry</label><input class=${'inp' + (f.expiry && errs.expiry ? ' bad' : '')} type="date" value=${f.expiry} onInput=${e => setF({ ...f, expiry: e.target.value })} /></div>
+    <${TopBar} title=${step < 5 ? `Step ${Math.min(step + 1, 5)} of 5` : 'Identity'} onBack=${step > 0 && step < 5 ? () => setStep(step - 1) : A.back} />
+    <div class="scroll">
+      <div class="kprog" role="progressbar" aria-valuemin="0" aria-valuemax="6" aria-valuenow=${step}><i style=${{ transform: `scaleX(${Math.min(1, step / 6)})` }}></i></div>
+      <div class="pad step-in" key=${step} style="margin-top:24px">
+        <h2 style="font-size:24px">${titles[step]}</h2>
+        ${step === 0 && html`<p class="muted" style="margin-top:8px">${re ? 'You changed your identity details, so PGBX needs to check them again before your next purchase.' : 'PGBX checks your identity once, before your first purchase. It takes about 2 minutes.'}</p>
+          <div class="group" style="margin:20px 0 0">${[['Your CNIC details', 'Number, name, date of birth and expiry'], ['Photos of your CNIC', 'Front and back'], ['A selfie', 'Matched to your CNIC photo']].map(([t, d], i) => html`<div class="row"><span class="kn">${i + 1}</span><div class="rt"><b>${t}</b><span>${d}</span></div></div>`)}</div>
+          <p class="small muted" style="margin-top:12px">Your details are encrypted and used only to verify your identity.</p>
+          <button class="btn btn-primary" style="margin-top:24px" onClick=${() => setStep(1)}>Start</button>`}
+        ${step === 1 && html`<div>
+          ${F('cnic', 'CNIC number', html`<input class=${'inp' + (show('cnic') ? ' bad' : '')} inputmode="numeric" autocomplete="off" placeholder="00000-0000000-0" value=${fmtCnic(f.cnic)} onBlur=${() => setTouched(t => ({ ...t, cnic: true }))} onInput=${e => setF({ ...f, cnic: fmtCnic(e.target.value) })} />`)}
+          ${F('name', 'Full name, as on your CNIC', html`<input class=${'inp' + (show('name') ? ' bad' : '')} autocomplete="name" value=${f.name} onBlur=${() => setTouched(t => ({ ...t, name: true }))} onInput=${e => setF({ ...f, name: e.target.value })} />`)}
+          <div class="grid2">
+            ${F('dob', 'Date of birth', html`<input class=${'inp' + (show('dob') ? ' bad' : '')} type="date" autocomplete="bday" value=${f.dob} onBlur=${() => setTouched(t => ({ ...t, dob: true }))} onInput=${e => setF({ ...f, dob: e.target.value })} />`)}
+            ${F('expiry', 'CNIC expiry', html`<input class=${'inp' + (show('expiry') ? ' bad' : '')} type="date" value=${f.expiry} onBlur=${() => setTouched(t => ({ ...t, expiry: true }))} onInput=${e => setF({ ...f, expiry: e.target.value })} />`)}
           </div>
-          ${f.dob && errs.dob && html`<div class="hint err">You must be 18 or older.</div>`}${f.expiry && errs.expiry && html`<div class="hint err">This CNIC has expired.</div>`}
-          <div style="margin-top:16px"><button class="btn btn-gold" disabled=${!ok} onClick=${() => setStep(2)}>Continue</button></div></div>`}
-        ${(step === 2 || step === 3) && html`<${Frame} k=${step === 2 ? 'front' : 'back'} back=${step === 3} />
-          <p class="tiny muted" style="text-align:center;margin-top:8px">Prototype: the camera is simulated and no image is taken.</p>
-          <div style="margin-top:12px">${shot[step === 2 ? 'front' : 'back']
-            ? html`<button class="btn btn-gold" onClick=${() => setStep(step + 1)}>Continue</button>`
-            : html`<button class="btn btn-green" disabled=${busy} onClick=${() => capture(step === 2 ? 'front' : 'back')}><${Icon} n="camera" c="sm"/> ${busy ? 'Capturing…' : 'Capture'}</button>`}</div>`}
-        ${step === 4 && html`<div class=${'selfie' + (shot.selfie ? ' ok' : '')}>
-            ${busy && html`<svg class="ring" viewBox="0 0 210 210"><circle cx="105" cy="105" r="100" stroke="rgba(255,255,255,.12)"/><circle class="pr" cx="105" cy="105" r="100" pathLength="1"/></svg>`}
-            ${shot.selfie ? html`<span style="color:#7be3a6;animation:pop .5s var(--spring) both"><svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d=${PATHS.check}/></svg></span>`
-              : html`<svg class="face" width="120" height="140" viewBox="0 0 120 140" fill="none" stroke="#E2B65A" stroke-width="2" stroke-dasharray="5 6"><ellipse cx="60" cy="62" rx="40" ry="52"/><path d="M20 140c4-18 20-26 40-26s36 8 40 26"/></svg>`}
+          <button class="btn btn-primary" style="margin-top:24px" onClick=${() => (ok ? setStep(2) : setTouched({ all: true }))}>Continue</button></div>`}
+        ${(step === 2 || step === 3) && html`<p class="muted" style="margin-top:8px">Use good light and avoid glare. All four corners should be visible.</p>
+          <${Frame} k=${step === 2 ? 'front' : 'back'} back=${step === 3} />
+          <p class="tiny muted" style="text-align:center;margin-top:8px">Demo: the camera is simulated and no photo is taken.</p>
+          <div style="margin-top:16px">${shot[step === 2 ? 'front' : 'back']
+            ? html`<button class="btn btn-primary" onClick=${() => setStep(step + 1)}>Continue</button>`
+            : html`<button class="btn btn-primary" disabled=${busy} onClick=${() => capture(step === 2 ? 'front' : 'back')}>${busy ? html`<span class="spin"></span> Capturing` : html`<${Icon} n="camera" c="sm"/> Capture`}</button>`}</div>`}
+        ${step === 4 && html`<p class="muted" style="margin-top:8px">Fit your face inside the circle. Remove glasses and look at the camera.</p>
+          <div class=${'selfie' + (shot.selfie ? ' ok' : '')}>
+            ${busy && html`<svg class="ring" viewBox="0 0 200 200"><circle cx="100" cy="100" r="96" stroke="rgba(255,255,255,.12)"/><circle class="pr" cx="100" cy="100" r="96" pathLength="1"/></svg>`}
+            ${shot.selfie ? html`<span style="color:#7FD8A4"><svg width="72" height="72" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d=${PATHS.check}/></svg></span>`
+              : html`<svg width="112" height="132" viewBox="0 0 120 140" fill="none" stroke="#E2B65A" stroke-width="2" stroke-dasharray="5 6" opacity=".7"><ellipse cx="60" cy="62" rx="40" ry="52"/><path d="M20 140c4-18 20-26 40-26s36 8 40 26"/></svg>`}
           </div>
-          <p class="small muted" style="text-align:center;margin-top:12px">${shot.selfie ? 'Selfie captured' : busy ? 'Hold still and look at the camera…' : 'Fit your face inside the oval, in good light.'}</p>
-          <div style="margin-top:12px">${shot.selfie ? html`<button class="btn btn-gold" onClick=${submit}>Submit for verification</button>`
-            : html`<button class="btn btn-green" disabled=${busy} onClick=${() => capture('selfie')}><${Icon} n="camera" c="sm"/> ${busy ? 'Capturing…' : 'Take selfie'}</button>`}</div>`}
-        ${step === 5 && html`<svg class="checking" viewBox="0 0 50 50"><circle cx="25" cy="25" r="21" fill="none" stroke="rgba(11,74,44,.12)" stroke-width="4"/><circle cx="25" cy="25" r="21" fill="none" stroke="url(#goldMetal)" stroke-width="4" stroke-linecap="round" stroke-dasharray="40 200"/></svg>
-          <p class="muted" style="text-align:center">Checking your CNIC and selfie with the verification provider…</p>`}
-        ${step === 6 && html`<div class="check-wrap" style="margin-top:20px"><span class="ripple"></span><span class="ripple"></span><div class="check-disc"><svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="#E2B65A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d=${PATHS.check} pathLength="1"/></svg></div></div>
-          <p class="muted" style="text-align:center;margin-top:14px">Prototype: verification always passes. A real provider returns pass, fail or manual review (section 8).</p>
-          <div style="margin-top:12px"><button class="btn btn-gold" onClick=${() => A.kycFinish(next)}>${next === 'pay' ? 'Continue to payment' : 'Done'}</button></div>`}
+          <p class="small muted" style="text-align:center;margin-top:12px" role="status">${shot.selfie ? 'Selfie captured' : busy ? 'Hold still…' : ''}</p>
+          <div style="margin-top:16px">${shot.selfie ? html`<button class="btn btn-primary" onClick=${submit}>Submit for verification</button>`
+            : html`<button class="btn btn-primary" disabled=${busy} onClick=${() => capture('selfie')}>${busy ? html`<span class="spin"></span> Capturing` : html`<${Icon} n="camera" c="sm"/> Take selfie`}</button>`}</div>`}
+        ${step === 5 && html`<div style="text-align:center;padding-top:40px" role="status"><div class="spinner" style="margin:0 auto"></div>
+          <p class="muted" style="margin-top:16px">Checking your CNIC and selfie. This usually takes less than a minute.</p></div>`}
+        ${step === 6 && html`<div style="text-align:center;padding-top:24px">
+          <div class="mark"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d=${PATHS.check} pathLength="1"/></svg></div>
+          <p class="muted" style="margin-top:16px">${next === 'pay' ? 'You can now complete your purchase.' : 'You can now buy gold and silver.'}</p>
+          <p class="tiny muted" style="margin-top:8px">Demo: verification always passes. A real check can also fail or go to manual review.</p></div>
+          <button class="btn btn-primary" style="margin-top:24px" onClick=${() => A.kycFinish(next)}>${next === 'pay' ? 'Continue to payment' : 'Done'}</button>`}
       </div>
     </div>
   </div>`;
@@ -972,42 +990,50 @@ function ProfileScreen({ S, A }) {
   const phSend = async () => {
     setPh(p => ({ ...p, busy: true, err: '' }));
     const d = demo ? { ok: true } : await otpCall({ action: 'send', phone: ph.num, channel: 'sms' });
-    setPh(p => ({ ...p, busy: false, sent: !!d.ok, err: d.ok ? '' : d.error === 'wait' ? `Please wait ${d.retryIn}s.` : d.error === 'unreachable' ? 'Can’t reach the login service. Try again.' : d.message || 'Could not send the code.' }));
+    setPh(p => ({ ...p, busy: false, sent: !!d.ok, err: d.ok ? '' : d.error === 'wait' ? `Please wait ${d.retryIn} seconds before trying again.` : d.error === 'unreachable' ? 'Can’t reach the login service. Check your connection and try again.' : d.message || 'We couldn’t send the code. Try again.' }));
   };
   const phCheck = async () => {
     setPh(p => ({ ...p, busy: true, err: '' }));
     const d = demo ? { ok: true, approved: true } : await otpCall({ action: 'check', phone: ph.num, code: ph.code });
     if (d.ok && d.approved) { A.changePhone(ph.num); setPh({ open: false, num: '', sent: false, code: '', busy: false, err: '' }); return; }
-    setPh(p => ({ ...p, busy: false, code: '', err: d.message || 'That code is incorrect.' }));
+    setPh(p => ({ ...p, busy: false, code: '', err: d.message || 'That code is incorrect. Check the SMS and try again.' }));
   };
   const idChanged = ['name', 'cnic', 'dob'].some(k => (f[k] || '') !== (S.profile[k] || ''));
   const dirty = idChanged || ['email', 'address'].some(k => (f[k] || '') !== (S.profile[k] || ''));
   const emailBad = f.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email);
+  const nameBad = f.name.trim().length < 3;
   const numOk = PK_MOBILE.test(ph.num);
   return html`<div class="page">
     <${TopBar} title="Personal details" onBack=${A.back} />
-    <div class="scroll" style="top:calc(var(--top) + 60px)">
-      <div class="pad enter">
-        <div class="tiny muted" style="text-transform:uppercase;letter-spacing:.08em;font-weight:900;margin-top:4px">Identity details</div>
-        <label class="f">Full name</label><input class="inp" value=${f.name} onInput=${e => setF({ ...f, name: e.target.value })} />
-        <label class="f">CNIC number</label><input class="inp" inputmode="numeric" placeholder="Added during verification" value=${fmtCnic(f.cnic || '')} onInput=${e => setF({ ...f, cnic: fmtCnic(e.target.value) })} />
-        <label class="f">Date of birth</label><input class="inp" type="date" value=${f.dob || ''} onInput=${e => setF({ ...f, dob: e.target.value })} />
-        ${idChanged && S.kyc.status === 'verified' && html`<div class="login-note" style="margin-top:12px"><${Icon} n="alert" c="sm"/><span>Changing identity details needs re-verification (FR-N2). Buying is paused until PGBX checks them again.</span></div>`}
-        <div class="tiny muted" style="text-transform:uppercase;letter-spacing:.08em;font-weight:900;margin-top:20px">Contact details</div>
-        <label class="f">Mobile number</label>
-        <div class="between"><b>+92 ${S.phone ? S.phone.slice(0, 3) + ' ' + S.phone.slice(3) : '3•• ••• 4521'}</b><button class="linkbtn" onClick=${() => setPh({ open: !ph.open, num: '', sent: false, code: '', busy: false, err: '' })}>${ph.open ? 'Cancel' : 'Change'}</button></div>
-        ${ph.open && html`<div class="card summary step-in" style="margin:8px 0 0">
-          <div class="field" style="margin-top:0"><span class="cc">+92</span><input inputmode="numeric" placeholder="New number 3XX XXXXXXX" value=${ph.num} onInput=${e => setPh({ ...ph, num: e.target.value.replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '').slice(0, 10), sent: false, err: '' })} /></div>
-          ${ph.num.length === 10 && !numOk && html`<div class="hint err">Enter a valid Pakistani mobile number, for example 300 1234567.</div>`}
-          ${!ph.sent ? html`<div style="margin-top:10px"><button class="btn btn-green" disabled=${!numOk || ph.busy} onClick=${phSend}>${ph.busy ? 'Sending…' : 'Send code by SMS to new number'}</button></div>`
-            : html`<input class="inp" style="margin-top:10px" inputmode="numeric" autocomplete="one-time-code" placeholder=${demo ? '6-digit code (demo: any)' : '6-digit code from the SMS'} value=${ph.code} onInput=${e => setPh({ ...ph, code: e.target.value.replace(/\D/g, '').slice(0, 6), err: '' })} />
-              <div style="margin-top:10px"><button class="btn btn-gold" disabled=${ph.code.length !== 6 || ph.busy} onClick=${phCheck}>${ph.busy ? 'Checking…' : 'Verify and update'}</button></div>`}
-          ${ph.err && html`<div class="hint err" role="alert">${ph.err}</div>`}
-        </div>`}
-        <label class="f">Email</label><input class=${'inp' + (emailBad ? ' bad' : '')} type="email" placeholder="name@example.com" value=${f.email || ''} onInput=${e => setF({ ...f, email: e.target.value })} />
-        <label class="f">Address</label><textarea rows="2" placeholder="House, street, area, city" value=${f.address || ''} onInput=${e => setF({ ...f, address: e.target.value })}></textarea>
-        <div style="margin-top:16px"><button class="btn btn-gold" disabled=${!dirty || emailBad || f.name.trim().length < 3} onClick=${() => A.saveProfile(f)}>Save changes</button></div>
+    <div class="scroll">
+      <div class="sec-h"><h3>Identity</h3></div>
+      <div class="card">
+        <label class="field" style="margin-top:0"><span class="lbl">Full name</span><input class=${'inp' + (nameBad ? ' bad' : '')} autocomplete="name" value=${f.name} onInput=${e => setF({ ...f, name: e.target.value })} />
+          ${nameBad && html`<div class="hint err">Enter your full name.</div>`}</label>
+        <label class="field"><span class="lbl">CNIC number</span><input class="inp" inputmode="numeric" placeholder="Added during verification" value=${fmtCnic(f.cnic || '')} onInput=${e => setF({ ...f, cnic: fmtCnic(e.target.value) })} /></label>
+        <label class="field"><span class="lbl">Date of birth</span><input class="inp" type="date" autocomplete="bday" value=${f.dob || ''} onInput=${e => setF({ ...f, dob: e.target.value })} /></label>
+        ${idChanged && S.kyc.status === 'verified' && html`<div class="notice warning" style="margin:16px 0 0;width:100%"><${Icon} n="alert" c="sm"/><span>Changing your identity details means PGBX must verify you again. Buying is paused until then.</span></div>`}
       </div>
+      <section class="sec">
+        <div class="sec-h"><h3>Contact</h3></div>
+        <div class="card">
+          <div class="between"><div><span class="small muted">Mobile number</span><b style="display:block;margin-top:2px">+92 ${S.phone ? S.phone.slice(0, 3) + ' ' + S.phone.slice(3) : '3•• ••• 4521'}</b></div>
+            <button class="btn btn-secondary btn-sm" onClick=${() => setPh({ open: !ph.open, num: '', sent: false, code: '', busy: false, err: '' })}>${ph.open ? 'Cancel' : 'Change'}</button></div>
+          ${ph.open && html`<div class="step-in" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+            <label class="field" style="margin-top:0"><span class="lbl">New mobile number</span>
+              <span class=${'phone' + (ph.num.length === 10 && !numOk ? ' bad' : '')}><span class="cc">+92</span><input inputmode="numeric" autocomplete="tel-national" placeholder="300 1234567" value=${ph.num} onInput=${e => setPh({ ...ph, num: e.target.value.replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '').slice(0, 10), sent: false, err: '' })} /></span></label>
+            ${ph.num.length === 10 && !numOk && html`<div class="hint err">Enter a valid Pakistani mobile number, for example 300 1234567.</div>`}
+            ${!ph.sent ? html`<button class="btn btn-primary" style="margin-top:12px" disabled=${!numOk || ph.busy} onClick=${phSend}>${ph.busy ? html`<span class="spin"></span> Sending code` : 'Send code by SMS'}</button>`
+              : html`<label class="field"><span class="lbl">6-digit code</span><input class="inp" inputmode="numeric" autocomplete="one-time-code" placeholder=${demo ? 'Demo: any 6 digits' : 'From the SMS'} value=${ph.code} onInput=${e => setPh({ ...ph, code: e.target.value.replace(/\D/g, '').slice(0, 6), err: '' })} /></label>
+                <button class="btn btn-primary" style="margin-top:12px" disabled=${ph.code.length !== 6 || ph.busy} onClick=${phCheck}>${ph.busy ? html`<span class="spin"></span> Checking` : 'Verify and update number'}</button>`}
+            ${ph.err && html`<div class="hint err" role="alert">${ph.err}</div>`}
+          </div>`}
+          <label class="field"><span class="lbl">Email (optional)</span><input class=${'inp' + (emailBad ? ' bad' : '')} type="email" autocomplete="email" placeholder="name@example.com" value=${f.email || ''} onInput=${e => setF({ ...f, email: e.target.value })} />
+            ${emailBad && html`<div class="hint err">Enter a valid email address, for example name@example.com.</div>`}</label>
+          <label class="field"><span class="lbl">Address (optional)</span><textarea class="inp" rows="2" autocomplete="street-address" placeholder="House, street, area, city" value=${f.address || ''} onInput=${e => setF({ ...f, address: e.target.value })}></textarea></label>
+        </div>
+      </section>
+      <div class="pad" style="margin-top:24px"><button class="btn btn-primary" disabled=${!dirty || emailBad || nameBad} onClick=${() => A.saveProfile(f)}>Save changes</button></div>
     </div>
   </div>`;
 }
@@ -1021,48 +1047,65 @@ function WalletScreen({ S, A }) {
   const history = [...S.ledger].reverse();
   const pending = S.orders.filter(o => o.status === 'flagged');
   return html`<div class="scroll">
-    <${TabHead} title="Wallet" sub="Backed one-to-one by metal PGBX holds (FR-W5)" />
-    <div class="wallet-hero enter">
-      <div class="tiny" style="color:rgba(255,255,255,.65);text-transform:uppercase;letter-spacing:.08em;font-weight:900">Total value at current sell price</div>
-      <div class="v"><${Odo} value=${wv.total} flash=${S.rates.tick} /></div>
-      <div class="split">
-        <div><span class="tiny" style="color:rgba(255,255,255,.6)">GOLD</span><b>${fmtW(wv.goldG)}</b><span class="tiny" style="color:rgba(255,255,255,.6)">${fmt(wv.gold)}</span></div>
-        <div><span class="tiny" style="color:rgba(255,255,255,.6)">SILVER</span><b>${(wv.silverG / TOLA).toFixed(2)} tola</b><span class="tiny" style="color:rgba(255,255,255,.6)">${fmtW(wv.silverG)} · ${fmt(wv.silver)}</span></div>
+    <${TabHead} title="Wallet" sub="Every bar is backed one-to-one by metal PGBX holds" />
+    <div class="brand-card on-dark" style="margin-top:16px">
+      <div class="bc-label">Value at today’s sell price</div>
+      <div class="bc-value"><${Odo} value=${wv.total} flash=${S.rates.tick} /></div>
+      <div class="bc-split">
+        <div><span class="bc-label">Gold</span><b>${fmtW(wv.goldG)}</b><small>${fmt(wv.gold)}</small></div>
+        <div><span class="bc-label">Silver</span><b>${(wv.silverG / TOLA).toFixed(2)} tola</b><small>${fmt(wv.silver)}</small></div>
       </div>
     </div>
-    ${pending.length > 0 && html`<div class="section-title"><h3>Pending credit</h3><span>FR-B5</span></div>
-      <div class="stack cascade">${pending.map((o, i) => html`<div class="card summary" style=${{ '--i': i, margin: 0, borderColor: 'rgba(200,150,43,.5)' }}>
-        <div class="between"><b style="font-size:14px">${linesText(o.lines)}</b><span class="status-pill st-requested">With operations</span></div>
-        <div class="tiny muted" style="margin-top:4px">Paid ${fmt(o.total)} · ${dt(o.ts)} · <span class="rno">${o.receipt}</span></div>
-        <div class="tiny muted" style="margin-top:4px">Not in your balance yet: the ledger records metal only once it is credited.</div>
-        <button class="btn btn-ghost" style="margin-top:10px;min-height:44px;border-style:dashed;border-color:rgba(154,91,0,.5);color:#6b3f00" onClick=${() => A.resolveOrder(o.id)}>Prototype: operations credits this order</button>
-      </div>`)}</div>`}
-    <div class="section-title"><h3>Holdings</h3><span>FR-W1</span></div>
-    ${held.length === 0 ? html`<div class="empty">No holdings yet. <br/><button class="btn btn-gold" style="margin-top:12px" onClick=${() => A.tab('buy')}>Buy your first product</button></div>` :
-      html`<div class="card list cascade">${held.map((p, i) => html`<div class="hold" style=${{ '--i': i, borderTop: i ? '1px solid var(--line)' : '' }}>
-        <div class="cnt">${holdings[p.id]}×</div><${Ingot} metal=${p.metal} w=${48} label=${p.short}/>
-        <div><b>${pname(p)}</b><div class="tiny muted">${fmtW(p.grams * holdings[p.id])} total</div>
-          ${reserved[p.id] ? html`<div class="tiny" style="color:var(--gold-d);font-weight:700;margin-top:2px">${reserved[p.id]} reserved for redemption</div>` : ''}</div>
-        <div style="margin-left:auto;text-align:right"><b style="font-size:14px">${fmt(holdings[p.id] * p.grams * rateOf(S.rates, p.metal).sellGram)}</b><div class="tiny muted">sell value</div></div>
-      </div>`)}</div>`}
-    <div class="dealers-card card" style="margin-top:12px">
-      <div class="badge-ico"><${Icon} n="refresh"/></div>
-      <div><b>Sell back to PGBX</b><div class="small muted" style="margin-top:3px">Whether sell-back is in version 1 (FR-W6): <span class="tbc">${TBC}</span></div></div>
+    <div class="qa">
+      <button onClick=${() => A.tab('buy')}><${Icon} n="plus"/>Buy</button>
+      <button onClick=${() => A.tab('redeem')}><${Icon} n="store"/>Redeem</button>
+      <button onClick=${() => A.push({ name: 'statement' })}><${Icon} n="doc"/>Statement</button>
     </div>
-    <div class="section-title"><h3>History</h3><span>From the ledger (FR-W2, FR-W3)</span></div>
-    <div class="card list cascade">
-      ${history.map((e, i) => { const p = P[e.pid]; const cls = e.reason === 'purchase' ? 'plus' : e.reason === 'redemption' ? 'minus' : 'open';
-        const title = e.reason === 'purchase' ? 'Purchase' : e.reason === 'redemption' ? `Redeemed${e.dealer ? ' at ' + e.dealer : ''}` : 'Opening balance (sample)';
-        return html`<div class="ledger-item" style=${{ '--i': Math.min(i, 8), borderTop: i ? '1px solid var(--line)' : '' }}>
-          <div class=${'li ' + cls}><${Icon} n=${cls === 'minus' ? 'store' : cls === 'plus' ? 'buy' : 'box'} c="sm"/></div>
-          <div style="flex:1;min-width:0"><div class="between"><b style="font-size:14px">${title}</b><b class=${e.delta > 0 ? 'up' : 'down'} style="font-size:14px">${e.delta > 0 ? '+' : '−'}${Math.abs(e.delta)} × ${p.short}</b></div>
-            <div class="tiny muted" style="margin-top:3px">${dt(e.ts)}${e.price ? ' · ' + fmt(e.price) + '/unit' : ''}</div>
-            <div class="tiny muted rno" style="margin-top:2px">${e.ref}</div>
-            ${e.serials && html`<div class="tiny" style="margin-top:2px;color:var(--g700)">Serials: ${e.serials.join(', ')}</div>`}</div>
-        </div>`; })}
-    </div>
-    <div class="pad" style="margin-top:12px"><button class="btn btn-ghost" onClick=${() => A.push({ name: 'statement' })}><${Icon} n="download" c="sm"/> Download statement</button></div>
-    <p class="foot-note">The balance is never stored or edited: it is the sum of ledger entries above. Storage fee or time limit for holdings (FR-W7): <span class="tbc">${TBC}</span></p>
+
+    ${pending.length > 0 && html`<section class="sec"><div class="sec-h"><h3>Being completed</h3></div>
+      ${pending.map(o => html`<div class="card" style="margin-bottom:8px">
+        <div class="between" style="align-items:flex-start"><b>${linesText(o.lines)}</b><span class="tag warning">With operations</span></div>
+        <div class="small muted" style="margin-top:4px">Paid ${fmt(o.total)} · ${rel(o.ts, S.now)} · <span class="mono">${o.receipt}</span></div>
+        <div class="small muted" style="margin-top:4px">This appears in your holdings once PGBX completes the order.</div>
+      </div>`)}
+      <${Demo} title="Operations" body="In the real system PGBX operations completes flagged orders.">
+        ${pending.map(o => html`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:4px" onClick=${() => A.resolveOrder(o.id)}>Complete order ${o.receipt.slice(-6)}</button>`)}
+      </${Demo}>
+    </section>`}
+
+    <section class="sec">
+      <div class="sec-h"><h3>Holdings</h3>${held.length > 0 && html`<span class="aside">${held.reduce((a, p) => a + holdings[p.id], 0)} bars</span>`}</div>
+      ${held.length === 0 ? html`<${Empty} icon="wallet" title="No holdings yet" body="Bars you buy appear here, backed by metal PGBX holds for you." action="Buy your first bar" onAction=${() => A.tab('buy')} />` :
+        html`<div class="group inset-thumb">${held.map(p => html`<div class="row">
+          <${Thumb} p=${p} />
+          <div class="rt"><b>${holdings[p.id]} × ${pname(p)}</b><span>${fmtW(p.grams * holdings[p.id])}${reserved[p.id] ? html` · <span style="color:var(--gold-700)">${reserved[p.id]} reserved for collection</span>` : ''}</span></div>
+          <div class="rv"><b>${fmt(holdings[p.id] * p.grams * rateOf(S.rates, p.metal).sellGram)}</b></div>
+        </div>`)}</div>`}
+    </section>
+
+    <section class="sec">
+      <div class="group"><div class="row">
+        <span class="ri"><${Icon} n="refresh" c="sm"/></span>
+        <div class="rt"><b>Sell back to PGBX</b><small><${Tbc}/></small></div>
+      </div></div>
+    </section>
+
+    <section class="sec">
+      <div class="sec-h"><h3>Activity</h3></div>
+      <div class="group inset">
+        ${history.map(e => { const p = P[e.pid]; const kind = e.reason === 'purchase' ? 'plus' : e.reason === 'redemption' ? 'minus' : 'open';
+          const title = kind === 'plus' ? 'Bought' : kind === 'minus' ? 'Collected' : 'Opening balance';
+          return html`<div class="row" style="align-items:flex-start">
+            <span class=${'ri' + (kind === 'minus' ? ' gold' : '')}><${Icon} n=${kind === 'minus' ? 'store' : kind === 'plus' ? 'buy' : 'box'} c="sm"/></span>
+            <div class="rt"><b>${title} ${Math.abs(e.delta)} × ${pname(p)}</b>
+              <span>${rel(e.ts, S.now)}${e.dealer ? ' · ' + e.dealer : ''}${e.price ? ' · ' + fmt(e.price) + ' each' : ''}</span>
+              <span class="mono" style="font-size:12px">${e.ref}${e.reason === 'opening' ? ' · sample' : ''}</span>
+              ${e.serials && html`<span>Serial ${e.serials.join(', ')}</span>`}</div>
+            <b class=${e.delta > 0 ? 'up' : ''} style="font-size:15px;white-space:nowrap">${e.delta > 0 ? '+' : '−'}${Math.abs(e.delta)}</b>
+          </div>`; })}
+      </div>
+    </section>
+    <p class="foot">Your balance is calculated from this activity record, which can’t be edited.</p>
   </div>`;
 }
 
@@ -1088,7 +1131,7 @@ function statementHtml(S, d, from, to) {
 <div class="box"><b>${esc(S.profile.name)}</b> · CNIC ${esc(maskCnic(S.profile.cnic) || 'not verified')} · +92 ${esc(S.phone || '3XX XXX 4521')}<br>Period: ${from} to ${to} · Generated ${esc(dt(Date.now()))}</div>
 <p><b>Opening holdings:</b> ${esc(holdText(d.opening))}<br><b>Closing holdings:</b> ${esc(holdText(d.closing))}</p>
 <table><tr><th>Date</th><th>Type</th><th>Product</th><th>Units</th><th>Price / unit</th><th>Receipt / reference</th></tr>${rows}</table>
-<p class="m">Holdings are derived from the wallet ledger (FR-W3). Tax and legal details (CMP-7): [To be confirmed by PGBX]. Prototype statement with sample data.</p></body></html>`;
+<p class="m">Holdings are calculated from your wallet activity record. Tax and legal details: [To be confirmed by PGBX]. Prototype statement with sample data.</p></body></html>`;
 }
 function StatementScreen({ S, A }) {
   const today = isoDay(S.now);
@@ -1102,36 +1145,35 @@ function StatementScreen({ S, A }) {
     const q = v => `"${String(v).replace(/"/g, '""')}"`;
     const lines = [['Date', 'Type', 'Product', 'Units', 'Price per unit (PKR)', 'Receipt / reference'].map(q).join(','),
       ...d.entries.map(e => [new Date(e.ts).toISOString(), entryType(e), pname(P[e.pid]), e.delta, e.price || '', e.ref].map(q).join(','))];
-    downloadBlob(`PGBX-statement-${from}-to-${to}.csv`, 'text/csv', lines.join('\n')); A.toast('Statement downloaded (CSV)');
+    downloadBlob(`PGBX-statement-${from}-to-${to}.csv`, 'text/csv', lines.join('\n')); A.toast('Statement downloaded as CSV');
   };
   const pdf = () => {
     const h = statementHtml(S, d, from, to);
     const w = window.open(URL.createObjectURL(new Blob([h], { type: 'text/html' })), '_blank');
     if (w) w.addEventListener('load', () => setTimeout(() => w.print(), 300));
-    if (!w) { downloadBlob(`PGBX-statement-${from}-to-${to}.html`, 'text/html', h); A.toast('Statement downloaded; open it and print to PDF'); }
+    if (!w) { downloadBlob(`PGBX-statement-${from}-to-${to}.html`, 'text/html', h); A.toast('Statement downloaded. Open it and print to PDF.'); }
   };
   return html`<div class="page">
     <${TopBar} title="Statement" onBack=${A.back} />
-    <div class="scroll" style="top:calc(var(--top) + 60px)">
-      <div class="pad enter">
-        <p class="muted" style="font-size:14px;margin:0 0 12px">Choose a period (FR-W4).</p>
-        <div class="chips">${[['month', 'This month'], ['d30', 'Last 30 days'], ['d90', 'Last 3 months'], ['custom', 'Custom']].map(([k, l]) => html`<button class=${'chipb' + (preset === k ? ' on' : '')} onClick=${() => pick(k)}>${l}</button>`)}</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-          <div><label class="f">From</label><input class="inp" type="date" max=${today} value=${from} onInput=${e => { setPreset('custom'); setFrom(e.target.value); }} /></div>
-          <div><label class="f">To</label><input class="inp" type="date" max=${today} value=${to} onInput=${e => { setPreset('custom'); setTo(e.target.value); }} /></div>
+    <div class="scroll">
+      <div class="pad">
+        <div class="chips" role="radiogroup" aria-label="Period">${[['month', 'This month'], ['d30', 'Last 30 days'], ['d90', 'Last 3 months'], ['custom', 'Custom']].map(([k, l]) => html`<button class=${'chipb' + (preset === k ? ' on' : '')} role="radio" aria-checked=${preset === k} onClick=${() => pick(k)}>${l}</button>`)}</div>
+        <div class="grid2">
+          <label class="field"><span class="lbl">From</span><input class=${'inp' + (bad ? ' bad' : '')} type="date" max=${today} value=${from} onInput=${e => { setPreset('custom'); setFrom(e.target.value); }} /></label>
+          <label class="field"><span class="lbl">To</span><input class=${'inp' + (bad ? ' bad' : '')} type="date" max=${today} value=${to} onInput=${e => { setPreset('custom'); setTo(e.target.value); }} /></label>
         </div>
-        ${bad && html`<div class="hint err">Choose a start date on or before the end date.</div>`}
+        ${bad && html`<div class="hint err">The start date must be on or before the end date.</div>`}
       </div>
-      ${d && html`<div class="card summary enter" style="margin-top:14px">
-        <div class="kv"><span>Entries</span><b>${d.entries.length}</b></div>
+      ${d && html`<div class="card" style="margin-top:16px">
+        <div class="kv"><span>Transactions</span><b>${d.entries.length}</b></div>
         <div class="kv"><span>Opening holdings</span><b style="max-width:60%">${holdText(d.opening)}</b></div>
         <div class="kv"><span>Closing holdings</span><b style="max-width:60%">${holdText(d.closing)}</b></div>
       </div>
-      <div class="cta" style="display:grid;gap:10px;margin-top:14px">
-        <button class="btn btn-gold" onClick=${pdf}><${Icon} n="doc" c="sm"/> Save as PDF</button>
-        <button class="btn btn-ghost" onClick=${csv}><${Icon} n="download" c="sm"/> Download CSV</button>
+      <div class="pad stack-btns" style="margin-top:24px">
+        <button class="btn btn-primary" onClick=${pdf}><${Icon} n="doc" c="sm"/> Save as PDF</button>
+        <button class="btn btn-secondary" onClick=${csv}><${Icon} n="download" c="sm"/> Download CSV</button>
       </div>`}
-      <p class="foot-note">The PDF opens a printable statement; choose “Save as PDF” in the print dialog. Tax and legal details (CMP-7): <span class="tbc">${TBC}</span></p>
+      <p class="foot">Save as PDF opens a printable statement. Choose “Save as PDF” in the print dialog. Tax and legal details on statements: <${Tbc}/></p>
     </div>
   </div>`;
 }
@@ -1143,23 +1185,22 @@ const MAPBOX = { minLat: 24.795, maxLat: 24.95, minLng: 66.985, maxLng: 67.115, 
 const proj = (lat, lng) => [(lng - MAPBOX.minLng) / (MAPBOX.maxLng - MAPBOX.minLng) * MAPBOX.W, (1 - (lat - MAPBOX.minLat) / (MAPBOX.maxLat - MAPBOX.minLat)) * MAPBOX.H];
 function DealerMap({ selected, isOk, onSelect }) {
   const [yx, yy] = proj(YOU.lat, YOU.lng);
-  return html`<div class="map enter">
-    <svg viewBox=${`0 0 ${MAPBOX.W} ${MAPBOX.H}`} role="img" aria-label="Map of sample dealers">
-      <path d="M0 140 C40 150 70 165 95 176 S150 190 175 190 L0 190 Z" fill="#bcd9e3"/>
-      <path d="M0 150 C40 158 70 170 95 180" fill="none" stroke="#a5c9d6" stroke-width="2"/>
-      <ellipse cx="250" cy="70" rx="34" ry="18" fill="#d5e6cc"/><ellipse cx="120" cy="120" rx="22" ry="12" fill="#d5e6cc"/>
+  return html`<div class="map">
+    <svg viewBox=${`0 0 ${MAPBOX.W} ${MAPBOX.H}`} role="img" aria-label="Map of nearby dealers">
+      <path d="M0 140 C40 150 70 165 95 176 S150 190 175 190 L0 190 Z" fill="#C4DCE5"/>
+      <ellipse cx="250" cy="70" rx="34" ry="18" fill="#D7E6CF"/><ellipse cx="120" cy="120" rx="22" ry="12" fill="#D7E6CF"/>
       ${['M0 95 C80 90 160 98 340 80', 'M60 0 C80 60 100 120 120 190', 'M150 190 C170 120 210 60 260 0', 'M0 40 C120 52 220 46 340 30', 'M200 190 C230 150 280 130 340 128'].map(dd => html`<path d=${dd} fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/>`)}
-      <g transform=${`translate(${yx} ${yy})`}><circle class="you-ring" r="9" fill="rgba(31,120,200,.25)"/><circle r="5.5" fill="#1f78c8" stroke="#fff" stroke-width="2"/></g>
+      <g transform=${`translate(${yx} ${yy})`}><circle r="9" fill="rgba(31,120,200,.2)"/><circle r="5" fill="#1F78C8" stroke="#fff" stroke-width="2"/></g>
       ${DEALERS.map(d => { const [x, y] = proj(d.lat, d.lng); const ok = isOk(d); return html`<g class=${'pin' + (selected === d.id ? ' on' : '') + (ok ? '' : ' off')} transform=${`translate(${x} ${y})`} onClick=${() => ok && onSelect(d.id)}>
         <g class="pg"><path d="M0 0 C-9 -12 -9 -24 0 -24 S9 -12 0 0Z" fill=${selected === d.id ? '#C8962B' : '#0B4A2C'} stroke="#fff" stroke-width="1.5"/><circle cy="-15" r="3.2" fill="#fff"/></g>
-        <text y="12" text-anchor="middle" font-size="9" font-weight="900" fill="#1D2B22" font-family="-apple-system, system-ui, 'Segoe UI', Roboto, sans-serif">${d.name.split(' ')[0]}</text></g>`; })}
+        <text y="12" text-anchor="middle" font-size="9" font-weight="600" fill="#17241C" font-family="-apple-system, system-ui, 'Segoe UI', Roboto, sans-serif">${d.name.split(' ')[0]}</text></g>`; })}
     </svg>
-    <span class="cap">Schematic map · map provider ${TBC}</span>
+    <span class="cap">Schematic · sample dealers</span>
   </div>`;
 }
 const DealerActions = ({ d }) => html`<div class="dact" onClick=${e => e.stopPropagation()}>
-  <a href=${'tel:' + d.phone.replace(/\s/g, '')}><${Icon} n="call" c="xs"/> ${d.phone}</a>
-  <a href=${`https://www.google.com/maps/search/?api=1&query=${d.lat},${d.lng}`} target="_blank" rel="noopener"><${Icon} n="nav" c="xs"/> Directions</a>
+  <a class="btn btn-secondary btn-sm" href=${'tel:' + d.phone.replace(/\s/g, '')}><${Icon} n="call" c="sm"/> Call</a>
+  <a class="btn btn-secondary btn-sm" href=${`https://www.google.com/maps/search/?api=1&query=${d.lat},${d.lng}`} target="_blank" rel="noopener"><${Icon} n="nav" c="sm"/> Directions</a>
 </div>`;
 
 function RedeemScreen({ S, A }) {
@@ -1175,62 +1216,69 @@ function RedeemScreen({ S, A }) {
   const canConfirm = pid && did && units >= 1 && units <= avail(pid) && S.dealerStock[did][pid] >= units;
   const dealerOk = d => (S.dealerStock[d.id][pid] || 0) >= units;
   const sorted = [...DEALERS].sort((a, b) => a.km - b.km);
+  const pickDealer = id => setDid(id);
   return html`<div class="scroll">
-    <${TabHead} title="Redeem" sub="Collect your metal at a PGBX dealer" />
-    ${active.length > 0 && html`<div class="section-title" style="margin-top:12px"><h3>Active redemptions</h3></div>
-      <div class="stack cascade">${active.map((r, i) => html`<${RedemptionRow} r=${r} S=${S} A=${A} i=${i}/>`)}</div>`}
+    <${TabHead} title="Redeem" sub="Collect your bars at a PGBX dealer" />
+    ${active.length > 0 && html`<section class="sec"><div class="sec-h"><h3>Ready to collect</h3></div>
+      <div class="group inset-thumb">${active.map(r => html`<${RedemptionRow} r=${r} S=${S} A=${A}/>`)}</div></section>`}
 
-    <div class="section-title"><h3>1 · Choose a product</h3><span>Available units</span></div>
-    ${held.length === 0 ? html`<div class="empty">Nothing available to redeem.<br/><button class="btn btn-gold" style="margin-top:12px" onClick=${() => A.tab('buy')}>Buy a product</button></div>` : html`
-    <div class="stack cascade">
-      ${held.map((p, i) => html`<button class=${'choice' + (pid === p.id ? ' on' : '')} style=${{ '--i': i }} onClick=${() => setPid(p.id)} role="radio" aria-checked=${pid === p.id}>
-        <div class="ing"><${Ingot} metal=${p.metal} w=${54} label=${p.short}/></div>
-        <div><b>${pname(p)}</b><div class="tiny muted">${avail(p.id)} available${S.reserved[p.id] ? ` · ${S.reserved[p.id]} reserved` : ''}</div></div>
-        <span class=${'radio' + (pid === p.id ? ' on' : '')}><i></i></span>
-      </button>`)}
-    </div>
-    <div class="lockbox between">
-      <div><b style="font-size:15px">Units to collect</b><div class="tiny muted">Whole units only</div></div>
-      <div class="stepper">
-        <button disabled=${units <= 1} onClick=${() => setUnits(u => u - 1)} aria-label="Fewer"><${Icon} n="minus" c="sm"/></button>
-        <output><span key=${units}>${units}</span></output>
-        <button disabled=${!pid || units >= avail(pid)} onClick=${() => setUnits(u => u + 1)} aria-label="More"><${Icon} n="plus" c="sm"/></button>
+    ${held.length === 0 ? html`<section class="sec"><${Empty} icon="store" title="Nothing to collect yet" body=${S.ledger.length ? 'All your bars are already reserved for collection.' : 'Buy a bar first. You can then collect it at any of 250 PGBX dealers.'} action=${S.ledger.length ? null : 'Buy a bar'} onAction=${() => A.tab('buy')} /></section>` : html`
+    <section class="sec">
+      <div class="sec-h"><h3>What to collect</h3></div>
+      <div class="group inset-thumb" role="radiogroup" aria-label="Product to collect">
+        ${held.map(p => html`<button class="row" onClick=${() => setPid(p.id)} role="radio" aria-checked=${pid === p.id}>
+          <${Thumb} p=${p} />
+          <div class="rt"><b>${pname(p)}</b><span>${avail(p.id)} available${S.reserved[p.id] ? ` · ${S.reserved[p.id]} reserved` : ''}</span></div>
+          <${Radio} on=${pid === p.id} />
+        </button>`)}
       </div>
-    </div>
+      <div class="group" style="margin-top:8px"><div class="row">
+        <div class="rt"><b>Quantity</b></div>
+        <div class="stepper" role="group" aria-label="Quantity to collect">
+          <button disabled=${units <= 1} onClick=${() => setUnits(u => u - 1)} aria-label="Decrease quantity"><${Icon} n="minus" c="sm"/></button>
+          <output aria-live="polite">${units}</output>
+          <button disabled=${!pid || units >= avail(pid)} onClick=${() => setUnits(u => u + 1)} aria-label="Increase quantity"><${Icon} n="plus" c="sm"/></button>
+        </div>
+      </div></div>
+    </section>
 
-    <div class="section-title"><h3>2 · Choose a dealer</h3><span>4 of 250 · sample</span></div>
-    <${DealerMap} selected=${did} isOk=${dealerOk} onSelect=${setDid} />
-    <div class="stack cascade">
-      ${sorted.map((d, i) => { const ok = dealerOk(d);
-        return html`<div class=${'choice' + (did === d.id ? ' on' : '') + (ok ? '' : ' off')} style=${{ '--i': i }} tabindex=${ok ? 0 : -1} onClick=${() => ok && setDid(d.id)} onKeyDown=${e => { if (ok && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setDid(d.id); } }} role="radio" aria-checked=${did === d.id} aria-disabled=${!ok}>
-          <div class="badge-ico" style="width:42px;height:42px"><${Icon} n="pin" c="sm"/></div>
-          <div style="flex:1;min-width:0"><div class="between"><b style="font-size:15px">${d.name}</b><span class=${'stock ' + (ok ? 'in' : 'out')}>${ok ? 'In stock' : 'Out of stock'}</span></div>
-            <div class="tiny muted" style="margin-top:3px">${d.area} · ${d.km} km away</div>
-            <div class="tiny muted" style="margin-top:2px;display:flex;align-items:center;gap:4px"><${Icon} n="clock" c="xs"/> ${d.hours}</div>
-            ${ok && html`<${DealerActions} d=${d} />`}</div>
-          <span class=${'radio' + (did === d.id ? ' on' : '')}><i></i></span>
-        </div>`; })}
-    </div>
-    <div class="pad tiny muted" style="margin-top:8px">Out-of-stock dealers cannot be chosen (FR-D2). Dealer names, phone numbers, locations and stock are samples; distances are from a sample location in Saddar. Real data comes from the admin panel (FR-D1, FR-M5).</div>
+    <section class="sec">
+      <div class="sec-h"><h3>Where</h3><span class="aside">Nearest first</span></div>
+      <${DealerMap} selected=${did} isOk=${dealerOk} onSelect=${pickDealer} />
+      <div class="group inset" role="radiogroup" aria-label="Dealer">
+        ${sorted.map(d => { const ok = dealerOk(d); const on = did === d.id;
+          return html`<div class=${'row' + (ok ? '' : ' off')} style="align-items:flex-start" tabindex=${ok ? 0 : -1} onClick=${() => ok && pickDealer(d.id)} onKeyDown=${e => { if (ok && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); pickDealer(d.id); } }} role="radio" aria-checked=${on} aria-disabled=${!ok}>
+            <span class=${'ri' + (on ? ' gold' : '')}><${Icon} n="pin" c="sm"/></span>
+            <div class="rt"><b>${d.name}</b><span>${d.area} · ${d.km} km</span><span>Open ${d.hours.replace(' – ', '–')}${ok ? '' : ' · Out of stock'}</span>
+              ${on && html`<${DealerActions} d=${d} />`}</div>
+            <${Radio} on=${on} />
+          </div>`; })}
+      </div>
+      <p class="foot">Showing 4 sample dealers near a sample location in Saddar. Dealers without stock can’t be selected.</p>
+    </section>
 
-    <div class="card summary" style="margin-top:16px">
-      <div class="kv"><span>Redemption fee / making charge (FR-D8)</span><span class="tbc">${TBC}</span></div>
-      <div class="kv"><span>Gold vs silver redemption rules</span><span class="tbc">${TBC}</span></div>
-      <div class="kv"><span>Code valid for</span><b>24 hours</b></div>
-    </div>
-    <div class="cnic"><${Icon} n="shield" c="sm"/><div><b>Bring your original CNIC.</b> The dealer checks it against your account before handing over the product (FR-D5). The code works once, only at the dealer you choose (FR-D4).</div></div>
-    <div class="cta" style="margin-top:16px"><button class="btn btn-gold" disabled=${!canConfirm} onClick=${() => A.redeem(pid, units, did)}>Confirm and reserve ${units} unit${units > 1 ? 's' : ''}</button></div>
+    <section class="sec">
+      <div class="sec-h"><h3>Before you confirm</h3></div>
+      <div class="card">
+        <div class="kv"><span>Collection fee</span><${Tbc}/></div>
+        <div class="kv"><span>Gold and silver rules</span><${Tbc}/></div>
+        <div class="kv"><span>Code valid for</span><b>24 hours</b></div>
+      </div>
+      <${Notice} kind="plain" icon="idcard"><b>Bring your original CNIC</b>The dealer checks it against your account. Your code works once, and only at the dealer you choose.</${Notice}>
+    </section>
+    <div class="pad" style="margin-top:24px"><button class="btn btn-primary" disabled=${!canConfirm} onClick=${() => A.redeem(pid, units, did)}>${did ? `Reserve ${units} bar${units > 1 ? 's' : ''} for collection` : 'Choose a dealer'}</button></div>
     `}
-    ${past.length > 0 && html`<div class="section-title"><h3>Past redemptions</h3></div><div class="stack">${past.map((r, i) => html`<${RedemptionRow} r=${r} S=${S} A=${A} i=${i}/>`)}</div>`}
+    ${past.length > 0 && html`<section class="sec"><div class="sec-h"><h3>Past collections</h3></div><div class="group inset-thumb">${past.map(r => html`<${RedemptionRow} r=${r} S=${S} A=${A}/>`)}</div></section>`}
   </div>`;
 }
-const STATUS_LABEL = { requested: 'Requested', ready: 'Ready at dealer', completed: 'Collected', cancelled: 'Cancelled', expired: 'Expired' };
-function RedemptionRow({ r, S, A, i }) {
+const STATUS_LABEL = { requested: 'Reserved', ready: 'Ready to collect', completed: 'Collected', cancelled: 'Cancelled', expired: 'Expired' };
+const STATUS_TAG = { requested: 'gold', ready: 'success', completed: 'neutral', cancelled: 'neutral', expired: 'neutral' };
+function RedemptionRow({ r, S, A }) {
   const p = P[r.pid]; const d = DEALERS.find(x => x.id === r.dealerId); const st = S.statusOf(r);
-  return html`<button class="choice" style=${{ '--i': i }} onClick=${() => A.push({ name: 'code', rid: r.id })}>
-    <div class="ing"><${Ingot} metal=${p.metal} w=${50} label=${p.short}/></div>
-    <div style="flex:1;min-width:0"><b style="font-size:14px">${r.units} × ${pname(p)}</b><div class="tiny muted">${d.name} · code ${r.code}</div></div>
-    <span class=${'status-pill st-' + st}>${STATUS_LABEL[st]}</span>
+  return html`<button class="row" onClick=${() => A.push({ name: 'code', rid: r.id })}>
+    <${Thumb} p=${p} />
+    <div class="rt"><b>${r.units} × ${pname(p)}</b><span>${d.name}</span></div>
+    <span class=${'tag ' + STATUS_TAG[st]}>${STATUS_LABEL[st]}</span>
   </button>`;
 }
 
@@ -1238,51 +1286,45 @@ function CodeScreen({ S, A, rid }) {
   const r = S.redemptions.find(x => x.id === rid); const p = P[r.pid]; const d = DEALERS.find(x => x.id === r.dealerId);
   const st = S.statusOf(r);
   const [idOk, setIdOk] = useState(false);
-  const [confirmCancel, setConfirmCancel] = useState(false);
   const order = ['requested', 'ready', 'completed'];
   const idx = order.indexOf(st);
   const live = st === 'requested' || st === 'ready';
+  const cancel = () => A.confirm({ title: 'Cancel this collection?', body: `Your ${r.units} × ${pname(p)} will be released back to your wallet and this code will stop working.`, confirm: 'Cancel collection', cancel: 'Keep it', danger: true, onConfirm: () => A.cancelRedemption(r.id) });
   return html`<div class="page">
-    <${TopBar} title="Redemption" onBack=${A.back} right=${html`<span class=${'status-pill st-' + st} style="margin-right:8px">${STATUS_LABEL[st]}</span>`} />
-    <div class="scroll" style="top:calc(var(--top) + 60px)">
-      <div class="card code-card enter">
-        <div class="tiny muted" style="text-transform:uppercase;letter-spacing:.1em;font-weight:900">Your one-time code</div>
-        <div class="code-digits" style=${{ opacity: live ? 1 : .45 }}>${r.code.split('').map((c, i) => html`<span style=${{ animationDelay: (0.1 + i * 0.06) + 's' }}>${c}</span>`)}</div>
-        <${QR} code=${r.code} />
-        <div class="tiny muted">Pattern for prototype only, not a scannable QR</div>
-        <div class="small" style="margin-top:10px;font-weight:700;color:${live ? 'var(--g800)' : 'var(--muted)'}">
-          ${live ? html`Expires in ${dur(r.expiresAt - S.now)}` : st === 'completed' ? `Collected ${dt(r.completedAt)}` : st === 'cancelled' ? 'Cancelled: units returned to your wallet' : 'Expired: units returned to your wallet'}
+    <${TopBar} title="Collection" onBack=${A.back} />
+    <div class="scroll">
+      <div class="card" style="text-align:center;padding:24px 16px">
+        <span class=${'tag ' + STATUS_TAG[st]}>${STATUS_LABEL[st]}</span>
+        <div class="small muted" style="margin-top:12px">Collection code</div>
+        <div class=${'code' + (live ? '' : ' dim')} aria-label=${`Code ${r.code.split('').join(' ')}`}>${r.code.split('').map(c => html`<span aria-hidden="true">${c}</span>`)}</div>
+        <div class="small" style="margin-top:12px;font-weight:600;color:${live ? 'var(--text)' : 'var(--text-2)'}">
+          ${live ? `Expires in ${dur(r.expiresAt - S.now)}` : st === 'completed' ? `Collected ${rel(r.completedAt, S.now)}` : st === 'cancelled' ? 'Cancelled. The bars are back in your wallet.' : 'Expired. The bars are back in your wallet.'}
         </div>
-        ${st !== 'cancelled' && st !== 'expired' ? html`<div class="steps">
+        ${st !== 'cancelled' && st !== 'expired' && html`<div class="steps">
           ${order.map((k, i) => html`<div class=${'step' + (i < idx || st === 'completed' ? ' done' : i === idx ? ' cur' : '')}><div class="sd">${i < idx || st === 'completed' ? html`<${Icon} n="check"/>` : i + 1}</div>${STATUS_LABEL[k]}</div>`)}
-        </div>` : ''}
+        </div>`}
       </div>
-      <div class="card summary">
+      <div class="card" style="margin-top:12px">
         <div class="kv"><span>Item</span><b>${r.units} × ${pname(p)}</b></div>
         <div class="kv"><span>Dealer</span><b>${d.name}</b></div>
-        <div class="kv"><span>Address</span><b>${d.area}</b></div>
-        <div class="kv"><span>Hours</span><b>${d.hours}</b></div>
-        <div class="kv"><span>Fee</span><span class="tbc">${TBC}</span></div>
-        ${r.serials && html`<div class="kv"><span>Serial no. (FR-D6)</span><b class="rno">${r.serials.join(', ')}</b></div>`}
+        <div class="kv"><span>Area</span><b>${d.area}</b></div>
+        <div class="kv"><span>Opening hours</span><b>${d.hours}</b></div>
+        <div class="kv"><span>Collection fee</span><${Tbc}/></div>
+        ${r.serials && html`<div class="kv"><span>Serial number${r.serials.length > 1 ? 's' : ''}</span><b class="mono">${r.serials.join(', ')}</b></div>`}
         <${DealerActions} d=${d} />
       </div>
-      ${live && html`<div class="cnic"><${Icon} n="shield" c="sm"/><div>Show this code and your original CNIC at <b>${d.name}</b>. Your ${r.units} unit${r.units > 1 ? 's are' : ' is'} reserved until then (FR-D3).</div></div>`}
-      ${live && html`<div class="cta" style="margin-top:14px">
-        <button class="btn btn-danger" onClick=${() => { if (confirmCancel) { A.cancelRedemption(r.id); setConfirmCancel(false); } else setConfirmCancel(true); }}>
-          <${Icon} n="x" c="sm"/> ${confirmCancel ? 'Tap again to confirm cancel' : 'Cancel redemption'}</button>
-        <div class="tiny muted" style="text-align:center;margin-top:6px">FR-D9 · cancelling releases the reserved units</div>
-      </div>`}
+      ${live && html`<${Notice} kind="plain" icon="idcard">Show this code and your original CNIC at <b style="display:inline">${d.name}</b>. Your bar${r.units > 1 ? 's are' : ' is'} reserved until the code expires.</${Notice}>`}
+      ${live && html`<div class="pad" style="margin-top:24px"><button class="btn btn-danger" onClick=${cancel}>Cancel collection</button></div>`}
 
-      <div class="sim">
-        <h3><${Icon} n="store" c="sm"/> Prototype: simulate the dealer</h3>
-        <p class="small" style="margin:6px 0 10px;color:#6b3f00">In the real system these steps happen in the dealer interface (FR-DL2, FR-DL3), not in the customer app.</p>
-        <button class="btn btn-ghost" style="background:#fff" disabled=${st !== 'requested'} onClick=${() => A.markReady(r.id)}><${Icon} n="box" c="sm"/> Mark ready</button>
-        <button class="check" disabled=${st !== 'ready'} style=${{ opacity: st === 'ready' ? 1 : .5, marginTop: '6px' }} onClick=${() => setIdOk(v => !v)} role="checkbox" aria-checked=${idOk}>
-          <span class=${'cbox' + (idOk ? ' on' : '')}><${Icon} n="check"/></span> Customer CNIC checked against account (FR-D5)
-        </button>
-        <button class="btn btn-green" disabled=${st !== 'ready' || !idOk} onClick=${() => A.handOver(r.id)}><${Icon} n="check" c="sm"/> Hand over</button>
-        <div class="tiny" style="color:#6b3f00;margin-top:8px">Hand over records serial numbers, deducts the wallet through a ledger entry and updates dealer stock.</div>
-      </div>
+      <${Demo} title="Dealer steps" body="In the real system the dealer does this in the PGBX dealer app.">
+        <div class="stack-btns">
+          <button class="btn btn-secondary btn-sm" style="width:100%" disabled=${st !== 'requested'} onClick=${() => A.markReady(r.id)}>Mark ready for collection</button>
+          <button class="check" disabled=${st !== 'ready'} onClick=${() => setIdOk(v => !v)} role="checkbox" aria-checked=${idOk}>
+            <span class=${'cbox' + (idOk ? ' on' : '')}><${Icon} n="check"/></span> Customer’s CNIC matches the account
+          </button>
+          <button class="btn btn-secondary btn-sm" style="width:100%" disabled=${st !== 'ready' || !idOk} onClick=${() => A.handOver(r.id)}>Hand over and record serial numbers</button>
+        </div>
+      </${Demo}>
     </div>
   </div>`;
 }
@@ -1291,32 +1333,38 @@ function CodeScreen({ S, A, rid }) {
    Notifications (FR-N1)
    ============================================================ */
 const N_ICON = { purchase: 'buy', redemption: 'store', security: 'shield', account: 'user', alert: 'bell' };
+const N_TONE = { purchase: '', redemption: ' gold', security: ' danger', account: '', alert: ' gold' };
 function PushBanner({ n, onOpen }) {
-  return html`<button class="push glass" key=${n.id} onClick=${onOpen} role="status">
-    <${Coin} size=${34} still=${true} />
-    <div style="flex:1;min-width:0"><div class="pt">PGBX · NOW</div><b>${n.title}</b><div class="small muted">${n.body}</div></div>
+  return html`<button class="push" key=${n.id} onClick=${onOpen} role="status">
+    <${Coin} size=${32} label="PGBX" />
+    <div class="rt"><div class="pt"><span>PGBX</span><span>now</span></div><b>${n.title}</b><div class="small muted">${n.body}</div></div>
   </button>`;
 }
 function InboxScreen({ S, A }) {
   const [unreadAtOpen] = useState(() => new Set(S.notifications.filter(n => !n.read).map(n => n.id)));
   useEffect(() => { A.markAllRead(); }, []);
-  const prefs = S.notifPrefs;
-  const via = Object.entries(prefs).filter(([, v]) => v).map(([k]) => ({ push: 'push', sms: 'SMS', email: 'email' }[k])).join(', ') || 'in-app only';
   return html`<div class="page">
-    <${TopBar} title="Notifications" onBack=${A.back} />
-    <div class="scroll" style="top:calc(var(--top) + 60px)">
-      <div class="card list enter">
-        ${[['push', 'Push notifications', 'bell'], ['sms', 'SMS', 'phone'], ['email', 'Email', 'mail']].map(([k, l, ic]) => html`<button class="li-row" onClick=${() => A.set(s => ({ notifPrefs: { ...s.notifPrefs, [k]: !s.notifPrefs[k] } }))} role="switch" aria-checked=${prefs[k]}>
-          <span class="lic"><${Icon} n=${ic} c="sm"/></span><b style="font-size:15px">${l}</b><span class="end"><${Switch} on=${prefs[k]} /></span></button>`)}
-      </div>
-      <p class="foot-note" style="margin-top:8px">Purchases, redemption status, security events and account changes are always shown here and sent by ${via} (FR-N1). Push, SMS and email providers: <span class="tbc">${TBC}</span></p>
-      <div class="section-title"><h3>Recent</h3><span>${S.notifications.length}</span></div>
-      ${S.notifications.length === 0 ? html`<div class="empty">No notifications yet. Buy, redeem or set a price alert to see them here.</div>`
-        : html`<div class="card list cascade">${S.notifications.map((n, i) => html`<div class="nitem" style=${{ '--i': Math.min(i, 8) }}>
-          <span class=${'ni ' + n.kind}><${Icon} n=${N_ICON[n.kind] || 'bell'} c="sm"/></span>
-          <div style="flex:1;min-width:0;padding-right:14px"><b style="font-size:14px">${n.title}</b><div class="small muted" style="margin-top:2px">${n.body}</div><div class="tiny muted" style="margin-top:4px">${dt(n.ts)}</div></div>
-          ${unreadAtOpen.has(n.id) && html`<span class="ud"></span>`}
+    <${TopBar} title="Notifications" onBack=${A.back} right=${html`<button class="iconbtn" onClick=${() => A.push({ name: 'notifsettings' })} aria-label="Notification settings"><${Icon} n="sliders"/></button>`} />
+    <div class="scroll">
+      ${S.notifications.length === 0 ? html`<${Empty} icon="bell" title="No notifications yet" body="Purchases, collections, price alerts and security notices will appear here." />`
+        : html`<div class="group inset">${S.notifications.map(n => html`<div class="row" style="align-items:flex-start">
+          <span class=${'ri' + (N_TONE[n.kind] || '')}><${Icon} n=${N_ICON[n.kind] || 'bell'} c="sm"/></span>
+          <div class="rt"><b>${n.title}</b><span>${n.body}</span><span class="tiny" style="margin-top:4px">${rel(n.ts, S.now)}</span></div>
+          ${unreadAtOpen.has(n.id) && html`<span class="ldot" style="margin-top:6px;background:var(--danger);box-shadow:none" aria-label="Unread"></span>`}
         </div>`)}</div>`}
+    </div>
+  </div>`;
+}
+function NotifSettings({ S, A }) {
+  const prefs = S.notifPrefs;
+  return html`<div class="page">
+    <${TopBar} title="Notification settings" onBack=${A.back} />
+    <div class="scroll">
+      <div class="group inset">
+        ${[['push', 'Push notifications', 'On this phone', 'bell'], ['sms', 'SMS', 'To your mobile number', 'phone'], ['email', 'Email', S.profile.email || 'Add an email in Personal details', 'mail']].map(([k, l, d, ic]) => html`<button class="row" onClick=${() => A.set(s => ({ notifPrefs: { ...s.notifPrefs, [k]: !s.notifPrefs[k] } }))} role="switch" aria-checked=${prefs[k]}>
+          <span class="ri"><${Icon} n=${ic} c="sm"/></span><div class="rt"><b>${l}</b><span>${d}</span></div><${Switch} on=${prefs[k]} /></button>`)}
+      </div>
+      <p class="foot">Purchases, collections, security notices and account changes always appear in the app. These settings control where else we send them.</p>
     </div>
   </div>`;
 }
@@ -1324,152 +1372,172 @@ function InboxScreen({ S, A }) {
 /* ============================================================
    Account
    ============================================================ */
-const KYC_LABEL = { verified: 'Verified · CNIC + selfie', none: 'Not verified', pending: 'Verification in progress', reverify: 'Re-verification needed' };
+const KYC_LABEL = { verified: 'Verified', none: 'Not verified', pending: 'Checking', reverify: 'Verify again' };
+const KYC_TAG = { verified: 'success', none: 'warning', pending: 'neutral', reverify: 'warning' };
 function AccountScreen({ S, A }) {
-  const rows = [
-    { icon: 'user', label: 'Personal details', go: () => A.push({ name: 'profile' }) },
-    { icon: 'idcard', label: 'Identity verification', end: { verified: 'Verified', none: 'Not verified', pending: 'In progress', reverify: 'Needed' }[S.kyc.status], go: () => S.kyc.status === 'verified' ? A.toast(`Verified ${S.kyc.at ? dt(S.kyc.at) : ''} · CNIC ${maskCnic(S.profile.cnic)}`) : A.push({ name: 'kyc' }) },
-    { icon: 'bell', label: 'Notifications', end: S.unread ? `${S.unread} new` : '', go: () => A.push({ name: 'inbox' }) },
-    { icon: 'chart', label: 'Rate history and price alerts', end: S.alerts.filter(a => a.active).length ? `${S.alerts.filter(a => a.active).length} active` : '', go: () => A.openHistory('gold') },
-  ];
-  const sec = [
-    { icon: 'key', label: 'Change PIN', go: () => A.push({ name: 'changepin' }) },
-    { icon: 'face', label: 'Face / fingerprint unlock', toggle: true },
-    { icon: 'clock', label: 'Auto-lock', end: 'After 2 minutes', go: () => A.toast(`The app locks after 2 minutes of inactivity, and after ${PIN_MAX_FAILS} wrong PINs you must log in again (FR-A4)`) },
-  ];
-  const help = [
-    { icon: 'help', label: 'FAQs', kind: 'faq' },
-    { icon: 'call', label: 'Contact PGBX', kind: 'contact' },
-    { icon: 'flag', label: 'Report a problem', kind: 'report' },
-    { icon: 'receipt', label: 'Fee schedule', kind: 'fees' },
-    { icon: 'doc', label: 'Terms and privacy', kind: 'terms' },
-  ];
-  const masked = S.phone ? `+92 ${S.phone.slice(0, 1)}•• ••• ${S.phone.slice(-4)}` : '+92 3•• ••• 4521';
+  const masked = S.phone ? `+92 ${S.phone.slice(0, 3)} ••• ${S.phone.slice(-4)}` : '+92 3•• ••• 4521';
   const initials = S.profile.name.split(' ').filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('');
-  const Row = (r, i) => r.toggle ? html`<button class="li-row" style=${{ '--i': i }} onClick=${() => A.set({ biometric: !S.biometric })} role="switch" aria-checked=${S.biometric}>
-      <span class="lic"><${Icon} n=${r.icon} c="sm"/></span><b style="font-size:15px">${r.label}</b><span class="end"><${Switch} on=${S.biometric} /></span></button>`
-    : html`<button class="li-row" style=${{ '--i': i }} onClick=${r.go}><span class="lic"><${Icon} n=${r.icon} c="sm"/></span><b style="font-size:15px">${r.label}</b><span class="end">${r.end || ''}<${Icon} n="chev" c="sm"/></span></button>`;
+  const activeAlerts = S.alerts.filter(a => a.active).length;
+  const R = ({ icon, label, value, go, tone }) => html`<button class="row" onClick=${go}><span class=${'ri' + (tone ? ' ' + tone : '')}><${Icon} n=${icon} c="sm"/></span><div class="rt"><b>${label}</b></div><span class="rv">${value || ''}<${Icon} n="chev" c="sm chev"/></span></button>`;
+  const info = kind => () => A.push({ name: 'info', kind });
+  const logout = () => A.confirm({ title: 'Log out of PGBX?', body: 'You’ll need your mobile number and a one-time code to log in again. Your holdings stay safe.', confirm: 'Log out', danger: true, onConfirm: A.logout });
   return html`<div class="scroll">
     <${TabHead} title="Account" />
-    <button class="card profile enter press" style="width:calc(100% - 28px);text-align:left" onClick=${() => A.push({ name: 'profile' })}>
-      <div class="avatar">${initials}</div>
-      <div style="flex:1"><b style="font-size:17px;font-family:var(--serif)">${S.profile.name}</b><div class="small muted">${masked} · sample customer</div>
-        <span class=${'kyc-badge ' + S.kyc.status}><${Icon} n=${S.kyc.status === 'verified' ? 'shield' : 'alert'} c="xs"/> ${KYC_LABEL[S.kyc.status]}</span></div>
-      <${Icon} n="edit" c="sm" s="color:var(--muted)"/>
+    <button class="profile-card" onClick=${() => A.push({ name: 'profile' })}>
+      <span class="avatar" aria-hidden="true">${initials}</span>
+      <div class="rt"><b style="font-size:17px">${S.profile.name}</b><span>${masked}</span></div>
+      <${Icon} n="chev" c="sm chev"/>
     </button>
-    <div class="section-title"><h3>Profile and activity</h3></div>
-    <div class="card list cascade">${rows.map(Row)}</div>
-    <div class="section-title"><h3>Security</h3></div>
-    <div class="card list cascade">${sec.map(Row)}</div>
-    <div class="section-title"><h3>Help and legal</h3></div>
-    <div class="card list cascade">
-      ${help.map((r, i) => html`<button class="li-row" style=${{ '--i': i }} onClick=${() => A.push({ name: 'info', kind: r.kind })}><span class="lic"><${Icon} n=${r.icon} c="sm"/></span><b style="font-size:15px">${r.label}</b><span class="end"><${Icon} n="chev" c="sm"/></span></button>`)}
+
+    <section class="sec"><div class="sec-h"><h3>Profile</h3></div>
+      <div class="group inset">
+        <${R} icon="user" label="Personal details" go=${() => A.push({ name: 'profile' })} />
+        <${R} icon="idcard" label="Identity verification" value=${html`<span class=${'tag ' + KYC_TAG[S.kyc.status]}>${KYC_LABEL[S.kyc.status]}</span>`}
+          go=${() => S.kyc.status === 'verified' ? A.toast(`Verified${S.kyc.at ? ' ' + rel(S.kyc.at, S.now).toLowerCase() : ''} · CNIC ${maskCnic(S.profile.cnic)}`) : A.push({ name: 'kyc' })} />
+      </div></section>
+
+    <section class="sec"><div class="sec-h"><h3>Security</h3></div>
+      <div class="group inset">
+        <${R} icon="key" label="Change PIN" go=${() => A.push({ name: 'changepin' })} />
+        <button class="row" onClick=${() => A.set({ biometric: !S.biometric })} role="switch" aria-checked=${S.biometric}>
+          <span class="ri"><${Icon} n="face" c="sm"/></span><div class="rt"><b>Unlock with Face ID</b></div><${Switch} on=${S.biometric} /></button>
+        <div class="row"><span class="ri"><${Icon} n="clock" c="sm"/></span><div class="rt"><b>Auto-lock</b><span>After 2 minutes without activity</span></div></div>
+      </div></section>
+
+    <section class="sec"><div class="sec-h"><h3>Preferences</h3></div>
+      <div class="group inset">
+        <${R} icon="bell" label="Notifications" value=${S.unread ? `${S.unread} new` : ''} go=${() => A.push({ name: 'inbox' })} />
+        <${R} icon="chart" label="Price alerts" value=${activeAlerts ? `${activeAlerts} active` : ''} go=${() => A.openHistory('gold')} />
+      </div></section>
+
+    <section class="sec"><div class="sec-h"><h3>Help</h3></div>
+      <div class="group inset">
+        <${R} icon="help" label="Questions and answers" go=${info('faq')} />
+        <${R} icon="call" label="Contact PGBX" go=${info('contact')} />
+        <${R} icon="flag" label="Report a problem" go=${info('report')} />
+      </div></section>
+
+    <section class="sec"><div class="sec-h"><h3>Legal</h3></div>
+      <div class="group inset">
+        <${R} icon="receipt" label="Fees and limits" go=${info('fees')} />
+        <${R} icon="doc" label="Terms and privacy" go=${info('terms')} />
+        <${R} icon="info" label="About this prototype" value=${APP_VERSION.split(' ')[0]} go=${info('about')} />
+      </div></section>
+
+    <div class="pad stack-btns" style="margin-top:32px">
+      <button class="btn btn-secondary" onClick=${A.lockNow}><${Icon} n="lock" c="sm"/> Lock app</button>
+      <button class="btn btn-tertiary" style="color:var(--danger)" onClick=${logout}>Log out</button>
     </div>
-    <div class="pad small muted" style="margin-top:14px">Language: English · Urdu at launch <span class="tbc">${TBC}</span></div>
-    <div class="cta" style="margin-top:16px;display:grid;gap:10px">
-      <button class="btn btn-green" onClick=${A.lockNow}><${Icon} n="lock" c="sm"/> Lock app</button>
-      <button class="btn btn-ghost" onClick=${A.logout}><${Icon} n="out" c="sm"/> Log out</button>
-      <${ResetDemo} A=${A} />
-    </div>
-    <p class="foot-note" style="text-align:center">PGBX customer app · clickable prototype · rates are live, customer, wallet and dealer data is sample data</p>
+    <p class="foot" style="text-align:center">PGBX ${APP_VERSION}</p>
   </div>`;
 }
 
-function ResetDemo({ A }) {
-  const [sure, setSure] = useState(false);
-  return html`<button class="btn btn-ghost" style="border:0;color:var(--muted);font-size:14px;min-height:44px" onClick=${() => (sure ? A.resetDemo() : setSure(true))}>
-    <${Icon} n="refresh" c="sm"/> ${sure ? 'Tap again to erase all demo data' : 'Reset demo data'}</button>`;
-}
-
 function ChangePin({ S, A }) {
-  const steps = ['Enter current PIN', 'Enter new PIN', 'Confirm new PIN'];
+  const steps = ['Enter your current PIN', 'Choose a new PIN', 'Enter the new PIN again'];
   const [step, setStep] = useState(0);
   const [first, setFirst] = useState('');
   const [ok, setOk] = useState(false);
   const [err, setErr] = useState(0);
   const [msg, setMsg] = useState('');
   const done = p => {
-    if (step === 0) { if (p !== S.pin) { setErr(e => e + 1); setMsg('That is not your current PIN'); return false; } setMsg(''); setStep(1); return false; }
-    if (step === 1) { if (p === S.pin) { setErr(e => e + 1); setMsg('Choose a PIN different from the current one'); return false; } setFirst(p); setMsg(''); setStep(2); return false; }
-    if (p !== first) { setErr(e => e + 1); setMsg('PINs did not match. Enter the new PIN again'); setStep(1); return false; }
+    if (step === 0) { if (p !== S.pin) { setErr(e => e + 1); setMsg('That isn’t your current PIN.'); return false; } setMsg(''); setStep(1); return false; }
+    if (step === 1) { if (p === S.pin) { setErr(e => e + 1); setMsg('Choose a PIN that’s different from your current one.'); return false; } setFirst(p); setMsg(''); setStep(2); return false; }
+    if (p !== first) { setErr(e => e + 1); setMsg('The PINs didn’t match. Choose your new PIN again.'); setStep(1); return false; }
     setOk(true); setTimeout(() => { A.setPin(p); A.back(); }, 600); return true;
   };
-  return html`<div class="lock" style="position:absolute;inset:0">
-    <div style="position:absolute;left:10px;top:calc(var(--top) + 4px)"><button class="iconbtn" style="color:#fff" onClick=${A.back} aria-label="Back"><${Icon} n="back"/></button></div>
-    <${Coin} size=${80} still=${true} />
+  return html`<div class="lock">
+    <div style="position:absolute;left:8px;top:calc(var(--top) + 4px)"><button class="iconbtn on-dark" onClick=${A.back} aria-label="Cancel"><${Icon} n="x"/></button></div>
+    <${Coin} size=${56} />
     <h2 key=${step}>${steps[step]}</h2>
-    <div class="proto">Prototype: the current PIN is ${PIN_DEFAULT} unless you changed it · a real flow adds an OTP check</div>
-    <div class=${'note' + (msg ? ' warn' : '')}>${msg}</div>
+    <div class=${'note' + (msg ? ' warn' : '')} role="status">${msg || (step === 0 ? '' : 'Avoid easy PINs like 1234 or your birth year.')}</div>
+    ${step === 0 && html`<div class="hint-demo">Demo PIN ${PIN_DEFAULT}, unless you changed it</div>`}
     <${PinPad} key=${step} ok=${ok} err=${err} onComplete=${done} showFace=${false} />
   </div>`;
 }
 
 function InfoScreen({ S, A, kind }) {
-  const titles = { faq: 'FAQs', contact: 'Contact PGBX', report: 'Report a problem', fees: 'Fee schedule', terms: 'Terms and privacy' };
+  const titles = { faq: 'Questions and answers', contact: 'Contact PGBX', report: 'Report a problem', fees: 'Fees and limits', terms: 'Terms and privacy', about: 'About this prototype' };
   let body;
   if (kind === 'faq') body = html`<${Faqs}/>`;
-  else if (kind === 'contact') body = html`<div class="card list cascade">
-      ${[['pin', 'Head office', 'Office 1211, 12th Floor, Gold Tower, Saddar, Karachi'], ['call', 'Phone', '+92 21 35215555', 'tel:+922135215555'], ['phone', 'WhatsApp', '+92 303 3521555', 'https://wa.me/923033521555'], ['sparkle', 'Website', 'pgbx.com.pk', 'https://pgbx.com.pk']].map(([ic, l, v, href], i) =>
-        html`<a class="li-row" style=${{ '--i': i, color: 'inherit', textDecoration: 'none' }} href=${href || null} target="_blank" rel="noopener"><span class="lic"><${Icon} n=${ic} c="sm"/></span><div><div class="tiny muted">${l}</div><b style="font-size:15px">${v}</b></div></a>`)}
+  else if (kind === 'contact') body = html`<div class="group inset">
+      ${[['pin', 'Head office', 'Office 1211, 12th Floor, Gold Tower, Saddar, Karachi'], ['call', 'Phone', '+92 21 35215555', 'tel:+922135215555'], ['wa', 'WhatsApp', '+92 303 3521555', 'https://wa.me/923033521555'], ['globe', 'Website', 'pgbx.com.pk', 'https://pgbx.com.pk']].map(([ic, l, v, href]) =>
+        href ? html`<a class="row" href=${href} target="_blank" rel="noopener"><span class="ri"><${Icon} n=${ic} c="sm"/></span><div class="rt"><span style="margin:0">${l}</span><b>${v}</b></div><${Icon} n="chev" c="sm chev"/></a>`
+          : html`<div class="row"><span class="ri"><${Icon} n=${ic} c="sm"/></span><div class="rt"><span style="margin:0">${l}</span><b>${v}</b></div></div>`)}
     </div>
-    <div class="pad small muted" style="margin-top:12px">Support hours and in-app chat: <span class="tbc">${TBC}</span></div>`;
+    <div class="group" style="margin-top:12px"><div class="row"><div class="rt"><b>Support hours</b><small><${Tbc}/></small></div></div></div>`;
   else if (kind === 'report') body = html`<${Report} S=${S} A=${A}/>`;
-  else if (kind === 'fees') body = html`<div class="card list enter"><table class="table">
-      <tr><th>Product</th><th>Premium (sample)</th></tr>
-      ${PRODUCTS.map(p => html`<tr><td>${pname(p)}</td><td>${fmt(p.premium)}</td></tr>`)}
-    </table></div>
-    <div class="card summary" style="margin-top:12px">
-      <div class="kv"><span>Buy / sell spread</span><span class="tbc">${TBC}</span></div>
-      <div class="kv"><span>Redemption fee / making charge</span><span class="tbc">${TBC}</span></div>
-      <div class="kv"><span>Storage fee or time limit</span><span class="tbc">${TBC}</span></div>
-      <div class="kv"><span>Minimum purchase</span><span class="tbc">${TBC}</span></div>
-      <div class="kv"><span>Per-day purchase limit</span><b>${fmt(DAY_LIMIT)} (sample)</b></div>
+  else if (kind === 'fees') body = html`
+    <div class="sec-h"><h3>Product premiums</h3><${Sample}/></div>
+    <div class="group">${PRODUCTS.map(p => html`<div class="row" style="min-height:48px"><div class="rt"><b style="font-weight:500">${pname(p)}</b></div><span class="rv"><b>${fmt(p.premium)}</b></span></div>`)}</div>
+    <p class="foot">The premium is added to the metal value of each bar. It’s already included in every price you see.</p>
+    <section class="sec"><div class="sec-h"><h3>Other charges</h3></div>
+      <div class="group">${[['Buy and sell spread'], ['Collection fee'], ['Storage fee or time limit'], ['Minimum purchase']].map(([l]) => html`<div class="row"><div class="rt"><b style="font-weight:500">${l}</b><small><${Tbc}/></small></div></div>`)}</div></section>
+    <section class="sec"><div class="sec-h"><h3>Limits</h3><${Sample}/></div>
+      <div class="group">
+        <div class="row"><div class="rt"><b style="font-weight:500">Per order</b></div><span class="rv"><b>${MAX_UNITS} bars</b></span></div>
+        <div class="row"><div class="rt"><b style="font-weight:500">Per day</b></div><span class="rv"><b>${fmt(DAY_LIMIT)}</b></span></div>
+        <div class="row"><div class="rt"><b style="font-weight:500">Limits by verification level</b><small><${Tbc}/></small></div></div>
+      </div></section>
+    <p class="foot">Every fee is shown before you confirm a purchase or collection.</p>`;
+  else if (kind === 'about') body = html`<div class="prose">
+      <h3>What this is</h3>
+      <p>A working prototype of the PGBX customer app, built to test the experience before launch. Rates are live; everything else uses sample data stored only in this browser.</p>
+      <h3>Live</h3>
+      <ul><li>Gold, silver, platinum, palladium and copper prices, converted at the live USD/PKR rate</li><li>Login codes by SMS, once PGBX connects its SMS provider</li></ul>
+      <h3>Sample or simulated</h3>
+      <ul><li>The customer, wallet, orders and four dealers</li><li>Product premiums, sell spread and purchase limits</li><li>Payments, identity checks and the camera</li><li>The dealer map and the customer’s location</li><li>Notifications, which appear in the app only</li></ul>
+      <h3>Still to be decided by PGBX</h3>
+      <ul><li>Payment channels and providers: <${Tbc}/></li><li>Identity verification provider: <${Tbc}/></li><li>Push, SMS and email providers: <${Tbc}/></li><li>Map provider: <${Tbc}/></li><li>Urdu at launch: <${Tbc}/></li><li>In-app chat: <${Tbc}/></li></ul>
+      <h3>Demo controls</h3>
+      <p>The PIN is ${PIN_DEFAULT} until you change it. Boxes marked “Demo” let you simulate payment problems, PGBX operations and the dealer’s steps.</p>
+      <p class="small" style="margin-top:16px">Version ${APP_VERSION}</p>
     </div>
-    <p class="foot-note">Every fee is shown before you confirm (FR-D8). PGBX sets fees and limits in the admin panel (FR-M2).</p>`;
-  else body = html`<div class="prose cascade">
-      ${[['Ownership of metal in your wallet', 'How the wallet is classified and which approvals apply'], ['Fees and charges', 'Spread, redemption fee and any storage fee'], ['Redemption period', 'How long holdings can be kept and redeemed (FR-W7)'], ['Refunds and disputes', 'What happens in a dispute'], ['Shariah approval', 'Written approval of the product, wallet and redemption flow (CMP-3)'], ['Privacy policy', 'How personal data is collected, stored and deleted (CMP-6)']].map(([h, d], i) =>
-        html`<div style=${{ '--i': i }}><h3>${h}</h3><p style="margin:0" class="muted">${d}.</p><p style="margin:6px 0 0"><span class="tbc">${TBC}</span></p></div>`)}
-      <p class="foot-note" style="margin:20px 0 0">Customers accept these terms before their first purchase (CMP-5).</p>
+    <div class="pad" style="margin-top:24px"><button class="btn btn-danger" onClick=${() => A.confirm({ title: 'Reset demo data?', body: 'This erases the sample wallet, orders, collections, alerts and settings in this browser and starts the demo again.', confirm: 'Reset demo data', danger: true, onConfirm: A.resetDemo })}><${Icon} n="refresh" c="sm"/> Reset demo data</button></div>`;
+  else body = html`<div class="prose">
+      ${[['Ownership of the metal in your wallet', 'How the wallet is classified and which approvals apply.'], ['Fees and charges', 'Spread, collection fee and any storage fee.'], ['How long you can hold', 'How long holdings can be kept and collected.'], ['Refunds and disputes', 'What happens if something goes wrong.'], ['Shariah approval', 'Written approval of the product, wallet and collection process.'], ['Privacy policy', 'How your personal data is collected, stored and deleted.']].map(([h, d]) =>
+        html`<h3>${h}</h3><p>${d}</p><p style="margin-top:4px"><${Tbc}/></p>`)}
+      <p class="small" style="margin-top:24px">You’ll be asked to accept these terms before your first purchase.</p>
     </div>`;
   return html`<div class="page">
     <${TopBar} title=${titles[kind]} onBack=${A.back} />
-    <div class="scroll" style="top:calc(var(--top) + 60px)">${body}</div>
+    <div class="scroll">${body}</div>
   </div>`;
 }
 function Faqs() {
   const [open, setOpen] = useState(0);
   const qs = [
-    ['What do I own when I buy?', 'A whole product, for example a 1 gram gold bar, held for you by PGBX. Every unit in your wallet is backed one-to-one by metal PGBX holds.'],
-    ['What purity are the products?', 'All eleven products are 999.0 purity.'],
-    ['Can I buy part of a product?', 'No. You always buy whole units and cannot combine smaller purchases into a larger product (FR-P7).'],
-    ['Can I buy gold and silver together?', 'Yes. Add products to the cart and pay for them in one order (FR-B8).'],
-    ['Why can I not buy larger bars?', 'Larger bars are sold offline only and do not appear in the app (FR-P6).'],
-    ['How long is the price locked?', 'For 60 seconds. After that it refreshes to the latest PGBX rate.'],
-    ['Why do I need to verify my identity?', 'PGBX must check your CNIC and a selfie before your first purchase (FR-A2).'],
-    ['Where do I collect my metal?', 'At any of the 250 PGBX dealers that has your product in stock. Bring your original CNIC; your code is valid for 24 hours.'],
-    ['Is there a redemption fee?', null],
+    ['What do I own when I buy?', 'A whole bar, for example a 1 gram gold bar, held for you by PGBX. Every bar in your wallet is backed one-to-one by metal PGBX holds.'],
+    ['What purity are the bars?', 'All eleven products are 999.0 purity.'],
+    ['Can I buy part of a bar?', 'No. You always buy whole bars, and smaller bars can’t be combined into a larger one.'],
+    ['Can I buy gold and silver together?', 'Yes. Add bars to your cart and pay for them in one order.'],
+    ['Why can’t I buy larger bars?', 'Larger bars are sold at PGBX offline only.'],
+    ['How long is the price locked?', 'For 60 seconds. After that it updates to the latest PGBX price.'],
+    ['Why do I need to verify my identity?', 'PGBX must check your CNIC and a selfie before your first purchase.'],
+    ['Where do I collect my metal?', 'At any of the 250 PGBX dealers that has your bar in stock. Bring your original CNIC. Your collection code is valid for 24 hours.'],
+    ['Is there a collection fee?', null],
     ['Can I sell back to PGBX?', null],
     ['Is there a storage fee or time limit?', null],
-    ['Does redemption differ for gold and silver?', null],
+    ['Is collecting gold different from silver?', null],
   ];
-  return html`<div class="card list cascade">${qs.map(([q, a], i) => html`<div class=${'faq' + (open === i ? ' open' : '')} style=${{ '--i': i }}>
-    <button onClick=${() => setOpen(open === i ? -1 : i)} aria-expanded=${open === i}>${q}<${Icon} n="chev" c="sm chev"/></button>
-    ${open === i && html`<div class="ans">${a || html`<span class="tbc">${TBC}</span>`}</div>`}
+  return html`<div class="group">${qs.map(([q, a], i) => html`<div class=${'faq' + (open === i ? ' open' : '')}>
+    <button class="faq-q" onClick=${() => setOpen(open === i ? -1 : i)} aria-expanded=${open === i}>${q}<${Icon} n="chev" c="sm chev"/></button>
+    ${open === i && html`<div class="ans">${a || html`<${Tbc}/>`}</div>`}
   </div>`)}</div>`;
 }
 function Report({ S, A }) {
-  const opts = [...S.orders.map(o => ['o:' + o.id, `Order ${o.receipt}`]), ...S.redemptions.map(r => ['r:' + r.id, `Redemption ${r.code}`])];
+  const opts = [...S.orders.map(o => ['o:' + o.id, `Order ${o.receipt}`]), ...S.redemptions.map(r => ['r:' + r.id, `Collection, code ${r.code}`])];
   const [ref, setRef] = useState(opts[0] ? opts[0][0] : 'general');
   const [text, setText] = useState('');
-  return html`<div class="pad enter">
-    <label class="f">About</label>
-    <select value=${ref} onChange=${e => setRef(e.target.value)}>
-      ${opts.map(([v, l]) => html`<option value=${v}>${l}</option>`)}<option value="general">Something else</option>
-    </select>
-    <label class="f">What happened?</label>
-    <textarea rows="5" placeholder="Describe the problem" value=${text} onInput=${e => setText(e.target.value)}></textarea>
-    <div class="cta" style="padding:16px 0 0"><button class="btn btn-gold" disabled=${text.trim().length < 3} onClick=${() => { A.toast('Report sent to PGBX support (prototype)'); A.back(); }}>Send report</button></div>
-    <p class="small muted">FR-N3. PGBX support sees the order or redemption you choose.</p>
+  return html`<div class="pad">
+    <p class="muted">Tell us what went wrong. PGBX support will see the order or collection you choose.</p>
+    <label class="field"><span class="lbl">What is it about?</span>
+      <select class="inp" value=${ref} onChange=${e => setRef(e.target.value)}>
+        ${opts.map(([v, l]) => html`<option value=${v}>${l}</option>`)}<option value="general">Something else</option>
+      </select></label>
+    <label class="field"><span class="lbl">What happened?</span>
+      <textarea class="inp" rows="5" maxlength="1000" placeholder="For example: I paid but the bar isn’t in my wallet" value=${text} onInput=${e => setText(e.target.value)}></textarea></label>
+    <div class="hint">${text.trim().length < 10 ? 'Please add a few more details.' : `${1000 - text.length} characters left`}</div>
+    <button class="btn btn-primary" style="margin-top:24px" disabled=${text.trim().length < 10} onClick=${() => { A.toast('Report sent to PGBX support (demo)'); A.back(); }}>Send report</button>
   </div>`;
 }
 
@@ -1537,7 +1605,7 @@ function App() {
     pin: PIN_DEFAULT, pinFails: 0, pinLockUntil: 0,
     cart: [], cartBump: 0, checkout: [], checkoutFrom: 'now', simCreditFail: false,
     notifications: [], banner: null, notifPrefs: { push: true, sms: true, email: false },
-    alerts: [], history: {},
+    alerts: [], history: {}, dialog: null, offline: typeof navigator !== 'undefined' && navigator.onLine === false,
     otpCfg: { checked: false, configured: false, channels: ['sms'] },
     loggedIn: false,
     ...(SAVED || {}),
@@ -1547,13 +1615,17 @@ function App() {
   const [now, setNow] = useState(Date.now());
   const set = patch => setSt(s => ({ ...s, ...(typeof patch === 'function' ? patch(s) : patch) }));
   const lastActive = useRef(Date.now());
-  const [mini, setMini] = useState(false);              // Liquid Glass tab bar shrinks while scrolling down
-  const miniRef = useRef(false), lastY = useRef(0);
   const committed = useRef(new Set(st.orders.map(o => o.id)));       // idempotency (Rule 2 / NFR-1), survives refresh
   const receipts = useRef(new Set(st.orders.map(o => o.receipt)));
   const histLoading = useRef({});
 
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  // Network state: tell the customer when they are offline instead of silently showing old prices
+  useEffect(() => {
+    const on = () => set({ offline: false }), off = () => set({ offline: true });
+    addEventListener('online', on); addEventListener('offline', off);
+    return () => { removeEventListener('online', on); removeEventListener('offline', off); };
+  }, []);
 
   // FR-A1: ask the server whether a real SMS / WhatsApp provider is connected
   // Demo mode only when the server explicitly answers configured:false; an unreachable server is an error, never a bypass.
@@ -1582,7 +1654,7 @@ function App() {
       }
       return false;
     };
-    poll().then(ok => { if (!ok && alive) set(s => (s.rates.mode === 'connecting' ? { rates: { ...s.rates, mode: 'sim', updatedAt: Date.now() }, toast: { msg: 'Live rates unavailable · showing simulated rates', id: Math.random() } } : {})); });
+    poll().then(ok => { if (!ok && alive) set(s => (s.rates.mode === 'connecting' ? { rates: { ...s.rates, mode: 'sim', updatedAt: Date.now() }, toast: { msg: 'Live rates are unavailable. Showing simulated rates.', id: Math.random() } } : {})); });
     const t = setInterval(poll, POLL_MS);
     return () => { alive = false; clearInterval(t); };
   }, []);
@@ -1602,17 +1674,18 @@ function App() {
   const top = st.stack[st.stack.length - 1];
 
   function toast(msg) { set({ toast: { msg, id: Math.random() } }); }
-  // FR-N1: every notice lands in the inbox; a push banner shows when push is on.
-  function notify(kind, title, body) {
+  // FR-N1: every notice lands in the inbox. A push banner shows only for things that happen in the background
+  // (dealer updates, alerts, operations); `quiet` is for actions the customer just took and can already see confirmed.
+  function notify(kind, title, body, quiet) {
     const n = { id: uid() + uid(), ts: Date.now(), kind, title, body, read: false };
-    set(s => ({ notifications: [n, ...s.notifications].slice(0, 60), banner: s.notifPrefs.push ? n : s.banner }));
+    set(s => ({ notifications: [n, ...s.notifications].slice(0, 60), banner: s.notifPrefs.push && !quiet ? n : s.banner }));
   }
 
   // FR-B2: refresh locked prices at zero while on product, cart or pay
   useEffect(() => {
     if (st.lock && top && ['product', 'cart', 'pay'].includes(top.name) && now >= st.lock.expiresAt) {
       set(s => ({ lock: { prices: Object.fromEntries(Object.keys(s.lock.prices).map(pid => [pid, priceOf(P[pid], s.rates)])), expiresAt: Date.now() + LOCK_S * 1000 } }));
-      toast('Price lock expired · refreshed to the latest rate');
+      toast('Prices updated to the latest rate');
     }
   }, [now]);
 
@@ -1651,6 +1724,9 @@ function App() {
   const credit = (s, o) => [...s.ledger, ...o.lines.map(l => ({ id: 'L-' + uid(), ts: Date.now(), pid: l.pid, delta: l.units, reason: 'purchase', ref: o.receipt, price: l.unit }))];
   const A = {
     set, toast,
+    // Confirmation sheet for consequential actions: { title, body, confirm, cancel, danger, onConfirm }
+    confirm: d => set({ dialog: d }),
+    closeDialog: () => set({ dialog: null }),
     tab: t => {
       if (st.guest && t !== 'rates') { A.login(); return; }
       set(s => ({ tab: t, stack: [], navDir: s.stack.length ? 'back' : tabIndex(t) > tabIndex(s.tab) ? 'fwd' : tabIndex(t) < tabIndex(s.tab) ? 'back' : 'fade' }));
@@ -1670,9 +1746,9 @@ function App() {
     openCart: () => set(s => ({ navDir: 'fwd', stack: [...s.stack, { name: 'cart' }], lock: lockFor(s, s.cart.map(l => l.pid)) })),
     addToCart: (pid, units) => {
       const total = linesUnits(st.cart) + units;
-      if (total > MAX_UNITS) { toast(`Per-order limit is ${MAX_UNITS} units (sample, FR-B6). Your cart has ${linesUnits(st.cart)}.`); return; }
+      if (total > MAX_UNITS) { toast(`You can buy up to ${MAX_UNITS} bars per order. Your cart already has ${linesUnits(st.cart)}.`); return; }
       set(s => { const ex = s.cart.find(l => l.pid === pid); return { cartBump: s.cartBump + 1, cart: ex ? s.cart.map(l => (l.pid === pid ? { ...l, units: l.units + units } : l)) : [...s.cart, { pid, units }] }; });
-      toast(`Added ${units} × ${pname(P[pid])} to cart`);
+      toast(`Added ${units} × ${pname(P[pid])} to your cart`);
     },
     cartUnits: (pid, units) => set(s => ({ cart: units <= 0 ? s.cart.filter(l => l.pid !== pid) : s.cart.map(l => (l.pid === pid ? { ...l, units } : l)) })),
     checkout: from => {
@@ -1680,8 +1756,8 @@ function App() {
       const lines = from === 'cart' ? st.cart : [{ pid: top.pid, units: st.qty }];
       if (!lines.length) return;
       const total = linesTotal(lines, st.lock.prices);
-      if (linesUnits(lines) > MAX_UNITS) { toast(`Per-order limit is ${MAX_UNITS} units (sample, FR-B6)`); return; }
-      if (spentToday + total > DAY_LIMIT) { toast(`Daily limit: you can buy up to ${fmt(Math.max(0, DAY_LIMIT - spentToday))} more today (sample, FR-B6)`); return; }
+      if (linesUnits(lines) > MAX_UNITS) { toast(`You can buy up to ${MAX_UNITS} bars per order.`); return; }
+      if (spentToday + total > DAY_LIMIT) { toast(`You can buy up to ${fmt(Math.max(0, DAY_LIMIT - spentToday))} more today.`); return; }
       const orderKey = 'K' + uid() + uid();
       set(s => ({ checkout: lines, checkoutFrom: from, paying: false, navDir: 'fwd', stack: [...s.stack, s.kyc.status === 'verified' ? { name: 'pay', orderKey } : { name: 'kyc', next: 'pay', orderKey }] }));
     },
@@ -1705,8 +1781,8 @@ function App() {
           cart: s.checkoutFrom === 'cart' ? [] : s.cart,
           stack: [{ name: 'receipt', oid: key }], lock: null,
         }));
-        if (fail) notify('purchase', 'Payment received, credit pending', `${rno} · ${fmt(total)}. PGBX operations is completing your order (FR-B5).`);
-        else notify('purchase', 'Purchase confirmed', `${linesText(lines)} · ${fmt(total)} · ${rno}`);
+        if (fail) notify('purchase', 'Payment received, credit pending', `${rno} · ${fmt(total)}. PGBX operations is completing your order.`, true);
+        else notify('purchase', 'Purchase confirmed', `${linesText(lines)} · ${fmt(total)} · ${rno}`, true);
       }, fail ? 5200 : 1800);
     },
     resolveOrder: id => {
@@ -1714,8 +1790,8 @@ function App() {
       set(s => ({ orders: s.orders.map(x => (x.id === id ? { ...x, status: 'credited' } : x)), ledger: credit(s, o) }));
       notify('purchase', 'Order credited', `${linesText(o.lines)} is now in your wallet · ${o.receipt}`);
     },
-    submitKyc: f => { set(s => ({ kyc: { ...s.kyc, status: 'pending', expiry: f.expiry }, profile: { ...s.profile, name: f.name.trim(), cnic: f.cnic, dob: f.dob } })); notify('account', 'Identity check submitted', 'We are checking your CNIC and selfie.'); },
-    kycVerified: () => { set(s => ({ kyc: { ...s.kyc, status: 'verified', at: Date.now() } })); notify('account', 'Identity verified', 'You can now buy gold and silver (FR-A2).'); },
+    submitKyc: f => { set(s => ({ kyc: { ...s.kyc, status: 'pending', expiry: f.expiry }, profile: { ...s.profile, name: f.name.trim(), cnic: f.cnic, dob: f.dob } })); notify('account', 'Identity check submitted', 'We are checking your CNIC and selfie.', true); },
+    kycVerified: () => { set(s => ({ kyc: { ...s.kyc, status: 'verified', at: Date.now() } })); notify('account', 'Identity verified', 'You can now buy gold and silver.', true); },
     kycFinish: next => set(s => {
       const k = s.stack[s.stack.length - 1];
       if (next === 'pay' && k && k.name === 'kyc') return { navDir: 'fwd', stack: [...s.stack.slice(0, -1), { name: 'pay', orderKey: k.orderKey }] };
@@ -1725,12 +1801,13 @@ function App() {
       const idChanged = ['name', 'cnic', 'dob'].some(k => (f[k] || '') !== (st.profile[k] || ''));
       const reverify = idChanged && st.kyc.status === 'verified';
       set(s => ({ profile: { ...f, name: f.name.trim() }, kyc: reverify ? { ...s.kyc, status: 'reverify' } : s.kyc, navDir: 'back', stack: s.stack.slice(0, -1) }));
-      notify('account', reverify ? 'Identity details changed' : 'Profile updated', reverify ? 'Re-verify your identity before your next purchase (FR-N2).' : 'Your contact details were saved.');
+      notify('account', reverify ? 'Identity details changed' : 'Profile updated', reverify ? 'Verify your identity again before your next purchase.' : 'Your contact details were saved.', true);
+      toast(reverify ? 'Saved. Verify your identity again before your next purchase.' : 'Changes saved');
     },
-    changePhone: n => { set({ phone: n }); notify('security', 'Mobile number changed', `Your account now uses +92 ${n.slice(0, 3)} ${n.slice(3)}. If this wasn’t you, contact PGBX.`); },
-    setPin: p => { set({ pin: p }); notify('security', 'PIN changed', 'Your app PIN was changed on this device.'); },
+    changePhone: n => { set({ phone: n }); notify('security', 'Mobile number changed', `Your account now uses +92 ${n.slice(0, 3)} ${n.slice(3)}. If this wasn’t you, contact PGBX.`, true); toast('Mobile number updated'); },
+    setPin: p => { set({ pin: p }); notify('security', 'PIN changed', 'Your app PIN was changed on this device.', true); toast('PIN changed'); },
     markAllRead: () => set(s => ({ notifications: s.notifications.map(n => ({ ...n, read: true })) })),
-    addAlert: (metal, dir, target) => { set(s => ({ alerts: [...s.alerts, { id: uid(), metal, dir, target, active: true }] })); toast(`Alert set: ${metalName(metal)} ${dir} ${fmt(target)}`); },
+    addAlert: (metal, dir, target) => { set(s => ({ alerts: [...s.alerts, { id: uid(), metal, dir, target, active: true }] })); toast(`We’ll notify you when ${metalName(metal).toLowerCase()} goes ${dir} ${fmt(target)}`); },
     removeAlert: id => set(s => ({ alerts: s.alerts.filter(a => a.id !== id) })),
     loadHistory: async (metal, range) => {
       const key = metal + ':' + range; const h = st.history[key];
@@ -1750,9 +1827,9 @@ function App() {
       const r = { id: 'RD-' + uid(), pid, units, dealerId, code, createdAt: Date.now(), expiresAt: Date.now() + RESERVE_MS, status: 'requested' };
       const d = DEALERS.find(x => x.id === dealerId);
       set(s => ({ redemptions: [...s.redemptions, r], navDir: 'fwd', stack: [...s.stack, { name: 'code', rid: r.id }] }));
-      notify('redemption', 'Redemption requested', `${units} × ${pname(P[pid])} reserved at ${d.name}. Code ${code}, valid 24 hours.`);
+      notify('redemption', 'Reserved for collection', `${units} × ${pname(P[pid])} at ${d.name}. Code ${code}, valid for 24 hours.`, true);
     },
-    cancelRedemption: id => { const r = st.redemptions.find(x => x.id === id); set(s => ({ redemptions: s.redemptions.map(x => (x.id === id ? { ...x, status: 'cancelled' } : x)) })); notify('redemption', 'Redemption cancelled', `${r.units} × ${pname(P[r.pid])} returned to your wallet.`); },
+    cancelRedemption: id => { const r = st.redemptions.find(x => x.id === id); set(s => ({ redemptions: s.redemptions.map(x => (x.id === id ? { ...x, status: 'cancelled' } : x)) })); notify('redemption', 'Collection cancelled', `${r.units} × ${pname(P[r.pid])} is back in your wallet.`, true); toast('Collection cancelled'); },
     markReady: id => { const r = st.redemptions.find(x => x.id === id); set(s => ({ redemptions: s.redemptions.map(x => (x.id === id && x.status === 'requested' ? { ...x, status: 'ready' } : x)) })); notify('redemption', 'Ready for collection', `${pname(P[r.pid])} is ready at ${DEALERS.find(d => d.id === r.dealerId).name}. Bring your CNIC.`); },
     handOver: id => {
       const r = st.redemptions.find(x => x.id === id);
@@ -1764,7 +1841,7 @@ function App() {
         ledger: [...s.ledger, { id: 'L-' + uid(), ts: Date.now(), pid: r.pid, delta: -r.units, reason: 'redemption', ref: r.id, dealer: d.name, serials }],
         dealerStock: { ...s.dealerStock, [d.id]: { ...s.dealerStock[d.id], [r.pid]: s.dealerStock[d.id][r.pid] - r.units } },
       }));
-      notify('redemption', 'Collected', `${r.units} × ${pname(p)} handed over at ${d.name}. Serial ${serials.join(', ')}.`);
+      notify('redemption', 'Collected', `${r.units} × ${pname(p)} collected at ${d.name}. Serial ${serials.join(', ')}.`);
     },
   };
 
@@ -1775,7 +1852,7 @@ function App() {
   const pinFail = () => {
     const f = st.pinFails + 1;
     if (f >= PIN_MAX_FAILS) {
-      set({ pinFails: 0, pinLockUntil: 0, stack: [], loggedIn: false, loginNote: `${PIN_MAX_FAILS} wrong PINs. For your security, log in again with your mobile number (FR-A4).` });
+      set({ pinFails: 0, pinLockUntil: 0, stack: [], loggedIn: false, loginNote: `${PIN_MAX_FAILS} wrong PINs. For your security, log in again with your mobile number.` });
       notify('security', 'Session ended after wrong PINs', `${PIN_MAX_FAILS} wrong PIN attempts on this device. If this wasn’t you, contact PGBX.`);
       setPhase('login'); return;
     }
@@ -1798,6 +1875,7 @@ function App() {
     else if (n === 'kyc') content = html`<${KycScreen} S=${S} A=${A} next=${top.next}/>`;
     else if (n === 'profile') content = html`<${ProfileScreen} S=${S} A=${A}/>`;
     else if (n === 'inbox') content = html`<${InboxScreen} S=${S} A=${A}/>`;
+    else if (n === 'notifsettings') content = html`<${NotifSettings} S=${S} A=${A}/>`;
     else if (n === 'statement') content = html`<${StatementScreen} S=${S} A=${A}/>`;
   } else {
     const M = { rates: RatesHome, buy: BuyList, wallet: WalletScreen, redeem: RedeemScreen, account: AccountScreen }[st.tab];
@@ -1812,40 +1890,54 @@ function App() {
     document.documentElement.style.backgroundColor = c;
     const m = document.querySelector('meta[name="theme-color"]'); if (m) m.setAttribute('content', c);
   }, [darkTop]);
-  const tabIdx = tabIndex(st.tab);
-  const hideTabs = top && ['processing', 'changepin', 'kyc'].includes(top.name);
+  // Checkout and verification are focused tasks: the tab bar steps aside for their sticky actions.
+  const hideTabs = top && ['product', 'cart', 'pay', 'processing', 'receipt', 'kyc', 'changepin'].includes(top.name);
   const enterCls = st.navDir === 'fwd' ? 'enter-fwd' : st.navDir === 'back' ? 'enter-back' : 'enter';
-  useEffect(() => { lastY.current = 0; miniRef.current = false; setMini(false); }, [routeKey]);
 
   const active = () => { lastActive.current = Date.now(); };
-  const onScroll = e => {
-    active();
-    const t = e.target; if (!t || !t.classList || !t.classList.contains('scroll')) return;
-    const y = t.scrollTop, d = y - lastY.current; lastY.current = y;
-    const m = y > 80 && d > 2 ? true : (d < -6 || y < 24) ? false : null;
-    if (m !== null && m !== miniRef.current) { miniRef.current = m; setMini(m); }
-  };
-  const spec = e => { const r = e.currentTarget.getBoundingClientRect(); e.currentTarget.style.setProperty('--hx', `${(e.clientX - r.left) - r.width * 0.17}px`); };
-  return html`<div class="device" onPointerDown=${active} onKeyDown=${active} onWheel=${active} onTouchMove=${active} onScrollCapture=${onScroll} onInput=${active}>
+  return html`<div class="device" onPointerDown=${active} onKeyDown=${active} onWheel=${active} onTouchMove=${active} onScrollCapture=${active} onInput=${active}>
     <div class="device-inner">
       <${StatusBar} light=${darkTop} />
-      ${phase === 'splash' && html`<${Splash} rates=${st.rates} quick=${returning} onDone=${() => { if (returning) set({ lockNote: 'Welcome back' }); setPhase(returning ? 'pin' : 'login'); }} />`}
+      ${phase === 'splash' && html`<${Splash} rates=${st.rates} quick=${returning} onDone=${() => {  setPhase(returning ? 'pin' : 'login'); }} />`}
       ${phase === 'login' && html`<${Login} S=${S} note=${st.loginNote} onRetry=${checkOtp} onDone=${phone => {
         set({ phone }); enterApp();
-        notify('security', 'New login on this device', `Logged in with +92 ${phone.slice(0, 3)} ${phone.slice(3)}. If this wasn’t you, contact PGBX.`);
+        notify('security', 'New login on this device', `Logged in with +92 ${phone.slice(0, 3)} ${phone.slice(3)}. If this wasn’t you, contact PGBX.`, true);
       }} onBrowse=${browse} onPin=${() => setPhase('pin')} />`}
       ${phase === 'pin' && html`<${LockScreen} pin=${st.pin} fails=${st.pinFails} lockUntil=${st.pinLockUntil} now=${now} biometric=${st.biometric} note=${st.lockNote}
           onUnlock=${enterApp} onFail=${pinFail} onBrowse=${browse} onLogin=${() => { set({ lockNote: '', loginNote: '' }); setPhase('login'); }} />`}
-      ${phase === 'app' && html`<div class=${'app' + (framed ? ' framed' : '')}>
+      ${phase === 'app' && html`<div class=${'app' + (framed ? ' framed' : '') + (hideTabs ? ' no-tabs' : '')}>
         <div class="view"><div class=${enterCls} key=${routeKey} style="position:absolute;inset:0">${content}</div></div>
-        ${!hideTabs && html`<nav class=${'tabbar glass' + (mini ? ' mini' : '')} aria-label="Main" onPointerMove=${spec}><span class="spec"></span><div class="tabs">
-          <div class="pill-track" style=${{ transform: `translateX(${tabIdx * 100}%)` }}><div class="pill" key=${'p' + tabIdx}></div></div>
+        ${!hideTabs && html`<nav class="tabbar" aria-label="Main"><div class="tabs">
           ${TABS.map(([k, l]) => html`<button class=${'tab' + (st.tab === k ? ' on' : '')} onClick=${() => A.tab(k)} aria-current=${st.tab === k ? 'page' : null}>
-            <${Icon} n=${k}/>${l}${st.guest && k !== 'rates' ? html`<span style="position:absolute;top:6px;right:calc(50% - 18px);opacity:.6"><${Icon} n="lock" c="xs"/></span>` : ''}</button>`)}
+            <${Icon} n=${k}/>${l}${st.guest && k !== 'rates' ? html`<span class="lk" aria-label="Log in required"><${Icon} n="lock" c="xs"/></span>` : ''}</button>`)}
         </div></nav>`}
+        ${st.offline && html`<div class="offline" role="status"><${Icon} n="wifiOff" c="sm"/> You’re offline. Prices will update when you reconnect.</div>`}
         ${st.banner && html`<${PushBanner} n=${st.banner} onOpen=${() => set(s => ({ banner: null, stack: [...s.stack, { name: 'inbox' }], navDir: 'fwd' }))} />`}
-        ${st.toast && html`<div class="toast glass" key=${st.toast.id} role="status"><${Icon} n="info" c="sm"/>${st.toast.msg}</div>`}
+        ${st.toast && html`<div class="toast" key=${st.toast.id} role="status"><${Icon} n="check" c="sm"/>${st.toast.msg}</div>`}
+        ${st.dialog && html`<${Dialog} d=${st.dialog} onClose=${A.closeDialog} />`}
       </div>`}
+    </div>
+  </div>`;
+}
+
+// Confirmation sheet. Focus moves to the safe choice; Escape or tapping outside cancels.
+function Dialog({ d, onClose }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const prev = document.activeElement;
+    const b = ref.current && ref.current.querySelector('[data-cancel]'); if (b) b.focus({ preventScroll: true });
+    const esc = e => { if (e.key === 'Escape') onClose(); };
+    addEventListener('keydown', esc);
+    return () => { removeEventListener('keydown', esc); try { prev && prev.focus && prev.focus({ preventScroll: true }); } catch (e) { } };
+  }, []);
+  const ok = () => { onClose(); d.onConfirm && d.onConfirm(); };
+  return html`<div class="scrim" onClick=${e => { if (e.target === e.currentTarget) onClose(); }}>
+    <div class="dialog" ref=${ref} role="alertdialog" aria-modal="true" aria-labelledby="dlg-t" aria-describedby="dlg-b">
+      <h2 id="dlg-t">${d.title}</h2>${d.body && html`<p id="dlg-b">${d.body}</p>`}
+      <div class="stack-btns">
+        <button class=${'btn ' + (d.danger ? 'btn-danger-solid' : 'btn-primary')} onClick=${ok}>${d.confirm || 'Confirm'}</button>
+        <button class="btn btn-secondary" data-cancel onClick=${onClose}>${d.cancel || 'Cancel'}</button>
+      </div>
     </div>
   </div>`;
 }
@@ -1869,13 +1961,13 @@ addEventListener('resize', fit); fit();
 
 // If anything unexpected breaks while drawing the app, show a way out instead of a blank page.
 function CrashScreen() {
-  return html`<div class="device"><div class="device-inner"><div class="lock" style="justify-content:center;text-align:center;gap:6px">
-    <${Coin} size=${96} still=${true} />
+  return html`<div class="device"><div class="device-inner"><div class="lock" style="justify-content:center">
+    <${Coin} size=${64} />
     <h2>Something went wrong</h2>
-    <p class="proto" style="max-width:280px;line-height:1.5">The app hit a problem loading your demo data. You can try again, or reset the demo to start fresh.</p>
-    <div style="display:grid;gap:10px;width:100%;max-width:300px;margin-top:14px">
-      <button class="btn btn-gold" onClick=${() => location.reload()}>Try again</button>
-      <button class="btn btn-ghost" onClick=${() => { clearSaved(); location.href = location.pathname; }}>Reset demo data</button>
+    <p class="note" style="line-height:1.5">The app couldn’t load your demo data. Try again, or reset the demo to start fresh.</p>
+    <div class="stack-btns" style="width:100%;max-width:320px;margin-top:24px">
+      <button class="btn btn-accent" onClick=${() => location.reload()}>Try again</button>
+      <button class="btn btn-tertiary" style="color:#fff" onClick=${() => { clearSaved(); location.href = location.pathname; }}>Reset demo data</button>
     </div>
   </div></div></div>`;
 }

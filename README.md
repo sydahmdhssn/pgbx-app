@@ -94,13 +94,30 @@ until then the app shows WhatsApp as "soon" and offers SMS. Twilio charges per m
   small caps labels, chips and pills (`--compact`), **SF Mono** for receipt numbers, codes and OTP boxes (`--mono`) and
   **New York** for headings and prices (`--serif`). iPhone, iPad and Mac show the real fonts; Android and Windows fall back to
   Roboto / Segoe UI, Georgia and Consolas. SF Compact appears only where it is installed; elsewhere SF Pro is used.
-- Inline SVG icons, metallic ingots and the PGBX coin logo
-- Motion uses transform and opacity with `cubic-bezier(.22,1,.36,1)` and respects `prefers-reduced-motion`
-- Liquid Glass styling in the spirit of iOS 26: a floating glass tab bar that shrinks while scrolling down and a liquid
-  tab indicator, glass headers that content scrolls under, glass back and cart buttons, sheet, banners, toasts, segmented
-  controls, PIN keys and secondary buttons. Blur, saturation and specular rims work in all modern browsers; the extra
-  refraction (an SVG displacement filter inside `backdrop-filter`) is applied only in Chromium-based browsers, which support it.
-  `prefers-reduced-transparency` switches to solid surfaces.
+- One inline SVG icon family (24 px grid, 1.8 px stroke), drawn ingots and the PGBX coin mark
+
+## Design system
+
+All styles live in `index.html` as tokens and one set of components, so every screen is built from the same parts.
+
+| Token | Values |
+|---|---|
+| Colour | Brand green `#0B4A2C` (primary actions, headings), gold `#C8962B` (metal, accents, focus on dark); warm neutrals (`--bg`, `--surface`, `--fill`, three text levels, two border levels); success, warning, danger and info used only for status |
+| Type | New York for screen titles and headline figures; SF Pro 15/1.45 for body, 13 for secondary text, 12 for captions; SF Compact for tags and tab labels; SF Mono for receipt numbers and codes. Weights 400–700 only; tabular numerals throughout |
+| Spacing | 4, 8, 12, 16, 20, 24, 32, 40, 48 (16 px side gutter) |
+| Radius | 6 tags, 8 thumbnails, 12 buttons and inputs, 16 cards and lists, 24 sheets; nested controls use outer radius minus padding |
+| Elevation | `--e1` resting cards, `--e2` floating (tab bar, rate cards), `--e3` overlays (dialogs, toasts) |
+| Motion | 120 ms press, 200 ms state, 300 ms screen; one easing curve; no looping decoration (only spinners, skeletons and the cursor loop) |
+
+Components: large title (root tabs), navigation bar (pushed screens), grouped list rows, cards, brand card (wallet value), buttons (primary, secondary, tertiary, danger, accent on dark; with pressed, focus, disabled and loading states), fields with inline errors, segmented control, stepper, radio, switch, tags, notices, empty states, skeletons, sticky action bar, confirmation sheet, toast, push banner and a "Demo" panel that keeps prototype-only controls visibly separate from the product.
+
+Rules the screens follow:
+- Requirement IDs (FR-*, CMP-*) are kept in code comments only, never shown to customers.
+- Open items appear as plain "[To be confirmed by PGBX]" text where a customer would look for them (fees, collection, sell-back, receipts, terms, support hours). Vendor choices (payment, ID check, SMS/push/email, map providers) and Urdu are listed under Account › About this prototype.
+- Checkout and verification hide the tab bar and use a sticky action bar. Consequential actions (log out, cancel collection, reset demo) ask for confirmation.
+- Actions the customer just took are confirmed on screen or by a toast and recorded in the inbox quietly; push banners are for things that happen in the background (dealer updates, price alerts, operations).
+- Offline state, delayed rates, failed history and service outages each have a plain-language message and a way forward.
+- Every control has an accessible name and a 40 px or larger target; focus is visible; `prefers-reduced-motion` and `prefers-reduced-transparency` are respected.
 
 ## Security headers
 
@@ -117,7 +134,7 @@ browser's local storage so a refresh does not reset the demo, and a returning us
 **Reset demo data** erases it. Nothing is sent anywhere. A real app keeps this on the server and in the phone's secure storage.
 Saved data is checked when the app opens: anything damaged or from an older version is dropped or converted, and the rest
 falls back to defaults. If the app ever fails while drawing, a recovery screen offers **Try again** and **Reset demo data**
-instead of a blank page. Returning users see a short (about 1 s) splash before the PIN screen; first-time visitors get the full one.
+instead of a blank page. Returning users see a short splash (under 1 s) before the PIN screen; first-time visitors see the mark draw in once (about 2 s).
 
 ## What the prototype covers
 
@@ -128,8 +145,8 @@ instead of a blank page. Returning users see a short (about 1 s) splash before t
 | Rates | Live gold and silver buy/sell per tola and per gram, rolling-digit prices, change % since opening, sparkline, world spot (platinum, palladium, copper), freshness, delayed state; tap a card for the day/week/month history chart and price alerts | FR-R1–R6 |
 | Buy | 11 products, whole-unit stepper, cart mixing gold and silver in one order, 60 s price lock with refresh, per-order (10 units) and per-day (Rs 1,500,000) sample limits, payment choice, receipt; a prototype switch shows payment succeeding but crediting failing, with 3 retries, hand-off to operations and later credit | FR-P1–P7, FR-B1–B8 |
 | Wallet | Holdings by product count, weights, sell value, reserved units, pending credits, history from an append-only ledger, statement for a chosen period as CSV or printable PDF | FR-W1–W4 |
-| Redeem | Product and units, schematic dealer map, 4 sample dealers with address, phone, hours, distance and stock, directions link, 6-digit code, 24 h expiry, status, cancel, dealer simulation (ready, ID check, hand over with serials) | FR-D1–D9 |
-| Account | Verification status, personal details, notifications inbox with push / SMS / email settings and in-app push banners, change PIN, biometric toggle, FAQs, contact, report a problem, fee schedule, terms | FR-N1–N4 |
+| Redeem | Product and quantity, schematic dealer map, 4 sample dealers with area, hours, distance and stock, call and directions, 6-digit collection code, 24 h expiry, status steps, cancel with confirmation, dealer simulation (ready, ID check, hand over with serials) | FR-D1–D9 |
+| Account | Profile, identity verification, security (change PIN, Face ID, auto-lock), notifications inbox and notification settings, price alerts, questions and answers, contact, report a problem, fees and limits, terms and privacy, About this prototype (live vs sample data, open items, reset demo) | FR-N1–N4 |
 
 Not in this prototype: the dealer interface (FR-DL1–6) and the admin panel (FR-M1–10) are separate products; the redemption screen only simulates the dealer's steps. Back-end rules (daily reconciliation, audit log, security, backups) need the real platform.
 
@@ -147,7 +164,7 @@ Sample or simulated:
 - Notifications appear in the app only; nothing is sent by push, SMS or email.
 - Purchase limits (10 units per order, Rs 1,500,000 per day) are samples.
 - Product premiums, the 10-unit per-order limit, the customer (Ahmed Khan), opening holdings (2 × 1 tola silver, 1 × 1 g gold), the four dealers and their stock.
-- Payments always succeed after about 1.8 s. Receipt numbers, redemption codes, the QR-style pattern and serial numbers are generated locally.
+- Payments always succeed after about 1.8 s. Receipt numbers, collection codes and serial numbers are generated locally.
 
 Shown as "[To be confirmed by PGBX]" (open questions in Section 10 and related FRs):
 - Which rate source PGBX will use for its local buy and sell prices, and the real spread
