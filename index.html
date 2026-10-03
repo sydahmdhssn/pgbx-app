@@ -418,7 +418,7 @@ button.notice{transition:transform var(--t1)}button.notice:active{transform:scal
 @media (max-height:700px){
   .lock{padding-top:calc(var(--top) + 20px)}.lock h2{margin-top:12px;font-size:20px}.dots4{margin:16px 0}
   .keypad{grid-template-columns:repeat(3,64px);gap:10px 24px}.key{width:64px;height:64px;font-size:26px}.lock-links{margin-top:4px}
-  .login-top{padding-top:calc(var(--top) + 12px);padding-bottom:16px}.login-top .coin{width:64px;height:64px}.login-top p{display:none}.ticker{margin-top:12px}
+  .login-top{padding-top:calc(var(--top) + 12px);padding-bottom:16px}.login-top .logo-stage{transform:scale(.7);margin:-14px 0}.login-top p{display:none}.ticker{margin-top:12px}
 }
 .lock .linkbtn{color:var(--gold-300)}
 .lock .linkbtn.dim{color:var(--on-dark-2);font-weight:500;font-size:14px}
@@ -585,6 +585,15 @@ button.notice{transition:transform var(--t1)}button.notice:active{transform:scal
 .logo-stage .floaty{position:relative;animation:breathe 6s 1.4s ease-in-out infinite}
 .logo-stage .sheen{position:absolute;inset:7%;border-radius:50%;overflow:hidden;pointer-events:none}
 .logo-stage .sheen i{position:absolute;top:-10%;bottom:-10%;left:0;width:32%;background:linear-gradient(100deg,transparent,rgba(255,240,200,.42),transparent);animation:sweep 5.5s 1.6s var(--ease) infinite;transform:translateX(-160%) skewX(-18deg)}
+
+
+/* first-version logo touches: rotating rings, an orbiting gold ball and a turning dotted rim */
+.logo-stage .ring{position:absolute;border-radius:50%;pointer-events:none}
+.logo-stage .ring.r1{inset:-51%;border:1px dashed rgba(226,182,90,.32);animation:spin 50s linear infinite,fade 1.4s .5s both}
+.logo-stage .ring.r2{inset:-80%;border:1px solid rgba(226,182,90,.1);animation:spin 80s linear infinite reverse,fade 1.4s .8s both}
+.logo-stage .orbit{position:absolute;inset:-13%;border-radius:50%;pointer-events:none;animation:spin 7s linear infinite,fade .9s 1.3s both}
+.logo-stage .orbit i{position:absolute;top:-3.5px;left:50%;width:7px;height:7px;margin-left:-3.5px;border-radius:50%;background:#FFF3C8;box-shadow:0 0 10px 3px rgba(226,182,90,.75)}
+.logo-stage.orbiting .coin .dots{transform-box:fill-box;transform-origin:center;animation:spin 40s linear infinite}
 
 /* login ambience: two very soft lights drifting */
 .login{position:absolute;isolation:isolate}

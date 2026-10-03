@@ -243,7 +243,7 @@ function Odo({ value, prefix = 'Rs ', decimals = 0, flash, dir }) {
 function Coin({ size = 200, animate = false, label = 'PGBX logo' }) {
   const star = (cx, cy, R, r) => { let pts = []; for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r : R; pts.push((cx + rr * Math.cos(a)).toFixed(2) + ',' + (cy + rr * Math.sin(a)).toFixed(2)); } return pts.join(' '); };
   return html`<svg class=${'coin' + (animate ? ' anim' : '')} viewBox="0 0 200 200" width=${size} height=${size} role="img" aria-label=${label}>
-    <circle cx="100" cy="100" r="97" fill="none" stroke="#E2B65A" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="0.1 7" opacity=".7"/>
+    <circle class="dots" cx="100" cy="100" r="97" fill="none" stroke="#E2B65A" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="0.1 7" opacity=".7"/>
     <circle class="face" cx="100" cy="100" r="82" fill="url(#coinFace)"/>
     <circle class="ring" cx="100" cy="100" r="86" fill="none" stroke="url(#goldMetal)" stroke-width="5.5" pathLength="1" transform="rotate(-90 100 100)"/>
     <g class="emblem">
@@ -256,9 +256,13 @@ function Coin({ size = 200, animate = false, label = 'PGBX logo' }) {
 }
 
 // Logo stage for splash, login and lock: the mark draws in, then breathes with a soft glow and a passing light.
-const Logo = ({ size, animate = true }) => html`<div class="logo-stage" style=${{ width: size + 'px', height: size + 'px' }}>
+// `orbit` adds the original touches from the first version: two slowly rotating rings, a gold ball orbiting the coin
+// and the coin's dotted rim turning (splash and sign-in).
+const Logo = ({ size, animate = true, orbit = false }) => html`<div class=${'logo-stage' + (orbit ? ' orbiting' : '')} style=${{ width: size + 'px', height: size + 'px' }}>
+  ${orbit && html`<span class="ring r2" aria-hidden="true"></span><span class="ring r1" aria-hidden="true"></span>`}
   <span class="halo" aria-hidden="true"></span>
-  <div class="floaty"><${Coin} size=${size} animate=${animate} /><span class="sheen" aria-hidden="true"><i></i></span></div>
+  <div class="floaty"><${Coin} size=${size} animate=${animate} /><span class="sheen" aria-hidden="true"><i></i></span>
+    ${orbit && html`<span class="orbit" aria-hidden="true"><i></i></span>`}</div>
 </div>`;
 
 function Ingot({ metal = 'gold', w = 72, label }) {
@@ -306,7 +310,7 @@ function Splash({ onDone, rates, quick }) {
   const finish = () => { if (out) return; setOut(true); setTimeout(onDone, 350); };
   useEffect(() => { const t = setTimeout(finish, quick ? 800 : 2100); return () => clearTimeout(t); }, []);
   return html`<div class=${'splash on-dark' + (quick ? ' quick' : '') + (out ? ' out' : '')} onClick=${finish}>
-    <${Logo} size=${quick ? 112 : 140} animate=${!quick} />
+    <${Logo} size=${quick ? 112 : 140} animate=${!quick} orbit=${true} />
     <h1>Pakistan Gold Bullion Exchange</h1>
     ${!quick && html`<p class="tagline">Gold and silver, held for you</p>`}
     ${!quick && html`<div class="splash-status" role="status"><span class=${'ldot' + (rates.mode === 'live' ? '' : ' sim')}></span>${rates.mode === 'live' ? 'Live rates connected' : rates.mode === 'sim' ? 'Using simulated rates' : 'Connecting to live rates'}</div>`}
@@ -373,7 +377,7 @@ function Login({ S, note, onDone, onBrowse, onPin, onRetry }) {
   return html`<div class=${'login' + (out ? ' out' : '')}>
     <span class="amb-wrap" aria-hidden="true"><span class="amb a"></span><span class="amb b"></span></span>
     <div class="login-top on-dark">
-      <${Logo} size=${88} />
+      <${Logo} size=${104} orbit=${true} />
       <h1>Pakistan Gold Bullion Exchange</h1>
       <p>Buy 999.0 gold and silver, held for you by PGBX. Collect it at any of 250 dealers.</p>
       <div class="ticker" aria-label="Current buy rates">
