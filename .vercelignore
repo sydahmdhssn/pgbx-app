@@ -4,3 +4,4 @@ supabase
 mobile
 *.md
 !README.md
+scripts

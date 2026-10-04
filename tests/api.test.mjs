@@ -299,3 +299,35 @@ test('without a database the API says it is not connected', async () => {
   assert.equal(r.status, 503);
   s.close();
 });
+
+test('config shares public limits; dealers show capped availability; support requests reach operations', async () => {
+  const c = ok(await call('GET', '/api/v1/config'));
+  assert.equal(c.limits.max_units_per_order, 10);
+  const d1 = ok(await call('GET', '/api/v1/dealers')).dealers.find(d => d.id === 'd1');
+  assert.ok(Object.values(d1.available).every(n => n >= 0 && n <= 10));
+  const token = await login('3001110020', '10.0.20.1');
+  err(await call('POST', '/api/v1/support', { token, body: { topic: 'app', body: 'short' } }), 400, 'BAD_REPORT');
+  ok(await call('POST', '/api/v1/support', { token, body: { topic: 'app', body: 'The statement download did not open on my phone.' } }));
+  const opsToken = await staffLogin(await staffAccount('ops'), '10.9.20.1');
+  const reqs = ok(await call('GET', '/api/v1/admin/support', { token: opsToken })).requests;
+  const mine = reqs.find(r => r.phone === '3001110020');
+  ok(await call('POST', `/api/v1/admin/support/${mine.id}/close`, { token: opsToken, body: { reply: 'Thanks, fixed in the next update.' } }));
+  const n = ok(await call('GET', '/api/v1/notifications', { token })).notifications;
+  assert.ok(n.some(x => x.title === 'Reply from PGBX support'));
+});
+
+test('customer messages use product names and formatted amounts', async () => {
+  const token = await verified('3001110021', '10.0.21.1');
+  await buy(token, 'g-1g', 1);
+  const n = ok(await call('GET', '/api/v1/notifications', { token })).notifications;
+  assert.match(n.find(x => x.title === 'Purchase confirmed').body, /Rs 41,200/);
+  ok(await call('POST', '/api/v1/redemptions', { token, body: { productId: 'g-1g', units: 1, dealerId: 'd1' } }));
+  const n2 = ok(await call('GET', '/api/v1/notifications', { token })).notifications;
+  assert.match(n2.find(x => x.title === 'Reserved for collection').body, /1 × 1 gram Gold at Saddar/);
+});
+
+test('production rates use PGBX premiums and become the lockable snapshot', async () => {
+  const r = ok(await call('GET', '/api/v1/rates'));
+  assert.equal(r.ok, true);
+  assert.equal((await db.one(`select gold_buy_tola from rate_snapshots order by id desc limit 1`)).gold_buy_tola, 466560);
+});

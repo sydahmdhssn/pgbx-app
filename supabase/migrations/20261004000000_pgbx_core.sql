@@ -289,6 +289,16 @@ create table rate_limits (
   primary key (key, window_start)
 );
 
+create table support_requests (
+  id uuid primary key default gen_random_uuid(),
+  customer_id uuid references customers(id),
+  topic text not null,
+  body text not null check (length(body) between 10 and 4000),
+  status text not null default 'open' check (status in ('open', 'closed')),
+  created_at timestamptz not null default now(),
+  closed_at timestamptz, closed_by text
+);
+
 create table audit_log (
   id bigint generated always as identity primary key,
   at timestamptz not null default now(),
@@ -332,6 +342,14 @@ create function fail(p_code text) returns void language plpgsql as $$
 begin
   raise exception using errcode = 'P0001', message = p_code;
 end $$;
+
+-- Text for customer messages: product names and rupee amounts as the app shows them
+create function pname(p_id text) returns text language sql stable as $$
+  select coalesce((select label || ' ' || initcap(metal) from products where id = p_id), p_id)
+$$;
+create function rs(p_amount bigint) returns text language sql immutable as $$
+  select 'Rs ' || to_char(p_amount, 'FM999,999,999,990')
+$$;
 
 create function notify_customer(p_customer uuid, p_kind text, p_title text, p_body text, p_link jsonb, p_push boolean default true)
 returns void language sql as $$
@@ -474,7 +492,7 @@ begin
   end;
   select * into v_order from orders where id = p_order;
   perform audit('provider:' || p_provider, 'order.credited', 'order', p_order::text, jsonb_build_object('payment', p_ref));
-  perform notify_customer(v_order.customer_id, 'purchase', 'Purchase confirmed', v_order.receipt_no || ' · Rs ' || v_order.total_pkr,
+  perform notify_customer(v_order.customer_id, 'purchase', 'Purchase confirmed', v_order.receipt_no || ' · ' || rs(v_order.total_pkr),
     jsonb_build_object('name', 'receipt', 'oid', v_order.id), false);
   return v_order;
 end $$;
@@ -548,7 +566,7 @@ begin
   perform audit('customer:' || p_customer, 'redemption.reserved', 'redemption', v_r.id::text,
     jsonb_build_object('product', p_product, 'units', p_units, 'dealer', p_dealer));
   perform notify_customer(p_customer, 'redemption', 'Reserved for collection',
-    p_units || ' × ' || p_product || ' at ' || v_dealer.name || '. Code ' || p_code || ', valid for ' || setting_int('redemption_valid_hours') || ' hours.',
+    p_units || ' × ' || pname(p_product) || ' at ' || v_dealer.name || '. Code ' || p_code || ', valid for ' || setting_int('redemption_valid_hours') || ' hours.',
     jsonb_build_object('name', 'code', 'rid', v_r.id), false);
   return v_r;
 end $$;
@@ -600,7 +618,7 @@ begin
   update redemptions set status = 'ready', ready_at = now() where id = p_id returning * into v_r;
   select * into v_d from dealers where id = v_r.dealer_id;
   perform audit('staff:' || p_staff, 'redemption.ready', 'redemption', p_id::text, '{}');
-  perform notify_customer(v_r.customer_id, 'redemption', 'Ready for collection', v_r.product_id || ' is ready at ' || v_d.name || '. Bring your CNIC.',
+  perform notify_customer(v_r.customer_id, 'redemption', 'Ready for collection', pname(v_r.product_id) || ' is ready at ' || v_d.name || '. Bring your CNIC.',
     jsonb_build_object('name', 'code', 'rid', v_r.id), true);
   return v_r;
 end $$;
@@ -626,7 +644,7 @@ begin
   select * into v_d from dealers where id = v_r.dealer_id;
   perform audit('staff:' || p_staff, 'redemption.completed', 'redemption', p_id::text, jsonb_build_object('serials', p_serials));
   perform notify_customer(v_r.customer_id, 'redemption', 'Collected',
-    v_r.units || ' × ' || v_r.product_id || ' collected at ' || v_d.name || '. Serial ' || array_to_string(p_serials, ', ') || '.',
+    v_r.units || ' × ' || pname(v_r.product_id) || ' collected at ' || v_d.name || '. Serial ' || array_to_string(p_serials, ', ') || '.',
     jsonb_build_object('name', 'code', 'rid', v_r.id), true);
   return v_r;
 end $$;
@@ -651,8 +669,8 @@ begin
     v_price := case when a.metal = 'gold' then s.gold_buy_tola else s.silver_buy_tola end;
     if (a.dir = 'above' and v_price >= a.target_pkr) or (a.dir = 'below' and v_price <= a.target_pkr) then
       update price_alerts set active = false, fired_at = now() where id = a.id;
-      perform notify_customer(a.customer_id, 'alert', initcap(a.metal) || ' is ' || a.dir || ' Rs ' || a.target_pkr,
-        'Buy rate is now Rs ' || v_price || ' per tola.', jsonb_build_object('name', 'history', 'metal', a.metal), true);
+      perform notify_customer(a.customer_id, 'alert', initcap(a.metal) || ' is ' || a.dir || ' ' || rs(a.target_pkr),
+        'Buy rate is now ' || rs(v_price) || ' per tola.', jsonb_build_object('name', 'history', 'metal', a.metal), true);
       n := n + 1;
     end if;
   end loop;
@@ -691,7 +709,8 @@ begin
   with p as (
     update customers set name = null, cnic = null, dob = null, email = null, address = null, closed_phone = null, purged_at = now()
     where status = 'closed' and purge_after is not null and purge_after < now() and purged_at is null returning id
-  ), d as (delete from notifications where customer_id in (select id from p))
+  ), d as (delete from notifications where customer_id in (select id from p)
+  ), r as (delete from support_requests where customer_id in (select id from p))
   select count(*) into n from p;
   if n > 0 then perform audit('system', 'customers.purged', 'customer', null, jsonb_build_object('count', n)); end if;
   return n;

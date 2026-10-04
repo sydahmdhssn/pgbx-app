@@ -8,7 +8,7 @@ const ORDER = Object.keys(PRODUCT_NAMES);
 const byProduct = (a, b) => ORDER.indexOf(a.product_id) - ORDER.indexOf(b.product_id);
 
 const SECTIONS = [
-  ['overview', 'Overview'], ['kyc', 'Identity checks'], ['orders', 'Orders'], ['customers', 'Customers'], ['dealers', 'Dealers & stock'],
+  ['overview', 'Overview'], ['kyc', 'Identity checks'], ['orders', 'Orders'], ['customers', 'Customers'], ['support', 'Support'], ['dealers', 'Dealers & stock'],
   ['products', 'Products & premiums'], ['reconciliation', 'Reconciliation'], ['settings', 'Settings'], ['audit', 'Audit log'], ['staff', 'Staff', 'admin'],
 ];
 const go = (s, id) => { location.hash = id ? `${s}/${id}` : s; };
@@ -139,6 +139,27 @@ function Customer({ id, me, toast }) {
       <${Card} title="Identity checks"><${Table} head=${['Provider', 'Status', 'Reason', 'Decided']} empty="No checks." rows=${d.kyc.map(k => html`<tr>
         <td>${k.provider}</td><td><${Tag} s=${k.status} /></td><td class="small">${k.reason || '—'}</td><td class="small">${k.decided_at ? when(k.decided_at) + ' · ' + (k.decided_by || '') : '—'}</td></tr>`)} /></${Card}>
     </div>`}</${Screen}>`;
+}
+
+// ---------- support ----------
+function Support({ toast }) {
+  const [status, setStatus] = useState('open');
+  const load = useLoad('/admin/support?status=' + status);
+  const [open, setOpen] = useState(null);
+  const [reply, setReply] = useState('');
+  const close = async () => { await api(`/admin/support/${open.id}/close`, { method: 'POST', body: { reply } }); toast(reply ? 'Reply sent and request closed.' : 'Request closed.'); setOpen(null); setReply(''); load.reload(); };
+  return html`<${Head} title="Support" sub="Problems customers report from the app">
+      <${Seg} label="Status" value=${status} onChange=${setStatus} options=${[['open', 'Open'], ['closed', 'Closed']]} /></${Head}>
+    <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Customer', 'Topic', 'Message', 'Sent', '']} empty=${status === 'open' ? 'No open requests.' : 'Nothing closed yet.'} rows=${d.requests.map(r => html`<tr>
+      <td>${r.customer_id ? html`<a href=${'#customers/' + r.customer_id}>${r.name || 'Customer'}</a>` : '—'}<div class="muted small">${r.phone ? '+92 ' + r.phone : ''}</div></td>
+      <td><span class="tag">${r.topic}</span></td><td class="small" style="max-width:420px">${r.body}</td><td class="small">${ago(r.created_at)}</td>
+      <td class="r">${r.status === 'open' ? html`<button class="btn sm" onClick=${() => setOpen(r)}>Reply</button>` : html`<span class="muted small">${when(r.closed_at)}</span>`}</td></tr>`)} /></${Card}>`}</${Screen}>
+    ${open && html`<${Modal} title="Reply and close" onClose=${() => setOpen(null)}>
+      <p class="small" style="background:var(--fill);padding:12px;border-radius:8px">${open.body}</p>
+      <label class="f"><span>Reply (sent to the customer’s inbox; optional)</span><textarea class="in" rows="4" value=${reply} onInput=${e => setReply(e.target.value)}></textarea>
+        <small>Never ask for a PIN or login code. For anything sensitive, call the customer on their registered number.</small></label>
+      <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setOpen(null)}>Cancel</button><${Act} run=${close}>${reply.trim() ? 'Send and close' : 'Close without reply'}</${Act}></div>
+    </${Modal}>`}`;
 }
 
 // ---------- dealers and stock ----------
@@ -307,9 +328,9 @@ function Admin() {
   useEffect(() => { setMenu(false); window.scrollTo(0, 0); }, [section, id]);
   if (me === undefined) return html`<div class="signin"></div>`;
   if (!me) return html`<${SignIn} tool="Admin panel" roles=${['admin', 'ops']} onIn=${signIn} notice=${notice} />`;
-  const badge = { kyc: counts.data?.kyc_review, orders: counts.data?.flagged_orders };
+  const badge = { kyc: counts.data?.kyc_review, orders: counts.data?.flagged_orders, support: counts.data?.support_open };
   const props = { me, toast: show };
-  const views = { overview: Overview, kyc: Kyc, orders: Orders, customers: Customers, dealers: Dealers, products: Products, reconciliation: Reconciliation, settings: Settings, audit: Audit, staff: Staff };
+  const views = { overview: Overview, kyc: Kyc, orders: Orders, customers: Customers, support: Support, dealers: Dealers, products: Products, reconciliation: Reconciliation, settings: Settings, audit: Audit, staff: Staff };
   const View = section === 'customers' && id ? null : views[section] || Overview;
   return html`<div class="shell">
     <nav class=${'side' + (menu ? ' open' : '')} aria-label="Sections">

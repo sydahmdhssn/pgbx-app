@@ -137,12 +137,14 @@ function sameOrigin(req) {
 }
 
 // ---------- public ----------
+const PUBLIC_SETTINGS = ['max_units_per_order', 'daily_limit_pkr', 'min_purchase_pkr', 'price_lock_seconds', 'rate_stale_seconds', 'redemption_valid_hours', 'redemption_fee_pkr', 'order_payment_minutes'];
 route('GET', '/config', {}, async ({ db }) => ({
   live: !!db,
   otp: { mode: otp.mode, channels: otp.channels() },
   turnstileSiteKey: turnstile.siteKey,
   payments: { provider: payments.provider },
   kyc: { provider: kyc.provider },
+  limits: db ? Object.fromEntries((await db.query(`select key, value from settings where key = any($1)`, [PUBLIC_SETTINGS])).map(r => [r.key, r.value])) : null,
 }));
 
 route('GET', '/products', {}, async ({ db, fetchRates }) => {
@@ -153,10 +155,25 @@ route('GET', '/products', {}, async ({ db, fetchRates }) => {
   return { products: rows };
 });
 
+// Live prices for the production app, priced with PGBX's own spread and premiums (the same inputs as a price lock).
+// Each answer is also recorded as a rate snapshot (at most every 5 s), so what customers see is what they can lock.
+route('GET', '/rates', {}, async ({ db, res, fetchRates }) => {
+  const set = await settingsMap(db);
+  const premiums = Object.fromEntries((await db.query(`select id, premium_pkr from products`)).map(r => [r.id, r.premium_pkr]));
+  const d = await fetchRates({ spread: set.spread || undefined, premiums }).catch(() => null);
+  if (!d || !d.ok) fail(502, 'RATES_DOWN', 'Live rates are unavailable right now.');
+  const last = await db.one(`select extract(epoch from now() - fetched_at) as age from rate_snapshots order by id desc limit 1`);
+  if (!last || last.age >= 5) await db.one(`select fn_record_rates($1, $2, $3, $4, $5) as id`, [d.metals.gold.buyTola, d.metals.gold.sellTola, d.metals.silver.buyTola, d.metals.silver.sellTola, d.metals.gold.source || 'live']);
+  res.setHeader('Cache-Control', 'public, s-maxage=5, stale-while-revalidate=10');
+  return d;
+});
+
+// Units each dealer can hand over now, capped at 10 so exact stock levels stay private
 route('GET', '/dealers', {}, async ({ db }) => {
   const rows = await db.query(`select d.id, d.name, d.area, d.address, d.phone, d.lat::float8 as lat, d.lng::float8 as lng, d.hours,
-      coalesce((select json_agg(s.product_id) from dealer_stock s where s.dealer_id = d.id and s.units - coalesce((select sum(units) from redemptions r
-        where r.dealer_id = d.id and r.product_id = s.product_id and r.status in ('requested', 'ready') and r.expires_at > now()), 0) > 0), '[]') as in_stock
+      coalesce((select json_object_agg(s.product_id, greatest(0, least(10, s.units - coalesce((select sum(units) from redemptions r
+        where r.dealer_id = d.id and r.product_id = s.product_id and r.status in ('requested', 'ready') and r.expires_at > now()), 0))))
+        from dealer_stock s where s.dealer_id = d.id), '{}') as available
     from dealers d where d.active order by d.name`);
   return { dealers: rows };
 });
@@ -366,7 +383,7 @@ route('POST', '/redemptions/:id/cancel', { auth: 'customer' }, async ({ db, cust
 
 // ---------- notifications and alerts (FR-N1, FR-R6) ----------
 route('GET', '/notifications', { auth: 'customer' }, async ({ db, customer }) =>
-  ({ notifications: await db.query(`select id, kind, title, body, link, created_at, read_at from notifications where customer_id = $1 order by created_at desc limit 100`, [customer.id]) }));
+  ({ notifications: await db.query(`select id, kind, title, body, link, push, created_at, read_at from notifications where customer_id = $1 order by created_at desc limit 100`, [customer.id]) }));
 route('POST', '/notifications/read', { auth: 'customer' }, async ({ db, customer }) => {
   await db.query(`update notifications set read_at = now() where customer_id = $1 and read_at is null`, [customer.id]);
   return { ok: true };
@@ -382,6 +399,15 @@ route('POST', '/alerts', { auth: 'customer' }, async ({ db, customer, body }) =>
 route('DELETE', '/alerts/:id', { auth: 'customer' }, async ({ db, customer, params }) => {
   await db.query(`delete from price_alerts where id = $1 and customer_id = $2`, [params.id, customer.id]);
   return { ok: true };
+});
+
+// ---------- support ----------
+route('POST', '/support', { auth: 'customer' }, async ({ db, customer, body }) => {
+  const topic = str(body.topic, 60) || 'general'; const text = str(body.body, 4000);
+  if (text.length < 10) fail(400, 'BAD_REPORT', 'Tell us a little more, at least 10 characters.');
+  await limit(db, 'support:' + customer.id, 3600, 5, 'You’ve sent several reports. We’ll reply to those first.');
+  const r = await db.one(`insert into support_requests (customer_id, topic, body) values ($1, $2, $3) returning id, created_at`, [customer.id, topic, text]);
+  return { request: r };
 });
 
 // ---------- closing the account ----------
@@ -453,6 +479,7 @@ route('GET', '/admin/overview', ops, async ({ db }) => ({
   sales_today_pkr: (await db.one(`select coalesce(sum(total_pkr), 0) v from orders where status = 'credited' and credited_at >= date_trunc('day', now())`)).v,
   orders_today: (await db.one(`select count(*)::int n from orders where status = 'credited' and credited_at >= date_trunc('day', now())`)).n,
   active_collections: (await db.one(`select count(*)::int n from redemptions where status in ('requested', 'ready') and expires_at > now()`)).n,
+  support_open: (await db.one(`select count(*)::int n from support_requests where status = 'open'`)).n,
   rates: await db.one(`select gold_buy_tola, gold_sell_tola, silver_buy_tola, silver_sell_tola, source, fetched_at from rate_snapshots order by id desc limit 1`),
 }));
 
@@ -564,6 +591,20 @@ route('POST', '/admin/vault', ops, async ({ db, staff, body }) => {
   const units = int(body.units); if (!(units >= 0)) fail(400, 'BAD_UNITS', 'Enter 0 or more units.');
   await db.query(`insert into vault_counts (product_id, units, counted_by, note) values ($1, $2, $3, $4)`, [str(body.product_id, 40), units, 'staff:' + staff.id, str(body.note, 200) || null]);
   await audit(db, 'staff:' + staff.id, 'vault.counted', 'product', body.product_id, { units });
+  return { ok: true };
+});
+
+route('GET', '/admin/support', ops, async ({ db, query }) => {
+  const status = query.status === 'closed' ? 'closed' : 'open';
+  return { requests: await db.query(`select s.id, s.topic, s.body, s.status, s.created_at, s.closed_at, s.closed_by, c.id as customer_id, c.name, c.phone
+    from support_requests s left join customers c on c.id = s.customer_id where s.status = $1 order by s.created_at desc limit 200`, [status]) };
+});
+route('POST', '/admin/support/:id/close', ops, async ({ db, staff, params, body }) => {
+  const r = await db.one(`update support_requests set status = 'closed', closed_at = now(), closed_by = $2 where id = $1 and status = 'open' returning customer_id`, [params.id, 'staff:' + staff.id]);
+  if (!r) fail(404, 'NOT_FOUND', 'This request is already closed.');
+  const reply = str(body.reply, 1000);
+  if (reply && r.customer_id) await db.query(`select notify_customer($1, 'account', 'Reply from PGBX support', $2, null, true)`, [r.customer_id, reply]);
+  await audit(db, 'staff:' + staff.id, 'support.closed', 'support', params.id, { replied: !!reply });
   return { ok: true };
 });
 

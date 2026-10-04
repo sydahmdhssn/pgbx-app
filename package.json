@@ -3,11 +3,14 @@
   "private": true,
   "type": "module",
   "description": "PGBX customer app, API, admin panel and dealer app",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "node dev/server.mjs",
     "test": "node --test tests/*.test.mjs",
-    "staff:create": "node dev/create-staff.mjs"
+    "staff:create": "node dev/create-staff.mjs",
+    "build:app": "node scripts/build.mjs"
   },
   "dependencies": {
     "postgres": "^3.4.9"
