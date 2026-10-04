@@ -43,8 +43,30 @@ export async function api(path, { method = 'GET', body, timeout = 15000 } = {}) 
 export const signedOut = e => e instanceof LiveError && e.status === 401;
 
 // ---------- login ----------
-export async function config() { return api('/config'); }
-export async function sendCode(phone, channel) { return api('/auth/otp/start', { method: 'POST', body: { phone, channel } }); }
+let siteKey = null;
+export async function config() { const c = await api('/config'); siteKey = c.turnstileSiteKey || null; return c; }
+// Human check before a code is sent (Cloudflare Turnstile), only when PGBX has switched it on. Usually invisible;
+// it shows a small checkbox only when Cloudflare is unsure.
+let tsScript = null;
+function humanCheck() {
+  if (!siteKey) return Promise.resolve(undefined);
+  tsScript = tsScript || new Promise((ok, bad) => {
+    const s = document.createElement('script');
+    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'; s.async = true; s.onload = ok; s.onerror = bad;
+    document.head.appendChild(s);
+  });
+  return tsScript.then(() => new Promise(done => {
+    const el = document.createElement('div');
+    el.style.cssText = 'position:fixed;left:50%;bottom:96px;transform:translateX(-50%);z-index:99';
+    document.body.appendChild(el);
+    const end = t => { done(t); setTimeout(() => el.remove(), 300); };
+    window.turnstile.render(el, { sitekey: siteKey, appearance: 'interaction-only', callback: end, 'error-callback': () => end(undefined), 'timeout-callback': () => end(undefined) });
+  }), () => undefined);
+}
+export async function sendCode(phone, channel) {
+  const turnstileToken = await humanCheck();
+  return api('/auth/otp/start', { method: 'POST', body: { phone, channel, turnstileToken } });
+}
 export async function verifyCode(phone, code) {
   const d = await api('/auth/otp/verify', { method: 'POST', body: { phone, code, device: deviceName(), cookie: !NATIVE } });
   await keepToken(NATIVE ? d.token : null);

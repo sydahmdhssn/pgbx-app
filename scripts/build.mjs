@@ -33,8 +33,8 @@ fs.writeFileSync(path.join(dist, 'index.html'), production(index, { assetBase: '
 for (const f of ['app.js', 'live.js', 'vendor/htm-preact-standalone-3.1.1.module.js', 'vendor/LICENSES.txt']) fs.copyFileSync(path.join(ROOT, f), path.join(dist, f));
 fs.copyFileSync(path.join(ROOT, 'mobile', 'bridge.js'), path.join(dist, 'bridge.js'));
 // The native app has no server to send security headers, so its policy is in the page: scripts only from the app
-// itself, network only to the PGBX API.
-const csp = `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ${api}; frame-ancestors 'none'; base-uri 'self'; form-action 'none'; object-src 'none'`;
+// itself (plus Cloudflare's human check when PGBX switches it on), network only to the PGBX API.
+const csp = `default-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ${api}; frame-src https://challenges.cloudflare.com; frame-ancestors 'none'; base-uri 'self'; form-action 'none'; object-src 'none'`;
 const withBridge = fs.readFileSync(path.join(dist, 'index.html'), 'utf8')
   .replace('<meta charset="utf-8">', `<meta charset="utf-8">\n<meta http-equiv="Content-Security-Policy" content="${csp}">`)
   .replace('<script type="module" src="app.js"></script>', '<script type="module" src="bridge.js"></script>\n<script type="module" src="app.js"></script>');

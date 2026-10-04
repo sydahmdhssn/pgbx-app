@@ -1,12 +1,34 @@
-# PGBX customer app: clickable prototype
+# PGBX: customer app, API, admin panel and dealer app
 
-A single-file, no-build prototype of the PGBX customer mobile app, built against
-*PGBX Mobile App: Software Requirements Specification (Developer Guide, draft of 2 Oct 2026)*.
-Requirement IDs (FR-*, NFR-*, CMP-*) are referenced in the UI and the code comments.
+Built against *PGBX Mobile App: Software Requirements Specification (Developer Guide, draft of 2 Oct 2026)*.
+Requirement IDs (FR-*, NFR-*, CMP-*) are referenced in the code comments.
 
-**Gold and silver rates are live (international spot converted to PKR). Customer, wallet, dealer and fee data is sample data. It is not connected to any PGBX system.**
+| Part | Where | State |
+|---|---|---|
+| Customer app, **demo build** | `/` (`index.html`, `app.js`) | Live rates, sample customer data in the browser, demo controls. For presentations. |
+| Customer app, **production build** | `/live`, and `dist/` for the phone apps | Same screens, every record from the API, no demo shortcuts. Needs the database. |
+| API and business rules | `/api/v1` (`server/`, `supabase/migrations/`) | Built and tested. Waits for PGBX's own database (`DATABASE_URL`). |
+| Admin panel | `/admin` | Built and tested on the API. |
+| Dealer app | `/dealer` | Built and tested on the API. |
+| iOS and Android apps | `mobile/` (Capacitor) | Projects generated; building and signing need Xcode, Android Studio and PGBX's store accounts. |
+
+**The deployed site is not connected to any PGBX system yet.** Until `DATABASE_URL` is set, `/live`, `/admin` and
+`/dealer` show that PGBX services aren't connected, and the demo at `/` works as before.
 
 ## Run it
+
+Everything (demo, production build, API, admin panel, dealer app) on an in-memory database with sample data:
+
+```bash
+npm install
+npm run dev            # http://localhost:8080  ·  /live  ·  /admin  ·  /dealer
+```
+
+The dev server runs the providers in test mode: login code **123456**, sandbox payments and identity checks. It prints
+sample staff logins and their authenticator secrets (the current 6-digit code is printed too). Data is lost when it stops.
+`npm test` runs the database and API tests (no network or database needed).
+
+Only the demo, as plain static files:
 
 ```bash
 npx serve .            # or: python3 -m http.server 8080
@@ -36,7 +58,10 @@ Combine them: `?start=home&feedFail=1`. `?start=home` and `?kyc=done` are demo s
 npx vercel --prod
 ```
 
-`vercel.json` serves the folder as static files. No build step.
+`vercel.json` serves the folder as static files plus the functions in `api/`. There is no build step on Vercel;
+after changing `index.html` or `app.js`, run `npm run build:app` and commit `live/index.html` (a test checks it is current).
+`vercel.json` also runs `/api/v1/cron/sweep` daily (expire unpaid orders and old collection codes, purge closed accounts
+after the retention period, send pending push notifications); on a paid plan make it hourly.
 
 ## Live rates
 
@@ -56,6 +81,8 @@ International spot converted at the interbank rate is not the local Sarafa rate;
 the app says history is unavailable rather than drawing a made-up chart.
 
 ## Login codes by SMS or WhatsApp (FR-A1)
+
+The demo uses `api/otp.mjs`; the production build uses `/api/v1/auth/otp/*`, which adds database-backed limits, the optional human check and the login session. Both use the same Twilio settings below.
 
 `api/otp.mjs` sends and checks real one-time codes through [Twilio Verify](https://www.twilio.com/docs/verify).
 Twilio generates, sends, expires (10 minutes) and checks the code; the app and this server never see it, and the
@@ -132,6 +159,81 @@ Rules the screens follow:
 - **Notifications** have channels (push, SMS, email) and topics: price alerts can be turned off; purchases, collections and security notices stay on, with the reason given. Actions the customer just took are confirmed on screen, not by a banner.
 - **Contextual help.** A one-time note on Rates explains Buy and Sell prices; it stays dismissed.
 
+## Back end
+
+**Database** (`supabase/migrations/20261004000000_pgbx_core.sql`): portable PostgreSQL, ready for Supabase. Business
+rules live in SQL functions so no client or server bug can bypass them: price locks from the server's own rate snapshot,
+stale prices refuse to lock, identity check before buying, per-order and per-day limits, idempotent orders, a payment
+credits exactly once, amount mismatches and late payments go to operations, reservations only against free holdings and
+dealer stock, one active code per collection, dealer handover needs the CNIC check and one distinct serial per bar,
+expiry, price alerts, account closure with blockers, purge after the retention period, daily reconciliation and
+database-wide rate limits. The wallet ledger and the audit log are append-only (triggers reject updates and deletes).
+Row-level security is on for every table with no policies, so only the server's connection can read or write.
+`supabase/seed.sql` is **sample data for development only**.
+
+**API** (`server/api.mjs`, served as `/api/v1/*` by `api/v1.mjs`): one route per action, each calling one SQL function and
+turning error codes into plain language. Customers sign in with an SMS code; the session token (256 random bits, only
+its SHA-256 stored) is an HttpOnly, SameSite=Strict cookie on the web or a Bearer token kept in the phone's secure
+storage. Staff sign in with a password (scrypt) **and** an authenticator code (TOTP); roles are admin, ops and dealer.
+Payment and identity providers report results through HMAC-signed webhooks. Abuse limits are stored in the database,
+so they hold across server instances. Every staff action and every look at a customer's details goes to the audit log.
+
+### Environment variables (set in Vercel, never in the code)
+
+| Variable | Purpose | Until it is set |
+|---|---|---|
+| `DATABASE_URL` | PostgreSQL connection. On Supabase use the pooled connection string (port 6543). | API answers "not connected" |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SERVICE_SID` | SMS login codes (see below). `OTP_WHATSAPP=1` adds WhatsApp. | No login in production |
+| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET` | Cloudflare human check before a code is sent | Skipped |
+| `PAYMENT_PROVIDER`, `PAYMENT_WEBHOOK_SECRET` | Payment provider and its webhook signing secret. The provider adapter (`server/providers.mjs`) is written once PGBX chooses one. | No payments |
+| `KYC_PROVIDER`, `KYC_WEBHOOK_SECRET` | Identity verification provider | No identity checks |
+| `FCM_SERVICE_ACCOUNT` | Firebase service account JSON for push to Android and iOS | Notifications stay in the app |
+| `CRON_SECRET` | Protects the scheduled sweep (Vercel sends it automatically) | Sweep refused |
+| `OTP_TEST_MODE=1`, `PAYMENT_PROVIDER=sandbox`, `KYC_PROVIDER=sandbox` | **Test modes. Never in production.** Code 123456 logs anyone in; payments and checks always pass. | — |
+
+### Connecting PGBX's database
+
+1. Create a Supabase project in **PGBX's own organisation** (region close to Pakistan, e.g. Mumbai), with PGBX billing.
+2. Run the migration in `supabase/migrations/` (SQL editor or `supabase db push`). Do **not** run `seed.sql`.
+3. Add `DATABASE_URL` (pooled, port 6543) and `CRON_SECRET` in Vercel and redeploy.
+4. Create the first administrator: `DATABASE_URL=... npm run staff:create -- --email name@pgbx.pk --name "Full Name" --role admin`.
+   It prints a one-time password and an authenticator secret. Everyone else is added in the admin panel.
+5. In the admin panel: enter dealers and their stock, the real premiums, limits and spread (Settings), and record a vault count.
+
+## Staff tools
+
+- **Admin panel** (`/admin`): overview, identity checks to review, orders waiting for operations (credit or refund with a
+  note), customers (search, details, suspend), support requests (reply to the customer's inbox), dealers and stock,
+  products and premiums, reconciliation (money and metal, with vault counts), settings, audit log, staff accounts.
+  Operations staff can't change settings, premiums, dealers' details or staff, or suspend customers.
+- **Dealer app** (`/dealer`, phone-first): enter the customer's code, prepare and mark ready, tick the CNIC check,
+  record one serial per bar and confirm. Shows today's queue and the counter's stock.
+
+Both are `noindex`, use the same password + authenticator sign-in, and end the session after 12 hours.
+
+## Production build and phone apps
+
+`npm run build:app` writes the production build: `live/index.html` (web, at `/live`) and `dist/` (bundled into the
+phone apps, with its own Content-Security-Policy). In the production build there is no demo mode: no demo PIN, demo
+panels, sample customer, simulated payments or camera, URL shortcuts or simulated rates (if live prices are down, buying
+pauses). Limits and premiums come from PGBX's settings. The PIN is stored only as a salted, stretched hash; no account
+records are stored on the phone. In identity verification the app collects the CNIC details and the chosen provider's
+own capture screens (CNIC photos and selfie) are added when PGBX picks a provider.
+
+`mobile/` holds the Capacitor 8 projects (`ios/`, `android/`) and `bridge.js`, which connects the app to the session
+token in the iOS Keychain / Android Keystore, Face ID / fingerprint unlock, push notifications and the in-app browser for
+payment pages. Android backups and cleartext traffic are off.
+
+```bash
+cd mobile && npm install
+npm run sync            # builds dist/ and copies it into both projects
+npm run open:ios        # Xcode (Mac only): set the team, signing, push capability, then Archive
+npm run open:android    # Android Studio: add google-services.json for push, create the upload key, then build the bundle
+```
+
+Before a store release PGBX needs: Apple and Google developer accounts in PGBX's name, the final bundle ID
+(`pk.com.pgbx.app` is a placeholder), a Firebase project for push, app icons and screenshots, and the privacy answers.
+
 ## Security headers
 
 `vercel.json` sends a Content-Security-Policy (scripts only from this site, connections only to this site and
@@ -141,6 +243,9 @@ Rules the screens follow:
 or the policy will block them.
 
 ## Demo data in the browser
+
+(Demo build only. The production build keeps only device settings on the phone: PIN hash, notification choices, cart.)
+
 
 The prototype saves its sample data (wallet, orders, cart, profile, verification status, PIN, notifications, alerts) in this
 browser's local storage so a refresh does not reset the demo, and a returning user unlocks with the PIN. Account →
@@ -161,7 +266,8 @@ instead of a blank page. Returning users see a short splash (under 1 s) before t
 | Redeem | Product and quantity, schematic dealer map, 4 sample dealers with area, hours, distance and stock, call and directions, 6-digit collection code, 24 h expiry, status steps, cancel with confirmation, dealer simulation (ready, ID check, hand over with serials) | FR-D1–D9 |
 | Account | Profile, identity verification, security (change PIN, Face ID, auto-lock), notifications inbox and notification settings, price alerts, questions and answers, contact, report a problem, fees and limits, terms and privacy, About this prototype (live vs sample data, open items, reset demo) | FR-N1–N4 |
 
-Not in this prototype: the dealer interface (FR-DL1–6) and the admin panel (FR-M1–10) are separate products; the redemption screen only simulates the dealer's steps. Back-end rules (daily reconciliation, audit log, security, backups) need the real platform.
+The table describes the demo build. The dealer interface (FR-DL1–6) and the admin panel (FR-M1–10) are at `/dealer` and
+`/admin`, and work with the production build through the API; in the demo the redemption screen simulates the dealer's steps.
 
 ## Sample data vs. real data
 
