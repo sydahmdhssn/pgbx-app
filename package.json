@@ -1,0 +1,18 @@
+{
+  "name": "pgbx-app",
+  "private": true,
+  "type": "module",
+  "description": "PGBX customer app, API, admin panel and dealer app",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "node dev/server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "staff:create": "node dev/create-staff.mjs"
+  },
+  "dependencies": {
+    "postgres": "^3.4.9"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8"
+  }
+}

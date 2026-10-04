@@ -1,0 +1,6 @@
+tests
+dev
+supabase
+mobile
+*.md
+!README.md
