@@ -10,7 +10,7 @@ export default async function handler(req, res) {
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   const d = await fetchLiveRates();
   if (!d.ok) { res.setHeader('Cache-Control', 'no-store'); res.statusCode = 502; res.end(JSON.stringify(d)); return; }
-  res.setHeader('Cache-Control', 'public, s-maxage=8, stale-while-revalidate=30');
+  res.setHeader('Cache-Control', 'public, s-maxage=8, stale-while-revalidate=10');
   res.statusCode = 200;
   res.end(JSON.stringify(d));
 }

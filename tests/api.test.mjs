@@ -331,3 +331,15 @@ test('production rates use PGBX premiums and become the lockable snapshot', asyn
   assert.equal(r.ok, true);
   assert.equal((await db.one(`select gold_buy_tola from rate_snapshots order by id desc limit 1`)).gold_buy_tola, 466560);
 });
+
+test('prices whose source stopped updating are never recorded or locked (FR-R4)', async () => {
+  const s2 = http.createServer((req, res) => handle(req, res, { db, fetchRates: async () => ({ ok: true, fetchedAt: new Date().toISOString(),
+    metals: { gold: { buyTola: 999999, sellTola: 990000, sourceUpdatedAt: new Date(Date.now() - 10 * 60e3).toISOString() }, silver: { buyTola: 7000, sellTola: 6900, sourceUpdatedAt: new Date(Date.now() - 10 * 60e3).toISOString() } } }) }));
+  await new Promise(r => s2.listen(0, '127.0.0.1', r));
+  const b = `http://127.0.0.1:${s2.address().port}`;
+  const r = await fetch(b + '/api/v1/rates');
+  assert.equal(r.status, 502);
+  assert.equal((await r.json()).error, 'RATES_STALE_SOURCE');
+  assert.notEqual((await db.one(`select gold_buy_tola from rate_snapshots order by id desc limit 1`)).gold_buy_tola, 999999);
+  s2.close();
+});

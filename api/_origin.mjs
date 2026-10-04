@@ -12,6 +12,7 @@ export function allowOrigin(req, res, methods = 'GET') {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Methods', methods + ', OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Expose-Headers', 'Date, Age');   // the app measures how old prices are on the server's clock
   }
   return origin;
 }

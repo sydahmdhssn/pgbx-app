@@ -86,6 +86,10 @@ async function limit(db, key, windowSec, max, message) {
 const audit = (db, actor, action, entity, id, data = {}) => db.query(`select audit($1, $2, $3, $4, $5::jsonb)`, [actor, action, entity, id, JSON.stringify(data)]);
 const settingsMap = async db => Object.fromEntries((await db.query(`select key, value from settings`)).map(r => [r.key, r.value]));
 
+// FR-R4: prices whose source timestamp is older than this are not recorded, so nothing can be locked at them.
+const SOURCE_STALE_MS = 90000;
+const sourceFresh = d => ['gold', 'silver'].every(k => { const t = Date.parse(d.metals[k] && d.metals[k].sourceUpdatedAt); return !Number.isFinite(t) || Date.now() - t <= SOURCE_STALE_MS; });
+
 // Keep a recent rate snapshot: every price lock uses the server's own snapshot (Rule 1).
 async function ensureRates(db, fetchRates) {
   const s = await db.one(`select *, extract(epoch from now() - fetched_at) as age from rate_snapshots order by id desc limit 1`);
@@ -93,7 +97,7 @@ async function ensureRates(db, fetchRates) {
   if (s && s.age < stale / 2) return s;
   const set = await settingsMap(db);
   const d = await fetchRates({ spread: set.spread || undefined }).catch(() => null);
-  if (!d || !d.ok) return s;                                 // the lock function refuses stale prices
+  if (!d || !d.ok || !sourceFresh(d)) return s;              // the lock function refuses stale prices
   await db.one(`select fn_record_rates($1, $2, $3, $4, $5) as id`, [d.metals.gold.buyTola, d.metals.gold.sellTola, d.metals.silver.buyTola, d.metals.silver.sellTola, d.metals.gold.source || 'live']);
   return db.one(`select *, 0 as age from rate_snapshots order by id desc limit 1`);
 }
@@ -162,6 +166,7 @@ route('GET', '/rates', {}, async ({ db, res, fetchRates }) => {
   const premiums = Object.fromEntries((await db.query(`select id, premium_pkr from products`)).map(r => [r.id, r.premium_pkr]));
   const d = await fetchRates({ spread: set.spread || undefined, premiums }).catch(() => null);
   if (!d || !d.ok) fail(502, 'RATES_DOWN', 'Live rates are unavailable right now.');
+  if (!sourceFresh(d)) fail(502, 'RATES_STALE_SOURCE', 'Live rates are delayed right now. Buying is paused until they update.');
   const last = await db.one(`select extract(epoch from now() - fetched_at) as age from rate_snapshots order by id desc limit 1`);
   if (!last || last.age >= 5) await db.one(`select fn_record_rates($1, $2, $3, $4, $5) as id`, [d.metals.gold.buyTola, d.metals.gold.sellTola, d.metals.silver.buyTola, d.metals.silver.sellTola, d.metals.gold.source || 'live']);
   res.setHeader('Cache-Control', 'public, s-maxage=5, stale-while-revalidate=10');

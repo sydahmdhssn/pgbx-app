@@ -1,0 +1,19 @@
+{
+  "name": "PGBX — Pakistan Gold Bullion Exchange",
+  "short_name": "PGBX",
+  "description": "Buy Shariah-compliant 999.0 gold and silver at live prices and collect at PGBX dealers.",
+  "start_url": "/live/",
+  "scope": "/live/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0B4A2C",
+  "theme_color": "#0B4A2C",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

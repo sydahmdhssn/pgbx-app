@@ -1,4 +1,4 @@
-// GET /api/history?metal=gold|silver&range=day|week|month
+// GET /api/history?metal=gold|silver&range=day|week|month   (also accepts 1d, 1w / 5d, 1m / 1mo)
 // Rate history for the chart (FR-R5), in PKR per tola, set on the server (Rule 1, FR-R3).
 // Sources (free, no key):
 //   Yahoo Finance chart API, COMEX futures GC=F (gold) and SI=F (silver), USD per troy ounce
@@ -9,12 +9,16 @@ import { allowOrigin } from './_origin.mjs';
 
 const TOLA_G = 11.664;
 const OZ_G = 31.1034768;
+// "day" asks for 5 days of 5-minute prices and keeps the latest 24 hours of trading, so a weekend or holiday shows
+// the last trading session (labelled as such) instead of nothing.
 const RANGES = {
-  day: { range: '1d', interval: '5m' },
+  day: { range: '5d', interval: '5m' },
   week: { range: '5d', interval: '30m' },
   month: { range: '1mo', interval: '1d' },
 };
+const ALIASES = { '1d': 'day', '1w': 'week', '5d': 'week', '1m': 'month', '1mo': 'month' };
 const YAHOO = { gold: 'GC=F', silver: 'SI=F' };
+const YAHOO_HOSTS = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
 const STOOQ = { gold: 'xauusd', silver: 'xagusd' };
 
 let fxCache = null;
@@ -42,14 +46,20 @@ async function usdPkr() {
 
 async function yahoo(metal, range) {
   const { range: r, interval } = RANGES[range];
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(YAHOO[metal])}?range=${r}&interval=${interval}`;
-  const d = await (await fetchWithTimeout(url)).json();
-  const res = d && d.chart && d.chart.result && d.chart.result[0];
-  if (!res || !res.timestamp) throw new Error('yahoo: no data');
-  const closes = res.indicators.quote[0].close;
-  const pts = res.timestamp.map((t, i) => [t * 1000, closes[i]]).filter(p => p[1] > 0);
-  if (pts.length < 2) throw new Error('yahoo: too few points');
-  return { pts, source: `COMEX ${YAHOO[metal]} futures via Yahoo Finance` };
+  let last = null;
+  for (const host of YAHOO_HOSTS) {
+    try {
+      const d = await (await fetchWithTimeout(`https://${host}/v8/finance/chart/${encodeURIComponent(YAHOO[metal])}?range=${r}&interval=${interval}`)).json();
+      const res = d && d.chart && d.chart.result && d.chart.result[0];
+      if (!res || !res.timestamp) throw new Error('yahoo: no data');
+      const closes = res.indicators.quote[0].close;
+      let pts = res.timestamp.map((t, i) => [t * 1000, closes[i]]).filter(p => p[1] > 0);
+      if (range === 'day' && pts.length) { const end = pts[pts.length - 1][0]; pts = pts.filter(p => p[0] > end - 24 * 3600e3); }
+      if (pts.length < 2) throw new Error('yahoo: too few points');
+      return { pts, source: `COMEX ${YAHOO[metal]} futures via Yahoo Finance` };
+    } catch (e) { last = e; }
+  }
+  throw last;
 }
 
 async function stooq(metal, range) {
@@ -70,7 +80,8 @@ export default async function handler(req, res) {
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   const q = new URL(req.url, 'http://x').searchParams;
   const metal = q.get('metal') === 'silver' ? 'silver' : 'gold';
-  const range = RANGES[q.get('range')] ? q.get('range') : 'day';
+  const asked = ALIASES[q.get('range')] || q.get('range');
+  const range = RANGES[asked] ? asked : 'day';
   const warnings = [];
   try {
     const rate = await usdPkr();
@@ -82,7 +93,10 @@ export default async function handler(req, res) {
     const points = h.pts.map(([t, usd]) => [t, Math.round((usd / OZ_G) * TOLA_G * rate)]);
     res.setHeader('Cache-Control', `public, s-maxage=${range === 'day' ? 120 : 1800}, stale-while-revalidate=600`);
     res.statusCode = 200;
-    res.end(JSON.stringify({ ok: true, metal, range, unit: 'PKR per tola', usdPkr: rate, source: h.source, points, warnings }));
+    // When the latest price is more than 2 hours old the market is closed: the chart is the last trading session.
+    const lastAt = points[points.length - 1][0];
+    const marketClosed = Date.now() - lastAt > 2 * 3600e3;
+    res.end(JSON.stringify({ ok: true, metal, range, unit: 'PKR per tola', usdPkr: rate, source: h.source, points, lastAt, marketClosed, warnings }));
   } catch (e) {
     res.setHeader('Cache-Control', 'no-store');
     res.statusCode = 502;

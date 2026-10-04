@@ -22,7 +22,9 @@ const FEED_FAIL = !LIVE && params.get('feedFail') === '1';
 const FORCE_SIM = !LIVE && params.get('sim') === '1';
 const POLL_MS = 10000;                     // FR-R1: update every 5–10 s
 const SIM_TICK_MS = 5000;
-const STALE_MS = 30000;                    // FR-R4: freshness limit (proposed default)
+const STALE_MS = 30000;                    // FR-R4: freshness limit (proposed default): no successful update for 30 s
+const DATA_STALE_MS = 90000;               // FR-R4: the prices themselves older than 90 s (the source updates about every 30 s)
+const FX_STALE_MS = 36 * 3600e3;           // USD/PKR comes from a once-a-day source; older than 36 h is flagged
 let LOCK_S = 60;                           // FR-B2: 60 s price lock (production: from the server)
 let MAX_UNITS = 10;                        // FR-B6: per-order limit (sample; production: from the server)
 let RESERVE_MS = 24 * 3600 * 1000;         // redemption code expiry (24 h; production: from the server)
@@ -142,7 +144,6 @@ const PRODUCTS = [
 const P = Object.fromEntries(PRODUCTS.map(p => [p.id, p]));
 const metalName = m => (m === 'gold' ? 'Gold' : 'Silver');
 const pname = p => `${p.label} ${metalName(p.metal)}`;
-const WORLD_COLORS = { XAU: '#C8962B', XAG: '#9aa5ad', XPT: '#5f7d8e', XPD: '#8a7ca3', HG: '#b8653a' };
 
 // Sample dealers (four of the 250). Stock is per product (FR-D2, FR-DL4).
 const DEALERS = [
@@ -211,7 +212,20 @@ function initialRates() {
     tick: 0,
   };
 }
-function applyLive(s, d) {
+// How old the prices are, not when we polled (FR-R4). Measured on the server's clock so a wrong phone clock can't
+// hide or invent staleness: server time of the answer (Date header plus any cache Age) minus the oldest of the
+// metal sources' timestamps and the server's own fetch time. Without readable headers, falls back to the difference
+// between the server's fetch time and the sources' timestamps.
+function dataAge(d, hdr = {}) {
+  const fetched = Date.parse(d.fetchedAt);
+  const src = ['gold', 'silver'].map(k => Date.parse(d.metals[k] && d.metals[k].sourceUpdatedAt)).filter(Number.isFinite);
+  const oldest = Math.min(...[fetched, ...src].filter(Number.isFinite));
+  if (!Number.isFinite(oldest)) return 0;
+  const served = Date.parse(hdr.date || '') + (Number(hdr.age) || 0) * 1000;
+  if (Number.isFinite(served)) return Math.max(0, served - oldest);
+  return Math.max(0, (Number.isFinite(fetched) ? fetched : oldest) - oldest) + (Number(hdr.age) || 0) * 1000;
+}
+function applyLive(s, d, hdr) {
   const first = s.rates.mode !== 'live';
   const metal = k => {
     const prev = s.rates[k], buy = d.metals[k].buyTola;
@@ -223,7 +237,13 @@ function applyLive(s, d) {
     const prev = !first && s.rates.world.find(x => x.symbol === w.symbol);
     return { ...w, open: prev ? prev.open : w.usd, hist: prev ? [...prev.hist.slice(-59), w.usd] : [w.usd] };
   });
-  return { rates: { mode: 'live', gold, silver, products: d.products, world, usdPkr: d.usdPkr, source: d.metals.gold.source, updatedAt: Date.now(), tick: s.rates.tick + (changed ? 1 : 0) } };
+  const now = Date.now(), age = dataAge(d, hdr), fxAt = d.usdPkr && Date.parse(d.usdPkr.updatedAt);
+  return { rates: { mode: 'live', gold, silver, products: d.products, world, usdPkr: d.usdPkr, source: d.metals.gold.source,
+    updatedAt: now - age,                         // when the prices were current
+    polledAt: now,                                // when the server last answered
+    fxOld: Number.isFinite(fxAt) && now - fxAt > FX_STALE_MS,
+    warnings: Array.isArray(d.warnings) ? d.warnings.filter(w => typeof w === 'string').slice(0, 5) : [],
+    tick: s.rates.tick + (changed ? 1 : 0) } };
 }
 
 // Append-only wallet ledger (FR-W3). Opening sample holdings: 2 × 1 tola silver, 1 × 1 g gold.
@@ -269,8 +289,6 @@ const PATHS = {
   plus: 'M12 5v14M5 12h14',
   minus: 'M5 12h14',
   store: 'M4 10l1.5-5h13L20 10v10H4zM9 20v-5h6v5M4 10h16',
-  sparkle: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z',
-  out: 'M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10',
   refresh: 'M20 11a8 8 0 0 0-14.7-3.5M4 4.5V8h3.5M4 13a8 8 0 0 0 14.7 3.5M20 19.5V16h-3.5',
   box: 'M4 7.5l8-4 8 4v9l-8 4-8-4v-9zM4 7.5l8 4 8-4M12 11.5v9',
   bell: 'M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15L6 16zM10 20.5a2 2 0 0 0 4 0',
@@ -279,11 +297,9 @@ const PATHS = {
   camera: 'M4 8h3l1.5-2.5h7L17 8h3v11H4zM12 16.5a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z',
   user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4.5 20a7.5 7.5 0 0 1 15 0',
   mail: 'M3.5 6h17v12h-17zM3.5 6l8.5 7 8.5-7',
-  map: 'M9 4L3.5 6v14L9 18l6 2 5.5-2V4L15 6 9 4zM9 4v14M15 6v14',
   nav: 'M4 11l16-7-7 16-2-7-7-2z',
   download: 'M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19.5h14',
   trash: 'M5 7h14M10 7V4.5h4V7M7 7l1 13h8l1-13',
-  edit: 'M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4',
   chart: 'M4 19.5h16M6.5 16l3.5-4.5 3 2.5 4.5-6',
   globe: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3.5 9h17M3.5 15h17M12 3c2.5 2.6 3.7 5.6 3.7 9s-1.2 6.4-3.7 9c-2.5-2.6-3.7-5.6-3.7-9S9.5 5.6 12 3z',
   sliders: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4',
@@ -759,8 +775,10 @@ function RatesHome({ S, A }) {
     </button></div></section>`}
 
     <p class="foot">${rates.mode === 'live'
-      ? `Indicative prices: international spot converted at USD/PKR ${rates.usdPkr ? rates.usdPkr.rate.toFixed(2) : ''}, refreshed every 10 seconds. Local Sarafa rates may differ.${LIVE ? '' : ' Sell prices and product premiums are sample values until PGBX sets them.'}`
+      ? `Indicative prices: international spot converted at USD/PKR ${rates.usdPkr ? rates.usdPkr.rate.toFixed(2) : ''}${rates.usdPkr && rates.usdPkr.updatedAt ? ` (exchange rate of ${dt(Date.parse(rates.usdPkr.updatedAt))}, updated daily)` : ''}, refreshed every 10 seconds. Local Sarafa rates may differ.${LIVE ? '' : ' Sell prices and product premiums are sample values until PGBX sets them.'}`
       : `Live prices are unavailable, so these rates are simulated from the Sarafa 24K rate of 1 Oct 2026. Buying uses PGBX’s server prices in the real app.`}</p>
+    ${rates.mode === 'live' && rates.fxOld && html`<${Notice} kind="warning" icon="alert" title="Exchange rate is out of date">The USD/PKR rate hasn’t updated for more than a day, so rupee prices may be off.</${Notice}>`}
+    ${rates.mode === 'live' && rates.warnings && rates.warnings.length > 0 && html`<p class="foot" style="margin-top:0" title=${rates.warnings.join(' · ')}>Some price sources didn’t answer; prices come from the backup source.</p>`}
   </div>`;
 }
 
@@ -805,7 +823,7 @@ function HistoryScreen({ S, A, metal: m0 }) {
   const valid = t > 0 && (dir === 'above' ? t > r.buyTola : t < r.buyTola);
   const preset = f => setTarget(String(Math.round(r.buyTola * (1 + f))));
   const mine = S.alerts.filter(a => a.metal === metal);
-  const rangeName = { day: 'today', week: 'this week', month: 'this month' }[range];
+  const rangeName = range === 'day' && h.marketClosed ? 'last session' : { day: 'today', week: 'this week', month: 'this month' }[range];
   return html`<div class="page">
     <${TopBar} title="Rate history" onBack=${A.back} />
     <div class="scroll">
@@ -823,6 +841,7 @@ function HistoryScreen({ S, A, metal: m0 }) {
           : html`<span class="sk" style="height:180px;margin-top:16px" aria-label="Loading chart"></span>`}
         ${stats && html`<div class="stats4">${[['Open', stats.open], ['High', stats.high], ['Low', stats.low], ['Last', pts[pts.length - 1][1]]].map(([l, v]) => html`<div><span>${l}</span><b>${fmt(v)}</b></div>`)}</div>`}
       </div>
+      ${pts && h.marketClosed && html`<p class="foot" style="margin-bottom:0"><b>The market is closed.</b> ${range === 'day' ? 'Showing the last trading session, ' : 'Last price '}${h.lastAt ? dt(h.lastAt) : ''}.</p>`}
       ${pts && html`<p class="foot">Indicative history from ${h.source}, converted at USD/PKR ${h.usdPkr ? h.usdPkr.toFixed(2) : ''}. PGBX’s own buy rate differs slightly.</p>`}
 
       <section class="sec">
@@ -1378,11 +1397,11 @@ function RedeemScreen({ S, A }) {
   const [units, setUnits] = useState(1);
   const [did, setDid] = useState(null);
   useEffect(() => { if (pid && avail(pid) <= 0) setPid(held[0] ? held[0].id : null); }, [S.holdings, S.reserved]);
-  useEffect(() => { setUnits(1); if (did && pid && S.dealerStock[did][pid] <= 0) setDid(null); }, [pid]);
+  useEffect(() => { setUnits(1); if (did && pid && S.dealerFree(did, pid) <= 0) setDid(null); }, [pid]);
   const active = S.redemptions.filter(r => ['requested', 'ready'].includes(S.statusOf(r)));
   const past = S.redemptions.filter(r => !['requested', 'ready'].includes(S.statusOf(r)));
-  const canConfirm = pid && did && units >= 1 && units <= avail(pid) && S.dealerStock[did][pid] >= units;
-  const dealerOk = d => (S.dealerStock[d.id][pid] || 0) >= units;
+  const canConfirm = pid && did && units >= 1 && units <= avail(pid) && S.dealerFree(did, pid) >= units;
+  const dealerOk = d => S.dealerFree(d.id, pid) >= units;
   // Production: no sample location, so dealers are listed by area until PGBX chooses a map provider
   const sorted = [...DEALERS].sort((a, b) => (LIVE ? (a.area + a.name).localeCompare(b.area + b.name) : a.km - b.km));
   const pickDealer = id => setDid(id);
@@ -1844,7 +1863,7 @@ function App() {
     profile: LIVE ? { name: '', cnic: '', dob: '', email: '', address: '' } : { name: 'Ahmed Khan', cnic: KYC_START === 'verified' ? '42000-0000000-1' : '', dob: KYC_START === 'verified' ? '1990-01-01' : '', email: '', address: '' },
     kyc: { status: KYC_START, at: KYC_START === 'verified' ? Date.now() - 20 * 86400e3 : null },
     pin: LIVE ? null : PIN_DEFAULT, pinFails: 0, pinLockUntil: 0,
-    cart: [], cartBump: 0, checkout: [], checkoutFrom: 'now', simCreditFail: false,
+    cart: [], checkout: [], checkoutFrom: 'now', simCreditFail: false,
     notifications: [], banner: null, notifPrefs: { push: true, sms: true, email: false, alerts: true },
     alerts: [], history: {}, dialog: null, offline: typeof navigator !== 'undefined' && navigator.onLine === false,
     otpCfg: { checked: false, configured: false, channels: ['sms'] },
@@ -1861,7 +1880,7 @@ function App() {
   const histLoading = useRef({});
   const guardRef = useRef(null);          // set by a screen with unsaved work; called with the navigation it would interrupt
   const stRef = useRef(null);             // latest state for the system back handler
-  const histDepth = useRef(0), ignorePop = useRef(0);
+  const histDepth = useRef(0), ignorePop = useRef(null);   // ignorePop: depth an app-initiated history.go() is heading to
 
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
   // Network state: tell the customer when they are offline instead of silently showing old prices
@@ -1892,7 +1911,8 @@ function App() {
           const d = await r.json();
           if (!d || !d.ok || !d.metals) continue;
           idx = (idx + k) % API_URLS.length;
-          if (alive) set(s => applyLive(s, d));
+          const hdr = { date: r.headers.get('date'), age: r.headers.get('age') };
+          if (alive) set(s => applyLive(s, d, hdr));
           return true;
         } catch (e) { }
       }
@@ -1959,7 +1979,8 @@ function App() {
   // A failed request shows its plain-language message; an expired session goes back to login.
   const liveFail = e => { if (Live.signedOut(e)) sessionEnded(e.code === 'ACCOUNT_INACTIVE' ? e.message : undefined); else toast(e.message); };
 
-  const stale = st.rates.mode !== 'connecting' && now - st.rates.updatedAt > STALE_MS;
+  // Stale when the server stops answering (30 s) or answers with prices that are themselves old (90 s)
+  const stale = st.rates.mode !== 'connecting' && (now - (st.rates.polledAt || st.rates.updatedAt) > STALE_MS || now - st.rates.updatedAt > DATA_STALE_MS);
   const top = st.stack[st.stack.length - 1];
 
   // action: { label, fn } adds a button such as Undo to the toast
@@ -2007,6 +2028,13 @@ function App() {
   const holdings = useMemo(() => { const h = {}; st.ledger.forEach(e => { h[e.pid] = (h[e.pid] || 0) + e.delta; }); return h; }, [st.ledger]);
   const statusOf = r => ((r.status === 'requested' || r.status === 'ready') && now > r.expiresAt ? 'expired' : r.status);
   const reserved = {}; st.redemptions.forEach(r => { const s = statusOf(r); if (s === 'requested' || s === 'ready') reserved[r.pid] = (reserved[r.pid] || 0) + r.units; });
+  // Units a dealer can still promise: stock minus active reservations there (FR-D2). Production gets this from the server.
+  const dealerFree = (did, pid) => {
+    const stock = (st.dealerStock[did] && st.dealerStock[did][pid]) || 0;
+    if (LIVE) return stock;
+    const held = st.redemptions.reduce((a, r) => { const s = statusOf(r); return a + (r.dealerId === did && r.pid === pid && (s === 'requested' || s === 'ready') ? r.units : 0); }, 0);
+    return Math.max(0, stock - held);
+  };
   const walletValue = (() => { let gold = 0, silver = 0, goldG = 0, silverG = 0; PRODUCTS.forEach(p => { const n = holdings[p.id] || 0; if (!n) return; const v = n * p.grams * rateOf(st.rates, p.metal).sellGram;
     if (p.metal === 'gold') { gold += v; goldG += n * p.grams; } else { silver += v; silverG += n * p.grams; } }); return { gold, silver, goldG, silverG, total: gold + silver }; })();
   const spentToday = st.orders.filter(o => sameDay(o.ts, now)).reduce((a, o) => a + o.total, 0);
@@ -2079,7 +2107,7 @@ function App() {
     addToCart: (pid, units) => {
       const total = linesUnits(st.cart) + units;
       if (total > MAX_UNITS) { toast(`You can buy up to ${MAX_UNITS} bars per order. Your cart already has ${linesUnits(st.cart)}.`); return; }
-      set(s => { const ex = s.cart.find(l => l.pid === pid); return { cartBump: s.cartBump + 1, cart: ex ? s.cart.map(l => (l.pid === pid ? { ...l, units: l.units + units } : l)) : [...s.cart, { pid, units }] }; });
+      set(s => { const ex = s.cart.find(l => l.pid === pid); return { cart: ex ? s.cart.map(l => (l.pid === pid ? { ...l, units: l.units + units } : l)) : [...s.cart, { pid, units }] }; });
       toast(`Added ${units} × ${pname(P[pid])} to your cart`);
     },
     cartUnits: (pid, units) => set(s => ({ cart: units <= 0 ? s.cart.filter(l => l.pid !== pid) : s.cart.map(l => (l.pid === pid ? { ...l, units } : l)) })),
@@ -2169,9 +2197,10 @@ function App() {
       if (LIVE) { Live.removeAlert(id).then(() => toast('Alert deleted', { label: 'Undo', fn: () => A.addAlert(a.metal, a.dir, a.target) }), liveFail); return; }
       toast('Alert deleted', { label: 'Undo', fn: () => set(s => (s.alerts.some(x => x.id === id) ? {} : { alerts: [...s.alerts, a] })) });
     },
-    loadHistory: async (metal, range) => {
+    // force: "Try again" skips the 2-minute cache
+    loadHistory: async (metal, range, force = false) => {
       const key = metal + ':' + range; const h = st.history[key];
-      if ((h && h.points && Date.now() - h.at < 120e3) || histLoading.current[key]) return;
+      if ((!force && h && h.points && Date.now() - h.at < 120e3) || histLoading.current[key]) return;
       histLoading.current[key] = true;
       set(s => ({ history: { ...s.history, [key]: { ...(s.history[key] || {}), error: false } } }));
       let got = null;
@@ -2179,7 +2208,7 @@ function App() {
         try { const r = await fetchT(`${b}/api/history?metal=${metal}&range=${range}`, {}, 10000); if (!r.ok) continue; const d = await r.json(); if (d.ok && d.points && d.points.length > 1) { got = d; break; } } catch (e) { if (e.name === 'AbortError') break; }
       }
       histLoading.current[key] = false;
-      set(s => ({ history: { ...s.history, [key]: got ? { points: got.points, source: got.source, usdPkr: got.usdPkr, at: Date.now() } : { error: true } } }));
+      set(s => ({ history: { ...s.history, [key]: got ? { points: got.points, source: got.source, usdPkr: got.usdPkr, marketClosed: !!got.marketClosed, lastAt: got.lastAt || null, at: Date.now() } : { error: true } } }));
     },
     redeem: (pid, units, dealerId) => {
       if (LIVE) {
@@ -2189,6 +2218,7 @@ function App() {
           e => { set({ paying: false }); loadDealers(); liveFail(e); });
         return;
       }
+      if (units < 1 || units > (holdings[pid] || 0) - (reserved[pid] || 0) || dealerFree(dealerId, pid) < units) { toast('That dealer no longer has enough stock. Choose another dealer.'); return; }
       const used = new Set(st.redemptions.map(r => r.code)); let code;
       do { code = String(Math.floor(100000 + Math.random() * 900000)); } while (used.has(code));
       const r = { id: 'RD-' + uid(), pid, units, dealerId, code, createdAt: Date.now(), expiresAt: Date.now() + RESERVE_MS, status: 'requested' };
@@ -2207,13 +2237,13 @@ function App() {
       set(s => ({
         redemptions: s.redemptions.map(x => (x.id === id ? { ...x, status: 'completed', completedAt: Date.now(), serials } : x)),
         ledger: [...s.ledger, { id: 'L-' + uid(), ts: Date.now(), pid: r.pid, delta: -r.units, reason: 'redemption', ref: r.id, dealer: d.name, serials }],
-        dealerStock: { ...s.dealerStock, [d.id]: { ...s.dealerStock[d.id], [r.pid]: s.dealerStock[d.id][r.pid] - r.units } },
+        dealerStock: { ...s.dealerStock, [d.id]: { ...s.dealerStock[d.id], [r.pid]: Math.max(0, s.dealerStock[d.id][r.pid] - r.units) } },
       }));
       notify('redemption', 'Collected', `${r.units} × ${pname(p)} collected at ${d.name}. Serial ${serials.join(', ')}.`, false, { name: 'code', rid: id });
     },
   };
 
-  const S = { ...st, now, stale, holdings, reserved, walletValue, statusOf, spentToday, unread };
+  const S = { ...st, now, stale, holdings, reserved, dealerFree, walletValue, statusOf, spentToday, unread };
   const framed = window.innerWidth > 500;
   const enterApp = () => {
     lastActive.current = Date.now();
@@ -2278,12 +2308,21 @@ function App() {
   useEffect(() => {
     const want = phase === 'app' ? st.stack.length : 0, d = want - histDepth.current;
     if (d > 0) { for (let i = 0; i < d; i++) history.pushState({ pgbx: histDepth.current + i + 1 }, ''); }
-    else if (d < 0) { ignorePop.current++; history.go(d); }
+    // Browsers report a multi-step history.go(d) as one popstate at the target entry; the target depth (not a count)
+    // is remembered so this stays correct even if a browser reported each intermediate step.
+    else if (d < 0) { ignorePop.current = want; history.go(d); }
     histDepth.current = want;
   }, [st.stack.length, phase]);
   useEffect(() => {
-    const onPop = () => {
-      if (ignorePop.current) { ignorePop.current--; return; }
+    // A reload keeps the browser's history entries and their old depths: the page the app starts on is depth 0.
+    try { history.replaceState({ pgbx: 0 }, ''); } catch (e) { }
+    const onPop = e => {
+      if (ignorePop.current !== null) {
+        const at = e.state && typeof e.state.pgbx === 'number' ? e.state.pgbx : 0;
+        if (at > ignorePop.current) return;                                  // an intermediate step of our own jump
+        const ours = at === ignorePop.current; ignorePop.current = null;
+        if (ours) return;                                                    // arrived where the app sent it
+      }
       histDepth.current = Math.max(0, histDepth.current - 1);
       const s = stRef.current, top = s.stack[s.stack.length - 1];
       const stay = () => { history.pushState({ pgbx: histDepth.current + 1 }, ''); histDepth.current++; };
