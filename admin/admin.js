@@ -1,0 +1,329 @@
+// PGBX admin panel for operations and administrators (FR-M1–M10).
+// Roles: admin (everything), ops (day-to-day work; cannot change settings, prices, dealers' details, staff or suspend
+// customers). The server enforces roles; this screen only hides what a role can't use.
+import { html, render, useState, useEffect } from '../vendor/htm-preact-standalone-3.1.1.module.js';
+import { api, useLoad, useStaff, SignIn, Loading, Failed, Tag, Toast, useToast, Modal, Act, Brand, pkr, when, day, ago, productName, PRODUCT_NAMES } from '../staff/kit.js';
+
+const ORDER = Object.keys(PRODUCT_NAMES);
+const byProduct = (a, b) => ORDER.indexOf(a.product_id) - ORDER.indexOf(b.product_id);
+
+const SECTIONS = [
+  ['overview', 'Overview'], ['kyc', 'Identity checks'], ['orders', 'Orders'], ['customers', 'Customers'], ['dealers', 'Dealers & stock'],
+  ['products', 'Products & premiums'], ['reconciliation', 'Reconciliation'], ['settings', 'Settings'], ['audit', 'Audit log'], ['staff', 'Staff', 'admin'],
+];
+const go = (s, id) => { location.hash = id ? `${s}/${id}` : s; };
+const useHash = () => {
+  const read = () => (location.hash.slice(1) || 'overview').split('/');
+  const [h, set] = useState(read());
+  useEffect(() => { const f = () => set(read()); addEventListener('hashchange', f); return () => removeEventListener('hashchange', f); }, []);
+  return h;
+};
+const Head = ({ title, sub, children }) => html`<div class="head"><div><h1>${title}</h1>${sub && html`<p class="muted" style="margin:0">${sub}</p>`}</div><div class="row">${children}</div></div>`;
+const Card = ({ title, children, action }) => html`<section class="card">${(title || action) && html`<div class="spread" style="margin-bottom:12px"><h2 style="margin:0">${title}</h2>${action}</div>`}${children}</section>`;
+const Table = ({ head, rows, empty }) => rows.length
+  ? html`<div class="tbl-wrap"><table><thead><tr>${head.map(h => html`<th class=${h.startsWith('#') ? 'r' : ''}>${h.replace(/^#/, '')}</th>`)}</tr></thead><tbody>${rows}</tbody></table></div>`
+  : html`<div class="empty">${empty}</div>`;
+const Screen = ({ load, children }) => load.error ? html`<${Failed} error=${load.error} retry=${load.reload} />` : !load.data ? html`<div class="card"><${Loading} /></div>` : children(load.data);
+const Seg = ({ value, options, onChange, label }) => html`<div class="seg" role="group" aria-label=${label}>${options.map(([v, l]) => html`<button aria-pressed=${value === v} onClick=${() => onChange(v)}>${l}</button>`)}</div>`;
+
+// ---------- overview ----------
+function Overview() {
+  const load = useLoad('/admin/overview');
+  return html`<${Head} title="Overview" sub="Today at a glance"><button class="btn sm sec" onClick=${load.reload}>Refresh</button></${Head}>
+    <${Screen} load=${load}>${d => html`<div class="stack">
+      <div class="grid g4">
+        <a class=${'card stat' + (d.kyc_review ? ' attn' : '')} href="#kyc" style="text-decoration:none;color:inherit"><div class="k">Identity checks to review</div><div class="v">${d.kyc_review}</div></a>
+        <a class=${'card stat' + (d.flagged_orders ? ' attn' : '')} href="#orders" style="text-decoration:none;color:inherit"><div class="k">Orders needing operations</div><div class="v">${d.flagged_orders}</div></a>
+        <div class="card stat"><div class="k">Sales today</div><div class="v">${pkr(d.sales_today_pkr)}</div><div class="muted small">${d.orders_today} orders</div></div>
+        <div class="card stat"><div class="k">Active collections</div><div class="v">${d.active_collections}</div></div>
+        <div class="card stat"><div class="k">Customers</div><div class="v">${d.customers}</div><div class="muted small">${d.verified} verified</div></div>
+      </div>
+      <${Card} title="Latest rates (per tola)">${d.rates ? html`<dl class="kv">
+        <dt>Gold buy / sell</dt><dd class="num">${pkr(d.rates.gold_buy_tola)} / ${pkr(d.rates.gold_sell_tola)}</dd>
+        <dt>Silver buy / sell</dt><dd class="num">${pkr(d.rates.silver_buy_tola)} / ${pkr(d.rates.silver_sell_tola)}</dd>
+        <dt>Source</dt><dd>${d.rates.source} · ${ago(d.rates.fetched_at)}</dd></dl>` : html`<div class="empty">No rates recorded yet.</div>`}</${Card}>
+    </div>`}</${Screen}>`;
+}
+
+// ---------- identity checks ----------
+function Kyc({ toast }) {
+  const [status, setStatus] = useState('review');
+  const load = useLoad('/admin/kyc?status=' + status);
+  const [deciding, setDeciding] = useState(null);
+  const [reason, setReason] = useState('');
+  const decide = async decision => {
+    await api(`/admin/kyc/${deciding.id}/decide`, { method: 'POST', body: { decision, reason } });
+    toast(decision === 'passed' ? 'Verified. The customer has been told.' : 'Marked as failed. The customer has been told.');
+    setDeciding(null); setReason(''); load.reload();
+  };
+  return html`<${Head} title="Identity checks" sub="Checks the provider sent for a person to decide">
+      <${Seg} label="Status" value=${status} onChange=${setStatus} options=${[['review', 'To review'], ['submitted', 'Waiting on provider'], ['failed', 'Failed'], ['passed', 'Passed']]} /></${Head}>
+    <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Customer', 'CNIC', 'Reason', 'Since', '']} empty="Nothing here." rows=${d.checks.map(k => html`<tr>
+      <td><a href=${'#customers/' + k.customer_id}>${k.name || '—'}</a><div class="muted small">+92 ${k.phone || '—'}</div></td>
+      <td class="mono">${k.cnic || '—'}</td><td class="small">${k.reason || '—'}</td><td class="small">${ago(k.created_at)}</td>
+      <td class="r">${['review', 'submitted'].includes(k.status) ? html`<button class="btn sm" onClick=${() => setDeciding(k)}>Decide</button>` : html`<${Tag} s=${k.status} />`}</td></tr>`)} /></${Card}>`}</${Screen}>
+    ${deciding && html`<${Modal} title="Decide identity check" onClose=${() => setDeciding(null)}>
+      <dl class="kv" style="margin-bottom:16px"><dt>Name</dt><dd>${deciding.name}</dd><dt>CNIC</dt><dd class="mono">${deciding.cnic}</dd><dt>Provider note</dt><dd>${deciding.reason || '—'}</dd></dl>
+      <p class="muted small">Compare the CNIC images and selfie in the provider’s dashboard before deciding.</p>
+      <label class="f"><span>Reason (kept in the audit log)</span><input class="in" value=${reason} onInput=${e => setReason(e.target.value)} placeholder="Optional for a pass, required for a fail" /></label>
+      <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setDeciding(null)}>Cancel</button>
+        <${Act} cls="btn danger" disabled=${!reason.trim()} run=${() => decide('failed')}>Fail</${Act}><${Act} run=${() => decide('passed')}>Verify</${Act}></div>
+    </${Modal}>`}`;
+}
+
+// ---------- orders ----------
+function Orders({ toast }) {
+  const [status, setStatus] = useState('flagged');
+  const load = useLoad('/admin/orders?status=' + status);
+  const [resolving, setResolving] = useState(null);
+  const [note, setNote] = useState('');
+  const resolve = async action => {
+    await api(`/admin/orders/${resolving.id}/resolve`, { method: 'POST', body: { action, note } });
+    toast(action === 'credit' ? 'Credited to the customer’s wallet.' : 'Marked for refund.');
+    setResolving(null); setNote(''); load.reload();
+  };
+  return html`<${Head} title="Orders" sub="Flagged orders are paid but not credited automatically (amount mismatch, late payment or a failure)">
+      <${Seg} label="Status" value=${status} onChange=${setStatus} options=${[['flagged', 'Needs operations'], ['pending_payment', 'Awaiting payment'], ['credited', 'Credited'], ['refunded', 'Refunded'], ['failed', 'Failed'], ['expired', 'Expired']]} /></${Head}>
+    <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Receipt', 'Customer', '#Total', 'Note', 'Created', '']} empty="No orders with this status." rows=${d.orders.map(o => html`<tr>
+      <td class="mono small">${o.receipt_no || o.id.slice(0, 8)}</td><td>${o.name || '—'}<div class="muted small">+92 ${o.phone || '—'}</div></td>
+      <td class="r num">${pkr(o.total_pkr)}</td><td class="small">${o.note || '—'}</td><td class="small">${when(o.created_at)}</td>
+      <td class="r">${o.status === 'flagged' ? html`<button class="btn sm" onClick=${() => setResolving(o)}>Resolve</button>` : html`<${Tag} s=${o.status} />`}</td></tr>`)} /></${Card}>`}</${Screen}>
+    ${resolving && html`<${Modal} title="Resolve order" onClose=${() => setResolving(null)}>
+      <dl class="kv" style="margin-bottom:16px"><dt>Receipt</dt><dd class="mono">${resolving.receipt_no}</dd><dt>Total</dt><dd>${pkr(resolving.total_pkr)}</dd><dt>Why flagged</dt><dd>${resolving.note || '—'}</dd></dl>
+      <p class="muted small">Check the payment in the provider’s dashboard first. Credit only if the full amount was received; otherwise refund it through the provider.</p>
+      <label class="f"><span>Note (required, kept in the audit log)</span><input class="in" value=${note} onInput=${e => setNote(e.target.value)} /></label>
+      <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setResolving(null)}>Cancel</button>
+        <${Act} cls="btn danger" disabled=${!note.trim()} run=${() => resolve('refund')}>Refund</${Act}><${Act} disabled=${!note.trim()} run=${() => resolve('credit')}>Credit wallet</${Act}></div>
+    </${Modal}>`}`;
+}
+
+// ---------- customers ----------
+function Customers() {
+  const [q, setQ] = useState('');
+  const [term, setTerm] = useState('');
+  useEffect(() => { const t = setTimeout(() => setTerm(q.trim()), 300); return () => clearTimeout(t); }, [q]);
+  const load = useLoad('/admin/customers?q=' + encodeURIComponent(term));
+  return html`<${Head} title="Customers" sub="Opening a customer is recorded in the audit log" />
+    <${Card}><label class="f"><span class="sr">Search</span><input class="in" type="search" placeholder="Search by mobile number, name or CNIC" value=${q} onInput=${e => setQ(e.target.value)} /></label>
+    <${Screen} load=${load}>${d => html`<${Table} head=${['Name', 'Mobile', 'CNIC', 'Identity', 'Account', 'Joined']} empty=${term ? 'No customers match.' : 'No customers yet.'} rows=${d.customers.map(c => html`<tr class="click" onClick=${() => go('customers', c.id)}>
+      <td><a href=${'#customers/' + c.id} onClick=${e => e.stopPropagation()}>${c.name || 'Not given yet'}</a></td><td class="num">${c.phone ? '+92 ' + c.phone : '—'}</td><td class="mono small">${c.cnic || '—'}</td>
+      <td><${Tag} s=${c.kyc_status} /></td><td><${Tag} s=${c.status} /></td><td class="small">${day(c.created_at)}</td></tr>`)} />`}</${Screen}></${Card}>`;
+}
+function Customer({ id, me, toast }) {
+  const load = useLoad('/admin/customers/' + id);
+  const setStatus = async status => {
+    const reason = prompt(status === 'suspended' ? 'Why are you suspending this account? (kept in the audit log)' : 'Why are you reactivating this account?');
+    if (!reason) return;
+    await api(`/admin/customers/${id}/status`, { method: 'POST', body: { status, reason } });
+    toast(status === 'suspended' ? 'Suspended. The customer has been signed out.' : 'Account reactivated.');
+    load.reload();
+  };
+  return html`<${Screen} load=${load}>${d => html`
+    <${Head} title=${d.customer.name || 'Customer'} sub=${d.customer.phone ? '+92 ' + d.customer.phone : 'Closed account'}>
+      <a class="btn sm sec" href="#customers">All customers</a>
+      ${me.role === 'admin' && d.customer.status === 'active' && html`<${Act} cls="btn sm danger" run=${() => setStatus('suspended')}>Suspend</${Act}>`}
+      ${me.role === 'admin' && d.customer.status === 'suspended' && html`<${Act} cls="btn sm" run=${() => setStatus('active')}>Reactivate</${Act}>`}
+    </${Head}>
+    <div class="grid g2">
+      <${Card} title="Profile"><dl class="kv">
+        <dt>Account</dt><dd><${Tag} s=${d.customer.status} /></dd><dt>Identity</dt><dd><${Tag} s=${d.customer.kyc_status} /> ${d.customer.kyc_at ? day(d.customer.kyc_at) : ''}</dd>
+        <dt>CNIC</dt><dd class="mono">${d.customer.cnic || '—'}</dd><dt>Date of birth</dt><dd>${d.customer.dob ? day(d.customer.dob) : '—'}</dd>
+        <dt>Email</dt><dd>${d.customer.email || '—'}</dd><dt>Address</dt><dd>${d.customer.address || '—'}</dd><dt>Joined</dt><dd>${day(d.customer.created_at)}</dd>
+        ${d.customer.closed_at && html`<dt>Closed</dt><dd>${day(d.customer.closed_at)} (was +92 ${d.customer.closed_phone})</dd>`}</dl></${Card}>
+      <${Card} title=${'Wallet · ' + pkr(d.wallet.total_value_pkr)}><${Table} head=${['Product', '#Units', '#Reserved', '#Value']} empty="No metal held." rows=${d.wallet.holdings.map(h => html`<tr>
+        <td>${productName(h.product_id)}</td><td class="r num">${h.units}</td><td class="r num">${h.reserved || 0}</td><td class="r num">${pkr(h.value_pkr)}</td></tr>`)} /></${Card}>
+      <${Card} title="Orders"><${Table} head=${['Receipt', '#Total', 'Status', 'Date']} empty="No orders." rows=${d.orders.map(o => html`<tr>
+        <td class="mono small">${o.receipt_no || '—'}</td><td class="r num">${pkr(o.total_pkr)}</td><td><${Tag} s=${o.status} /></td><td class="small">${when(o.created_at)}</td></tr>`)} /></${Card}>
+      <${Card} title="Collections"><${Table} head=${['Product', '#Units', 'Dealer', 'Status', 'Date']} empty="No collections." rows=${d.redemptions.map(r => html`<tr>
+        <td>${productName(r.product_id)}</td><td class="r num">${r.units}</td><td>${r.dealer_id}</td><td><${Tag} s=${r.status} /></td><td class="small">${when(r.created_at)}</td></tr>`)} /></${Card}>
+      <${Card} title="Identity checks"><${Table} head=${['Provider', 'Status', 'Reason', 'Decided']} empty="No checks." rows=${d.kyc.map(k => html`<tr>
+        <td>${k.provider}</td><td><${Tag} s=${k.status} /></td><td class="small">${k.reason || '—'}</td><td class="small">${k.decided_at ? when(k.decided_at) + ' · ' + (k.decided_by || '') : '—'}</td></tr>`)} /></${Card}>
+    </div>`}</${Screen}>`;
+}
+
+// ---------- dealers and stock ----------
+function Dealers({ me, toast }) {
+  const load = useLoad('/admin/dealers');
+  const products = useLoad('/admin/products');
+  const [adding, setAdding] = useState(false);
+  const [f, setF] = useState({ id: '', name: '', area: '', address: '', phone: '', hours: '' });
+  const setStock = async (dealer, product, value) => {
+    const units = Number(value);
+    if (!Number.isInteger(units) || units < 0) { toast('Enter a whole number of 0 or more.', true); return; }
+    const note = prompt(`Set ${productName(product)} at ${dealer.name} to ${units}. Reason (e.g. delivery, count correction):`);
+    if (note === null) { load.reload(); return; }
+    try { await api(`/admin/dealers/${dealer.id}/stock`, { method: 'PUT', body: { product_id: product, units, note } }); toast('Stock updated.'); }
+    catch (e) { toast(e.message, true); }
+    load.reload();
+  };
+  const add = async () => { await api('/admin/dealers', { method: 'POST', body: f }); toast('Dealer added with zero stock.'); setAdding(false); setF({ id: '', name: '', area: '', address: '', phone: '', hours: '' }); load.reload(); };
+  const toggle = async d => { await api(`/admin/dealers/${d.id}`, { method: 'PATCH', body: { active: !d.active } }); toast(d.active ? 'Dealer hidden from customers.' : 'Dealer visible to customers.'); load.reload(); };
+  return html`<${Head} title="Dealers & stock" sub="Stock here is what customers can reserve. Change a number and press Enter or leave the field to save.">
+      ${me.role === 'admin' && html`<button class="btn sm" onClick=${() => setAdding(true)}>Add dealer</button>`}</${Head}>
+    <${Screen} load=${load}>${d => products.data && html`<div class="stack">${d.dealers.map(dl => html`<${Card} title=${dl.name}
+        action=${html`<div class="row"><${Tag} s=${dl.active ? 'active' : 'closed'} />${me.role === 'admin' && html`<${Act} cls="btn sm sec" confirm=${dl.active ? `Hide ${dl.name} from customers? Active collections there still work.` : null} run=${() => toggle(dl)}>${dl.active ? 'Deactivate' : 'Activate'}</${Act}>`}</div>`}>
+      <p class="muted small">${dl.area} · ${dl.address || 'No address'} · ${dl.phone || 'No phone'} · ${dl.hours || 'No hours'}</p>
+      <div class="tbl-wrap"><table><thead><tr>${products.data.products.map(p => html`<th class="r">${productName(p.id).replace(/^(Gold|Silver) /, m => m[0] + ' ')}</th>`)}</tr></thead>
+        <tbody><tr>${products.data.products.map(p => html`<td class="r"><input class="in sm num" style="width:64px;text-align:right" inputmode="numeric" aria-label=${`${productName(p.id)} at ${dl.name}`}
+          value=${dl.stock[p.id] ?? 0} onKeyDown=${e => e.key === 'Enter' && e.target.blur()}
+          onChange=${e => setStock(dl, p.id, e.target.value)} /></td>`)}</tr></tbody></table></div>
+    </${Card}>`)}</div>`}</${Screen}>
+    ${adding && html`<${Modal} title="Add dealer" onClose=${() => setAdding(false)}>
+      ${[['id', 'Short ID', 'Letters, numbers and dashes, e.g. lhr-gulberg'], ['name', 'Name'], ['area', 'Area and city'], ['address', 'Address'], ['phone', 'Phone'], ['hours', 'Opening hours', 'e.g. 10:00 – 20:00']].map(([k, l, hint]) => html`
+        <label class="f"><span>${l}</span><input class="in" value=${f[k]} onInput=${e => setF({ ...f, [k]: e.target.value })} />${hint && html`<small>${hint}</small>`}</label>`)}
+      <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setAdding(false)}>Cancel</button><${Act} disabled=${!f.id || !f.name || !f.area} run=${add}>Add dealer</${Act}></div>
+    </${Modal}>`}`;
+}
+
+// ---------- products ----------
+function Products({ me, toast }) {
+  const load = useLoad('/admin/products');
+  const save = async (p, body) => { try { await api(`/admin/products/${p.id}`, { method: 'PATCH', body }); toast('Saved. New price locks use it straight away.'); } catch (e) { toast(e.message, true); } load.reload(); };
+  const admin = me.role === 'admin';
+  return html`<${Head} title="Products & premiums" sub="Price = metal rate for the weight + the premium below (rounded to the nearest rupee)" />
+    <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Product', '#Weight (g)', '#Premium per unit', 'Sold']} empty="No products." rows=${d.products.map(p => html`<tr>
+      <td>${productName(p.id)}</td><td class="r num">${p.grams}</td>
+      <td class="r">${admin ? html`<input class="in sm num" style="width:110px;text-align:right" inputmode="numeric" aria-label=${'Premium for ' + productName(p.id)} value=${p.premium_pkr}
+        onKeyDown=${e => e.key === 'Enter' && e.target.blur()} onChange=${e => save(p, { premium_pkr: Number(e.target.value) })} />` : pkr(p.premium_pkr)}</td>
+      <td>${admin ? html`<label class="row small"><input type="checkbox" checked=${p.active} onChange=${e => save(p, { active: e.target.checked })} /> ${p.active ? 'On sale' : 'Hidden'}</label>` : html`<${Tag} s=${p.active ? 'active' : 'closed'} />`}</td></tr>`)} />
+      <p class="muted small" style="margin:12px 0 0">Sample premiums until PGBX confirms the real ones.</p></${Card}>`}</${Screen}>`;
+}
+
+// ---------- reconciliation ----------
+function Reconciliation({ toast }) {
+  const [dayV, setDay] = useState(new Date().toISOString().slice(0, 10));
+  const load = useLoad('/admin/reconciliation?day=' + dayV);
+  const [count, setCount] = useState(null);
+  const saveCount = async () => { await api('/admin/vault', { method: 'POST', body: count }); toast('Vault count recorded.'); setCount(null); load.reload(); };
+  return html`<${Head} title="Reconciliation" sub="Money received against orders credited, and metal owed against metal held">
+      <input class="in" type="date" style="width:auto" value=${dayV} max=${new Date().toISOString().slice(0, 10)} onChange=${e => setDay(e.target.value)} aria-label="Day" /></${Head}>
+    <${Screen} load=${load}>${({ reconciliation: r }) => {
+      const money = r.payments_succeeded_pkr === r.orders_credited_pkr;
+      return html`<div class="stack">
+        <div class="grid g4">
+          <div class="card stat"><div class="k">Payments received</div><div class="v">${pkr(r.payments_succeeded_pkr)}</div></div>
+          <div class="card stat"><div class="k">Orders credited</div><div class="v">${pkr(r.orders_credited_pkr)}</div></div>
+          <div class=${'card stat' + (money ? '' : ' attn')}><div class="k">Difference</div><div class="v">${pkr(r.payments_succeeded_pkr - r.orders_credited_pkr)}</div><div class="muted small">${money ? 'Matches' : 'Includes flagged, late or cross-day payments'}</div></div>
+          <a class=${'card stat' + (r.flagged_orders ? ' attn' : '')} href="#orders" style="text-decoration:none;color:inherit"><div class="k">Flagged orders</div><div class="v">${r.flagged_orders}</div></a>
+        </div>
+        ${r.paid_not_credited.length > 0 && html`<div class="note warn">Paid but not credited: ${r.paid_not_credited.map(o => o.receipt || o.order.slice(0, 8)).join(', ')}</div>`}
+        ${r.credited_without_payment.length > 0 && html`<div class="note err">Credited without a recorded payment: ${r.credited_without_payment.map(o => o.receipt).join(', ')}. Investigate now.</div>`}
+        <${Card} title="Metal" action=${html`<button class="btn sm" onClick=${() => setCount({ product_id: r.metal[0]?.product_id, units: '', note: '' })}>Record vault count</button>`}>
+          <${Table} head=${['Product', '#Owed to customers', '#Reserved', '#At dealers', '#In vault (last count)', '#Cover']} empty="No products." rows=${[...r.metal].sort(byProduct).map(m => {
+            const cover = (m.vault_units ?? 0) + m.dealer_units - m.customer_units;
+            return html`<tr><td>${productName(m.product_id)}</td><td class="r num">${m.customer_units}</td><td class="r num">${m.reserved_units}</td><td class="r num">${m.dealer_units}</td>
+              <td class="r num">${m.vault_units ?? '—'}<div class="muted small">${m.vault_counted_at ? day(m.vault_counted_at) : 'never counted'}</div></td>
+              <td class="r num">${cover < 0 ? html`<span class="tag bad">${cover}</span>` : html`<span class="tag ok">+${cover}</span>`}</td></tr>`;
+          })} />
+          <p class="muted small" style="margin:12px 0 0">Cover = vault + dealer stock − units owed to customers. A negative number means PGBX holds less metal than customers own.</p>
+        </${Card}>
+      </div>`;
+    }}</${Screen}>
+    ${count && html`<${Modal} title="Record vault count" onClose=${() => setCount(null)}>
+      <label class="f"><span>Product</span><select class="in" value=${count.product_id} onChange=${e => setCount({ ...count, product_id: e.target.value })}>
+        ${(load.data?.reconciliation.metal || []).map(m => html`<option value=${m.product_id}>${productName(m.product_id)}</option>`)}</select></label>
+      <label class="f"><span>Units counted</span><input class="in" inputmode="numeric" value=${count.units} onInput=${e => setCount({ ...count, units: e.target.value.replace(/\D/g, '') })} /></label>
+      <label class="f"><span>Note</span><input class="in" value=${count.note} onInput=${e => setCount({ ...count, note: e.target.value })} placeholder="e.g. Monthly count, counted with auditor" /></label>
+      <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setCount(null)}>Cancel</button><${Act} disabled=${count.units === ''} run=${() => saveCount()}>Save count</${Act}></div>
+    </${Modal}>`}`;
+}
+
+// ---------- settings ----------
+const SETTING_HELP = {
+  max_units_per_order: ['Most bars in one order', 'units'], daily_limit_pkr: ['Daily purchase limit per customer', 'PKR'], min_purchase_pkr: ['Minimum order', 'PKR, empty for none'],
+  price_lock_seconds: ['Price lock length', 'seconds'], rate_stale_seconds: ['Prices count as old after', 'seconds'], redemption_valid_hours: ['Collection code valid for', 'hours'],
+  order_payment_minutes: ['Time to pay an order', 'minutes'], session_days: ['Customers stay logged in for', 'days'], spread: ['Buy/sell spread', 'JSON'],
+  retention_days: ['Keep closed accounts’ records for', 'days, empty until PGBX decides'], redemption_fee_pkr: ['Collection fee', 'PKR, empty for none'],
+};
+function Settings({ me, toast }) {
+  const load = useLoad('/admin/settings');
+  const admin = me.role === 'admin';
+  const save = async (key, text) => {
+    let value;
+    try { value = text.trim() === '' ? null : JSON.parse(text); } catch { toast('Enter a number, or valid JSON.', true); load.reload(); return; }
+    if (!confirm(`Change "${SETTING_HELP[key]?.[0] || key}" to ${JSON.stringify(value)}? This applies to all customers straight away.`)) { load.reload(); return; }
+    try { await api('/admin/settings', { method: 'PATCH', body: { [key]: value } }); toast('Setting saved.'); } catch (e) { toast(e.message, true); }
+    load.reload();
+  };
+  return html`<${Head} title="Settings" sub=${admin ? 'Business rules the app and server follow. Changes are recorded in the audit log.' : 'Only administrators can change settings.'} />
+    <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Setting', 'Value', 'Last changed']} empty="No settings." rows=${d.settings.map(s => html`<tr>
+      <td>${SETTING_HELP[s.key]?.[0] || s.key}<div class="muted small mono">${s.key}${SETTING_HELP[s.key] ? ' · ' + SETTING_HELP[s.key][1] : ''}</div></td>
+      <td>${admin ? html`<input class="in mono" style="min-width:140px" value=${s.value === null ? '' : JSON.stringify(s.value)} aria-label=${s.key}
+        onKeyDown=${e => e.key === 'Enter' && e.target.blur()} onChange=${e => save(s.key, e.target.value)} />` : html`<span class="mono">${s.value === null ? '— (not set)' : JSON.stringify(s.value)}</span>`}</td>
+      <td class="small">${s.updated_by ? when(s.updated_at) + ' · ' + s.updated_by : 'Sample default'}</td></tr>`)} /></${Card}>`}</${Screen}>`;
+}
+
+// ---------- audit ----------
+function Audit() {
+  const [entity, setEntity] = useState('');
+  const load = useLoad('/admin/audit?entity=' + entity);
+  return html`<${Head} title="Audit log" sub="Every important action, by whom and when. Entries can’t be edited or deleted.">
+      <select class="in" style="width:auto" value=${entity} onChange=${e => setEntity(e.target.value)} aria-label="Filter">
+        ${[['', 'Everything'], ['customer', 'Customers'], ['order', 'Orders'], ['redemption', 'Collections'], ['kyc', 'Identity checks'], ['staff', 'Staff'], ['setting', 'Settings'], ['dealer', 'Dealers'], ['product', 'Products']].map(([v, l]) => html`<option value=${v}>${l}</option>`)}
+      </select></${Head}>
+    <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['When', 'Who', 'Action', 'Item', 'Details']} empty="No entries." rows=${d.entries.map(a => html`<tr>
+      <td class="small" style="white-space:nowrap">${when(a.at)}</td><td class="small mono">${a.actor}</td><td><span class="tag">${a.action}</span></td>
+      <td class="small mono">${a.entity}${a.entity_id ? ' ' + String(a.entity_id).slice(0, 8) : ''}</td><td class="small mono" style="max-width:320px;overflow-wrap:anywhere">${a.data && Object.keys(a.data).length ? JSON.stringify(a.data) : ''}</td></tr>`)} /></${Card}>`}</${Screen}>`;
+}
+
+// ---------- staff ----------
+function Staff({ me, toast }) {
+  const load = useLoad('/admin/staff');
+  const dealers = useLoad('/admin/dealers');
+  const [adding, setAdding] = useState(false);
+  const [f, setF] = useState({ name: '', email: '', role: 'ops', dealer_id: '' });
+  const [setup, setSetup] = useState(null);
+  const add = async () => { const r = await api('/admin/staff', { method: 'POST', body: f }); setAdding(false); setSetup({ ...r.setup, email: r.staff.email }); setF({ name: '', email: '', role: 'ops', dealer_id: '' }); load.reload(); };
+  const toggle = async s => { await api(`/admin/staff/${s.id}/active`, { method: 'POST', body: { active: !s.active } }); toast(s.active ? 'Deactivated and signed out.' : 'Reactivated.'); load.reload(); };
+  return html`<${Head} title="Staff" sub="Everyone signs in with a password and an authenticator app"><button class="btn sm" onClick=${() => setAdding(true)}>Add person</button></${Head}>
+    <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Name', 'Email', 'Role', 'Status', '']} empty="No staff." rows=${d.staff.map(s => html`<tr>
+      <td>${s.name}</td><td class="small">${s.email}</td><td>${s.role}${s.dealer_id ? ' · ' + s.dealer_id : ''}</td><td><${Tag} s=${s.active ? 'active' : 'closed'} /></td>
+      <td class="r">${s.id !== me.id && html`<${Act} cls="btn sm sec" confirm=${s.active ? `Deactivate ${s.name}? They are signed out immediately.` : null} run=${() => toggle(s)}>${s.active ? 'Deactivate' : 'Reactivate'}</${Act}>`}</td></tr>`)} /></${Card}>`}</${Screen}>
+    ${adding && html`<${Modal} title="Add person" onClose=${() => setAdding(false)}>
+      <label class="f"><span>Full name</span><input class="in" value=${f.name} onInput=${e => setF({ ...f, name: e.target.value })} /></label>
+      <label class="f"><span>Work email</span><input class="in" type="email" value=${f.email} onInput=${e => setF({ ...f, email: e.target.value })} /></label>
+      <label class="f"><span>Role</span><select class="in" value=${f.role} onChange=${e => setF({ ...f, role: e.target.value })}>
+        <option value="ops">Operations: daily work, no settings or staff</option><option value="admin">Administrator: everything</option><option value="dealer">Dealer counter staff</option></select></label>
+      ${f.role === 'dealer' && html`<label class="f"><span>Dealer</span><select class="in" value=${f.dealer_id} onChange=${e => setF({ ...f, dealer_id: e.target.value })}>
+        <option value="">Choose…</option>${(dealers.data?.dealers || []).map(d => html`<option value=${d.id}>${d.name}</option>`)}</select></label>`}
+      <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setAdding(false)}>Cancel</button>
+        <${Act} disabled=${!f.name || !f.email || (f.role === 'dealer' && !f.dealer_id)} run=${add}>Create account</${Act}></div>
+    </${Modal}>`}
+    ${setup && html`<${Modal} title="Share these once" onClose=${() => confirm('Close? The password and secret won’t be shown again.') && setSetup(null)}>
+      <p>Give these to <b>${setup.email}</b> in person or through a secure channel. They are not stored in readable form and won’t be shown again.</p>
+      <label class="f"><span>One-time password</span><div class="secret">${setup.password}</div></label>
+      <label class="f"><span>Authenticator secret</span><div class="secret">${setup.totpSecret}</div><small>In Google Authenticator, Microsoft Authenticator or 1Password: add account → enter key manually.</small></label>
+      <div class="row" style="justify-content:flex-end"><button class="btn" onClick=${() => setSetup(null)}>I’ve shared them</button></div>
+    </${Modal}>`}`;
+}
+
+// ---------- shell ----------
+function Admin() {
+  const { me, notice, signIn, signOut } = useStaff();
+  const [section, id] = useHash();
+  const [menu, setMenu] = useState(false);
+  const [toast, show] = useToast();
+  const counts = useLoad('/admin/overview', [section, !!me]);
+  useEffect(() => { setMenu(false); window.scrollTo(0, 0); }, [section, id]);
+  if (me === undefined) return html`<div class="signin"></div>`;
+  if (!me) return html`<${SignIn} tool="Admin panel" roles=${['admin', 'ops']} onIn=${signIn} notice=${notice} />`;
+  const badge = { kyc: counts.data?.kyc_review, orders: counts.data?.flagged_orders };
+  const props = { me, toast: show };
+  const views = { overview: Overview, kyc: Kyc, orders: Orders, customers: Customers, dealers: Dealers, products: Products, reconciliation: Reconciliation, settings: Settings, audit: Audit, staff: Staff };
+  const View = section === 'customers' && id ? null : views[section] || Overview;
+  return html`<div class="shell">
+    <nav class=${'side' + (menu ? ' open' : '')} aria-label="Sections">
+      <${Brand} sub="Admin panel" />
+      ${SECTIONS.filter(s => !s[2] || s[2] === me.role).map(([k, l]) => html`<a href=${'#' + k} aria-current=${section === k ? 'page' : undefined}>${l}${badge[k] > 0 && html`<span class="badge">${badge[k]}</span>`}</a>`)}
+      <div class="who"><b>${me.name}</b>${me.role === 'admin' ? 'Administrator' : 'Operations'}<div style="margin-top:8px"><button class="btn sm ghost" style="color:#fff;padding:0" onClick=${signOut}>Sign out</button></div></div>
+    </nav>
+    ${menu && html`<div class="modal-bg" style="z-index:15" onClick=${() => setMenu(false)}></div>`}
+    <main class="main">
+      <button class="btn sm sec menu" style="margin-bottom:12px" onClick=${() => setMenu(true)} aria-label="Open menu">☰ Menu</button>
+      ${View ? html`<${View} ...${props} />` : html`<${Customer} id=${id} ...${props} />`}
+    </main>
+    <${Toast} toast=${toast} />
+  </div>`;
+}
+
+render(html`<${Admin} />`, document.getElementById('app'));
