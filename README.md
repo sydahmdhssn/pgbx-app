@@ -159,6 +159,17 @@ Rules the screens follow:
 - **Notifications** have channels (push, SMS, email) and topics: price alerts can be turned off; purchases, collections and security notices stay on, with the reason given. Actions the customer just took are confirmed on screen, not by a banner.
 - **Contextual help.** A one-time note on Rates explains Buy and Sell prices; it stays dismissed.
 
+## Private preview password
+
+`middleware.js` puts the whole site behind a PGBX-branded password screen. To switch it on, add **`SITE_PASSWORD`** in
+Vercel (Project → Settings → Environment Variables, Production) and redeploy. To remove it, delete the variable and
+redeploy. Until the variable exists the site is open, so a missing setting can't lock everyone out.
+
+- The right password sets an HttpOnly cookie for 30 days. Changing `SITE_PASSWORD` signs everyone out.
+- Payment webhooks and the scheduled sweep aren't behind the screen; they have their own signatures and secret.
+- The phone apps can't reach the API while the screen is on, so turn it off before testing or releasing them.
+- It's a preview lock, not a login: use a long password and share it only with testers.
+
 ## Back end
 
 **Database** (`supabase/migrations/20261004000000_pgbx_core.sql`): portable PostgreSQL, ready for Supabase. Business
@@ -188,6 +199,7 @@ so they hold across server instances. Every staff action and every look at a cus
 | `PAYMENT_PROVIDER`, `PAYMENT_WEBHOOK_SECRET` | Payment provider and its webhook signing secret. The provider adapter (`server/providers.mjs`) is written once PGBX chooses one. | No payments |
 | `KYC_PROVIDER`, `KYC_WEBHOOK_SECRET` | Identity verification provider | No identity checks |
 | `FCM_SERVICE_ACCOUNT` | Firebase service account JSON for push to Android and iOS | Notifications stay in the app |
+| `SITE_PASSWORD` | Password screen in front of the whole site (see above) | Site open |
 | `CRON_SECRET` | Protects the scheduled sweep (Vercel sends it automatically) | Sweep refused |
 | `OTP_TEST_MODE=1`, `PAYMENT_PROVIDER=sandbox`, `KYC_PROVIDER=sandbox` | **Test modes. Never in production.** Code 123456 logs anyone in; payments and checks always pass. | — |
 

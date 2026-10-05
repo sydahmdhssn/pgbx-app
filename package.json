@@ -13,6 +13,7 @@
     "build:app": "node scripts/build.mjs"
   },
   "dependencies": {
+    "@vercel/functions": "^3.9.11",
     "postgres": "^3.4.9"
   },
   "devDependencies": {
