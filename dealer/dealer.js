@@ -2,7 +2,7 @@
 // Flow: customer shows a 6-digit code -> dealer looks it up -> prepares the bars and marks ready -> checks the CNIC,
 // records one serial number per bar and confirms the handover. Every step is recorded on the server.
 import { html, render, useState, useEffect, useRef } from '../vendor/htm-preact-standalone-3.1.1.module.js';
-import { api, useLoad, useStaff, SignIn, Loading, Failed, Tag, Toast, useToast, productName, when, left, ago } from '../staff/kit.js';
+import { api, useLoad, useStaff, SignIn, ChangePassword, Loading, Failed, Tag, Toast, useToast, productName, when, left, ago } from '../staff/kit.js';
 
 function Lookup({ toast, openRedemption }) {
   const [code, setCode] = useState('');
@@ -40,7 +40,14 @@ function Handover({ r, onDone, onBack, toast }) {
   const ready = async () => {
     setBusy(true); setErr(null);
     try { await api(`/dealer/redemptions/${r.id}/ready`, { method: 'POST', body: {} }); setStatus('ready'); toast('Marked ready. The customer has been told.'); }
-    catch (e) { setErr(e.message); } finally { setBusy(false); }
+    catch (e) {
+      // Already changed elsewhere (another counter marked it ready, or the customer cancelled): show its real state
+      if (e.status === 409) {
+        const now = await api('/dealer/redemptions').then(d => d.redemptions.find(x => x.id === r.id), () => null);
+        if (now && now.status === 'ready') { setStatus('ready'); toast('This collection was already marked ready.'); return; }
+        setErr(now ? e.message : 'This collection is no longer active. Look up the code again.');
+      } else setErr(e.message);
+    } finally { setBusy(false); }
   };
   const handover = async () => {
     setBusy(true); setErr(null);
@@ -120,16 +127,20 @@ function Stock() {
 }
 
 function Dealer() {
-  const { me, notice, signIn, signOut } = useStaff();
+  const { me, notice, signIn, signOut, passwordChanged } = useStaff();
   const [tab, setTab] = useState('collect');
   const [current, setCurrent] = useState(null);
+  const [pw, setPw] = useState(false);
   const [toast, show] = useToast();
   if (me === undefined) return html`<div class="signin"></div>`;
   if (!me) return html`<${SignIn} tool="Dealer app" roles=${['dealer']} onIn=${signIn} notice=${notice} />`;
+  if (me.mustChangePassword) return html`<${ChangePassword} forced=${true} onDone=${passwordChanged} onSignOut=${signOut} />`;
   const TABS = [['collect', 'Collect'], ['queue', 'Today'], ['stock', 'Stock']];
   return html`<div class="dl">
     <header class="dl-top"><div><b>${me.dealer?.name || 'PGBX dealer'}</b><span>${me.name}</span></div>
-      <button class="btn ghost sm" onClick=${() => confirm('Sign out of the dealer app?') && signOut()}>Sign out</button></header>
+      <div class="row"><button class="btn ghost sm" onClick=${() => setPw(true)}>Password</button>
+      <button class="btn ghost sm" onClick=${() => confirm('Sign out of the dealer app?') && signOut()}>Sign out</button></div></header>
+    ${pw && html`<${ChangePassword} onDone=${() => { setPw(false); show('Password changed. Other devices were signed out.'); }} onCancel=${() => setPw(false)} />`}
     <main class="dl-body">
       ${tab === 'collect' && (current
         ? html`<${Handover} r=${current} toast=${show} onBack=${() => setCurrent(null)} onDone=${() => { setCurrent(null); show('Handover recorded. The customer’s wallet is updated.'); }} />`

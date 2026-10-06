@@ -2,9 +2,10 @@
 // Roles: admin (everything), ops (day-to-day work; cannot change settings, prices, dealers' details, staff or suspend
 // customers). The server enforces roles; this screen only hides what a role can't use.
 import { html, render, useState, useEffect } from '../vendor/htm-preact-standalone-3.1.1.module.js';
-import { api, useLoad, useStaff, SignIn, Loading, Failed, Tag, Toast, useToast, Modal, Act, Brand, pkr, when, day, ago, productName, PRODUCT_NAMES } from '../staff/kit.js';
+import { api, useLoad, useStaff, SignIn, ChangePassword, Loading, Failed, Tag, Toast, useToast, Modal, Act, Brand, pkr, when, day, ago, productName, PRODUCT_NAMES } from '../staff/kit.js';
 
 const ORDER = Object.keys(PRODUCT_NAMES);
+const pkToday = () => new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 10);   // PGBX's business day is Pakistan time (UTC+5)
 const byProduct = (a, b) => ORDER.indexOf(a.product_id) - ORDER.indexOf(b.product_id);
 
 const SECTIONS = [
@@ -63,7 +64,7 @@ function Kyc({ toast }) {
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Customer', 'CNIC', 'Reason', 'Since', '']} empty="Nothing here." rows=${d.checks.map(k => html`<tr>
       <td><a href=${'#customers/' + k.customer_id}>${k.name || '—'}</a><div class="muted small">+92 ${k.phone || '—'}</div></td>
       <td class="mono">${k.cnic || '—'}</td><td class="small">${k.reason || '—'}</td><td class="small">${ago(k.created_at)}</td>
-      <td class="r">${['review', 'submitted'].includes(k.status) ? html`<button class="btn sm" onClick=${() => setDeciding(k)}>Decide</button>` : html`<${Tag} s=${k.status} />`}</td></tr>`)} /></${Card}>`}</${Screen}>
+      <td class="r">${['review', 'submitted'].includes(k.status) ? html`<button class="btn sm" onClick=${() => { setReason(''); setDeciding(k); }}>Decide</button>` : html`<${Tag} s=${k.status} />`}</td></tr>`)} /></${Card}>`}</${Screen}>
     ${deciding && html`<${Modal} title="Decide identity check" onClose=${() => setDeciding(null)}>
       <dl class="kv" style="margin-bottom:16px"><dt>Name</dt><dd>${deciding.name}</dd><dt>CNIC</dt><dd class="mono">${deciding.cnic}</dd><dt>Provider note</dt><dd>${deciding.reason || '—'}</dd></dl>
       <p class="muted small">Compare the CNIC images and selfie in the provider’s dashboard before deciding.</p>
@@ -89,7 +90,7 @@ function Orders({ toast }) {
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Receipt', 'Customer', '#Total', 'Note', 'Created', '']} empty="No orders with this status." rows=${d.orders.map(o => html`<tr>
       <td class="mono small">${o.receipt_no || o.id.slice(0, 8)}</td><td>${o.name || '—'}<div class="muted small">+92 ${o.phone || '—'}</div></td>
       <td class="r num">${pkr(o.total_pkr)}</td><td class="small">${o.note || '—'}</td><td class="small">${when(o.created_at)}</td>
-      <td class="r">${o.status === 'flagged' ? html`<button class="btn sm" onClick=${() => setResolving(o)}>Resolve</button>` : html`<${Tag} s=${o.status} />`}</td></tr>`)} /></${Card}>`}</${Screen}>
+      <td class="r">${o.status === 'flagged' ? html`<button class="btn sm" onClick=${() => { setNote(''); setResolving(o); }}>Resolve</button>` : html`<${Tag} s=${o.status} />`}</td></tr>`)} /></${Card}>`}</${Screen}>
     ${resolving && html`<${Modal} title="Resolve order" onClose=${() => setResolving(null)}>
       <dl class="kv" style="margin-bottom:16px"><dt>Receipt</dt><dd class="mono">${resolving.receipt_no}</dd><dt>Total</dt><dd>${pkr(resolving.total_pkr)}</dd><dt>Why flagged</dt><dd>${resolving.note || '—'}</dd></dl>
       <p class="muted small">Check the payment in the provider’s dashboard first. Credit only if the full amount was received; otherwise refund it through the provider.</p>
@@ -210,8 +211,8 @@ function Gifts({ toast }) {
       <td class="small" style="max-width:240px">${g.recipient.name} · +92 ${g.recipient.phone}<div class="muted">${g.recipient.address}, ${g.recipient.city}</div><div class="muted">Ordered by ${g.customer_name || '—'}</div></td>
       <td class="r num">${pkr(g.total_pkr)}${g.refund_due ? html`<div><span class="tag warn">refund due</span></div>` : ''}</td>
       <td class="r"><div class="row" style="justify-content:flex-end">
-        ${NEXT[g.status] && html`<button class="btn sm" onClick=${() => setAct({ g, action: NEXT[g.status][0] })}>${NEXT[g.status][1]}</button>`}
-        ${['placed', 'in_production'].includes(g.status) && html`<button class="btn sm sec" onClick=${() => setAct({ g, action: 'cancel' })}>Cancel</button>`}
+        ${NEXT[g.status] && html`<button class="btn sm" onClick=${() => { setF({}); setAct({ g, action: NEXT[g.status][0] }); }}>${NEXT[g.status][1]}</button>`}
+        ${['placed', 'in_production'].includes(g.status) && html`<button class="btn sm sec" onClick=${() => { setF({}); setAct({ g, action: 'cancel' }); }}>Cancel</button>`}
         ${g.tracking && html`<span class="small mono">${g.tracking}</span>`}
       </div></td></tr>`)} /></${Card}>`}</${Screen}>
     ${act && html`<${Modal} title=${{ produce: 'Start production', dispatch: 'Dispatch', deliver: 'Mark delivered', cancel: 'Cancel order' }[act.action]} onClose=${() => setAct(null)}>
@@ -237,7 +238,7 @@ function Support({ toast }) {
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Customer', 'Topic', 'Message', 'Sent', '']} empty=${status === 'open' ? 'No open requests.' : 'Nothing closed yet.'} rows=${d.requests.map(r => html`<tr>
       <td>${r.customer_id ? html`<a href=${'#customers/' + r.customer_id}>${r.name || 'Customer'}</a>` : '—'}<div class="muted small">${r.phone ? '+92 ' + r.phone : ''}</div></td>
       <td><span class="tag">${r.topic}</span></td><td class="small" style="max-width:420px">${r.body}</td><td class="small">${ago(r.created_at)}</td>
-      <td class="r">${r.status === 'open' ? html`<button class="btn sm" onClick=${() => setOpen(r)}>Reply</button>` : html`<span class="muted small">${when(r.closed_at)}</span>`}</td></tr>`)} /></${Card}>`}</${Screen}>
+      <td class="r">${r.status === 'open' ? html`<button class="btn sm" onClick=${() => { setReply(''); setOpen(r); }}>Reply</button>` : html`<span class="muted small">${when(r.closed_at)}</span>`}</td></tr>`)} /></${Card}>`}</${Screen}>
     ${open && html`<${Modal} title="Reply and close" onClose=${() => setOpen(null)}>
       <p class="small" style="background:var(--fill);padding:12px;border-radius:8px">${open.body}</p>
       <label class="f"><span>Reply (sent to the customer’s inbox; optional)</span><textarea class="in" rows="4" value=${reply} onInput=${e => setReply(e.target.value)}></textarea>
@@ -265,7 +266,8 @@ function Dealers({ me, toast }) {
   const toggle = async d => { await api(`/admin/dealers/${d.id}`, { method: 'PATCH', body: { active: !d.active } }); toast(d.active ? 'Dealer hidden from customers.' : 'Dealer visible to customers.'); load.reload(); };
   return html`<${Head} title="Dealers & stock" sub="Stock here is what customers can reserve. Change a number and press Enter or leave the field to save.">
       ${me.role === 'admin' && html`<button class="btn sm" onClick=${() => setAdding(true)}>Add dealer</button>`}</${Head}>
-    <${Screen} load=${load}>${d => products.data && html`<div class="stack">${d.dealers.map(dl => html`<${Card} title=${dl.name}
+    ${products.error && html`<${Failed} error=${products.error} retry=${products.reload} />`}
+    <${Screen} load=${load}>${d => !products.data ? html`<div class="card"><${Loading} /></div>` : html`<div class="stack">${d.dealers.map(dl => html`<${Card} title=${dl.name}
         action=${html`<div class="row"><${Tag} s=${dl.active ? 'active' : 'closed'} />${me.role === 'admin' && html`<${Act} cls="btn sm sec" confirm=${dl.active ? `Hide ${dl.name} from customers? Active collections there still work.` : null} run=${() => toggle(dl)}>${dl.active ? 'Deactivate' : 'Activate'}</${Act}>`}</div>`}>
       <p class="muted small">${dl.area} · ${dl.address || 'No address'} · ${dl.phone || 'No phone'} · ${dl.hours || 'No hours'}</p>
       <div class="tbl-wrap"><table><thead><tr>${products.data.products.map(p => html`<th class="r">${productName(p.id).replace(/^(Gold|Silver) /, m => m[0] + ' ')}</th>`)}</tr></thead>
@@ -289,19 +291,24 @@ function Products({ me, toast }) {
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Product', '#Weight (g)', '#Premium per unit', 'Sold']} empty="No products." rows=${d.products.map(p => html`<tr>
       <td>${productName(p.id)}</td><td class="r num">${p.grams}</td>
       <td class="r">${admin ? html`<input class="in sm num" style="width:110px;text-align:right" inputmode="numeric" aria-label=${'Premium for ' + productName(p.id)} value=${p.premium_pkr}
-        onKeyDown=${e => e.key === 'Enter' && e.target.blur()} onChange=${e => save(p, { premium_pkr: Number(e.target.value) })} />` : pkr(p.premium_pkr)}</td>
+        onKeyDown=${e => e.key === 'Enter' && e.target.blur()} onChange=${e => {
+          const v = e.target.value.trim().replace(/,/g, '');
+          if (!/^\d+$/.test(v)) { toast('Enter the premium as a whole number of rupees (0 or more).', true); load.reload(); return; }
+          if (!confirm(`Change the premium for ${productName(p.id)} from ${pkr(p.premium_pkr)} to ${pkr(Number(v))}? New price locks use it straight away.`)) { load.reload(); return; }
+          save(p, { premium_pkr: Number(v) });
+        }} />` : pkr(p.premium_pkr)}</td>
       <td>${admin ? html`<label class="row small"><input type="checkbox" checked=${p.active} onChange=${e => save(p, { active: e.target.checked })} /> ${p.active ? 'On sale' : 'Hidden'}</label>` : html`<${Tag} s=${p.active ? 'active' : 'closed'} />`}</td></tr>`)} />
       <p class="muted small" style="margin:12px 0 0">Sample premiums until PGBX confirms the real ones.</p></${Card}>`}</${Screen}>`;
 }
 
 // ---------- reconciliation ----------
 function Reconciliation({ toast }) {
-  const [dayV, setDay] = useState(new Date().toISOString().slice(0, 10));
+  const [dayV, setDay] = useState(pkToday());
   const load = useLoad('/admin/reconciliation?day=' + dayV);
   const [count, setCount] = useState(null);
   const saveCount = async () => { await api('/admin/vault', { method: 'POST', body: count }); toast('Vault count recorded.'); setCount(null); load.reload(); };
   return html`<${Head} title="Reconciliation" sub="Money received against orders credited, and metal owed against metal held">
-      <input class="in" type="date" style="width:auto" value=${dayV} max=${new Date().toISOString().slice(0, 10)} onChange=${e => setDay(e.target.value)} aria-label="Day" /></${Head}>
+      <input class="in" type="date" style="width:auto" value=${dayV} max=${pkToday()} onChange=${e => setDay(e.target.value)} aria-label="Day" /></${Head}>
     <${Screen} load=${load}>${({ reconciliation: r }) => {
       const money = r.payments_succeeded_pkr === r.orders_credited_pkr;
       return html`<div class="stack">
@@ -369,7 +376,7 @@ function Audit() {
   const load = useLoad('/admin/audit?entity=' + entity);
   return html`<${Head} title="Audit log" sub="Every important action, by whom and when. Entries can’t be edited or deleted.">
       <select class="in" style="width:auto" value=${entity} onChange=${e => setEntity(e.target.value)} aria-label="Filter">
-        ${[['', 'Everything'], ['customer', 'Customers'], ['order', 'Orders'], ['redemption', 'Collections'], ['kyc', 'Identity checks'], ['staff', 'Staff'], ['setting', 'Settings'], ['dealer', 'Dealers'], ['product', 'Products']].map(([v, l]) => html`<option value=${v}>${l}</option>`)}
+        ${[['', 'Everything'], ['customer', 'Customers'], ['order', 'Orders'], ['redemption', 'Collections'], ['kyc', 'Identity checks'], ['appraisal', 'Appraisals'], ['gift', 'Gift orders'], ['support', 'Support'], ['staff', 'Staff'], ['setting', 'Settings'], ['dealer', 'Dealers'], ['product', 'Products'], ['paid', 'Payment mismatches'], ['error', 'Errors']].map(([v, l]) => html`<option value=${v}>${l}</option>`)}
       </select></${Head}>
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['When', 'Who', 'Action', 'Item', 'Details']} empty="No entries." rows=${d.entries.map(a => html`<tr>
       <td class="small" style="white-space:nowrap">${when(a.at)}</td><td class="small mono">${a.actor}</td><td><span class="tag">${a.action}</span></td>
@@ -385,10 +392,13 @@ function Staff({ me, toast }) {
   const [setup, setSetup] = useState(null);
   const add = async () => { const r = await api('/admin/staff', { method: 'POST', body: f }); setAdding(false); setSetup({ ...r.setup, email: r.staff.email }); setF({ name: '', email: '', role: 'ops', dealer_id: '' }); load.reload(); };
   const toggle = async s => { await api(`/admin/staff/${s.id}/active`, { method: 'POST', body: { active: !s.active } }); toast(s.active ? 'Deactivated and signed out.' : 'Reactivated.'); load.reload(); };
+  const reset = async s => { const r = await api(`/admin/staff/${s.id}/reset`, { method: 'POST', body: {} }); setSetup({ ...r.setup, email: s.email }); load.reload(); };
   return html`<${Head} title="Staff" sub="Everyone signs in with a password and an authenticator app"><button class="btn sm" onClick=${() => setAdding(true)}>Add person</button></${Head}>
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Name', 'Email', 'Role', 'Status', '']} empty="No staff." rows=${d.staff.map(s => html`<tr>
-      <td>${s.name}</td><td class="small">${s.email}</td><td>${s.role}${s.dealer_id ? ' · ' + s.dealer_id : ''}</td><td><${Tag} s=${s.active ? 'active' : 'closed'} /></td>
-      <td class="r">${s.id !== me.id && html`<${Act} cls="btn sm sec" confirm=${s.active ? `Deactivate ${s.name}? They are signed out immediately.` : null} run=${() => toggle(s)}>${s.active ? 'Deactivate' : 'Reactivate'}</${Act}>`}</td></tr>`)} /></${Card}>`}</${Screen}>
+      <td>${s.name}</td><td class="small">${s.email}</td><td>${s.role}${s.dealer_id ? ' · ' + s.dealer_id : ''}</td><td><${Tag} s=${s.active ? 'active' : 'closed'} />${s.must_change_password && html` <span class="tag warn">new password due</span>`}</td>
+      <td class="r">${s.id !== me.id && html`<div class="row" style="justify-content:flex-end">
+        <${Act} cls="btn sm sec" confirm=${`Reset ${s.name}’s password and authenticator? They are signed out and must set them up again with what you share.`} run=${() => reset(s)}>Reset sign-in</${Act}>
+        <${Act} cls="btn sm sec" confirm=${s.active ? `Deactivate ${s.name}? They are signed out immediately.` : null} run=${() => toggle(s)}>${s.active ? 'Deactivate' : 'Reactivate'}</${Act}></div>`}</td></tr>`)} /></${Card}>`}</${Screen}>
     ${adding && html`<${Modal} title="Add person" onClose=${() => setAdding(false)}>
       <label class="f"><span>Full name</span><input class="in" value=${f.name} onInput=${e => setF({ ...f, name: e.target.value })} /></label>
       <label class="f"><span>Work email</span><input class="in" type="email" value=${f.email} onInput=${e => setF({ ...f, email: e.target.value })} /></label>
@@ -400,7 +410,7 @@ function Staff({ me, toast }) {
         <${Act} disabled=${!f.name || !f.email || (f.role === 'dealer' && !f.dealer_id)} run=${add}>Create account</${Act}></div>
     </${Modal}>`}
     ${setup && html`<${Modal} title="Share these once" onClose=${() => confirm('Close? The password and secret won’t be shown again.') && setSetup(null)}>
-      <p>Give these to <b>${setup.email}</b> in person or through a secure channel. They are not stored in readable form and won’t be shown again.</p>
+      <p>Give these to <b>${setup.email}</b> in person or through a secure channel. They are not stored in readable form and won’t be shown again. They must choose their own password when they first sign in.</p>
       <label class="f"><span>One-time password</span><div class="secret">${setup.password}</div></label>
       <label class="f"><span>Authenticator secret</span><div class="secret">${setup.totpSecret}</div><small>In Google Authenticator, Microsoft Authenticator or 1Password: add account → enter key manually.</small></label>
       <div class="row" style="justify-content:flex-end"><button class="btn" onClick=${() => setSetup(null)}>I’ve shared them</button></div>
@@ -409,27 +419,39 @@ function Staff({ me, toast }) {
 
 // ---------- shell ----------
 function Admin() {
-  const { me, notice, signIn, signOut } = useStaff();
+  const { me, notice, signIn, signOut, passwordChanged } = useStaff();
   const [section, id] = useHash();
   const [menu, setMenu] = useState(false);
-  const [toast, show] = useToast();
-  const counts = useLoad('/admin/overview', [section, !!me]);
+  const [pw, setPw] = useState(false);
+  const [toast, showToast] = useToast();
+  const [narrow, setNarrow] = useState(() => matchMedia('(max-width:860px)').matches);
+  const counts = useLoad('/admin/overview', [section, !!me && !me.mustChangePassword]);
   useEffect(() => { setMenu(false); window.scrollTo(0, 0); }, [section, id]);
+  useEffect(() => { const m = matchMedia('(max-width:860px)'); const f = () => setNarrow(m.matches); m.addEventListener('change', f); return () => m.removeEventListener('change', f); }, []);
+  useEffect(() => { if (!menu) return; const k = e => e.key === 'Escape' && setMenu(false); addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, [menu]);
   if (me === undefined) return html`<div class="signin"></div>`;
   if (!me) return html`<${SignIn} tool="Admin panel" roles=${['admin', 'ops']} onIn=${signIn} notice=${notice} />`;
+  if (me.mustChangePassword) return html`<${ChangePassword} forced=${true} onDone=${passwordChanged} onSignOut=${signOut} />`;
+  // Every confirmation also refreshes the counts in the menu, so a handled item stops showing as waiting.
+  const show = (text, err) => { showToast(text, err); if (!err) counts.reload(); };
   const badge = { kyc: counts.data?.kyc_review, orders: counts.data?.flagged_orders, support: counts.data?.support_open, appraisals: counts.data?.appraisals_to_assign };
   const props = { me, toast: show };
   const views = { overview: Overview, kyc: Kyc, orders: Orders, appraisals: Appraisals, gifts: Gifts, customers: Customers, support: Support, dealers: Dealers, products: Products, reconciliation: Reconciliation, settings: Settings, audit: Audit, staff: Staff };
-  const View = section === 'customers' && id ? null : views[section] || Overview;
+  const allowed = k => { const s = SECTIONS.find(x => x[0] === k); return s && (!s[2] || s[2] === me.role); };
+  const View = section === 'customers' && id ? null : allowed(section) ? views[section] : Overview;   // ops can't open admin-only sections by URL
+  const hidden = narrow && !menu;                              // the closed drawer can't be reached with Tab or a screen reader
   return html`<div class="shell">
-    <nav class=${'side' + (menu ? ' open' : '')} aria-label="Sections">
+    <nav class=${'side' + (menu ? ' open' : '')} id="side" aria-label="Sections" inert=${hidden ? true : undefined} aria-hidden=${hidden ? 'true' : undefined}>
       <${Brand} sub="Admin panel" />
       ${SECTIONS.filter(s => !s[2] || s[2] === me.role).map(([k, l]) => html`<a href=${'#' + k} aria-current=${section === k ? 'page' : undefined}>${l}${badge[k] > 0 && html`<span class="badge">${badge[k]}</span>`}</a>`)}
-      <div class="who"><b>${me.name}</b>${me.role === 'admin' ? 'Administrator' : 'Operations'}<div style="margin-top:8px"><button class="btn sm ghost" style="color:#fff;padding:0" onClick=${signOut}>Sign out</button></div></div>
+      <div class="who"><b>${me.name}</b>${me.role === 'admin' ? 'Administrator' : 'Operations'}<div class="row" style="margin-top:8px;gap:12px">
+        <button class="btn sm ghost" style="color:#fff;padding:0" onClick=${() => setPw(true)}>Change password</button>
+        <button class="btn sm ghost" style="color:#fff;padding:0" onClick=${signOut}>Sign out</button></div></div>
     </nav>
     ${menu && html`<div class="modal-bg" style="z-index:15" onClick=${() => setMenu(false)}></div>`}
+    ${pw && html`<${ChangePassword} onDone=${() => { setPw(false); show('Password changed. Other devices were signed out.'); }} onCancel=${() => setPw(false)} />`}
     <main class="main">
-      <button class="btn sm sec menu" style="margin-bottom:12px" onClick=${() => setMenu(true)} aria-label="Open menu">☰ Menu</button>
+      <button class="btn sm sec menu" style="margin-bottom:12px" onClick=${() => setMenu(true)} aria-label="Open menu" aria-expanded=${menu} aria-controls="side">☰ Menu</button>
       ${View ? html`<${View} ...${props} />` : html`<${Customer} id=${id} ...${props} />`}
     </main>
     <${Toast} toast=${toast} />

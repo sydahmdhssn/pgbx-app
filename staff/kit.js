@@ -8,7 +8,8 @@ export const API = '/api/v1';
 export class ApiError extends Error {
   constructor(status, code, message) { super(message); this.status = status; this.code = code; }
 }
-export async function api(path, { method = 'GET', body, timeout = 15000 } = {}) {
+// quiet: don't announce "signed out" (used for the first session check, when not being signed in is normal)
+export async function api(path, { method = 'GET', body, timeout = 15000, quiet = false } = {}) {
   const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), timeout);
   let r;
   try {
@@ -23,7 +24,8 @@ export async function api(path, { method = 'GET', body, timeout = 15000 } = {}) 
   const d = await r.json().catch(() => ({}));
   if (!r.ok) {
     const err = new ApiError(r.status, d.error || 'ERROR', d.message || 'Something went wrong. Try again.');
-    if (r.status === 401 && ['SESSION_EXPIRED', 'SESSION_REQUIRED', 'MFA_REQUIRED'].includes(d.error)) window.dispatchEvent(new CustomEvent('pgbx-signed-out', { detail: d.message }));
+    if (!quiet && r.status === 401 && ['SESSION_EXPIRED', 'SESSION_REQUIRED', 'MFA_REQUIRED'].includes(d.error)) window.dispatchEvent(new CustomEvent('pgbx-signed-out', { detail: d.message }));
+    if (d.error === 'PASSWORD_CHANGE_REQUIRED') window.dispatchEvent(new CustomEvent('pgbx-password-change'));
     throw err;
   }
   return d;
@@ -74,9 +76,9 @@ const LABEL = { pending_payment: 'awaiting payment', none: 'not started', reveri
 export const Tag = ({ s }) => html`<span class=${'tag ' + (TONE[s] ?? '')}>${LABEL[s] || s}</span>`;
 
 // ---------- small UI ----------
+// The live region is always on the page, so screen readers announce each message that appears in it.
 export function Toast({ toast }) {
-  if (!toast) return null;
-  return html`<div class=${'toast' + (toast.err ? ' err' : '')} role="status" aria-live="polite">${toast.text}</div>`;
+  return html`<div role="status" aria-live="polite" class="sr-live">${toast && html`<div class=${'toast' + (toast.err ? ' err' : '')}>${toast.text}</div>`}</div>`;
 }
 export function useToast() {
   const [toast, set] = useState(null);
@@ -90,25 +92,41 @@ export function Loading({ rows = 4 }) {
 export function Failed({ error, retry }) {
   return html`<div class="note err" role="alert"><div class="spread"><span>${error.message}</span>${retry && html`<button class="btn sm sec" onClick=${retry}>Try again</button>`}</div></div>`;
 }
+const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+// Dialog: focus moves into it, Tab stays inside, Escape closes, and focus returns to what opened it.
 export function Modal({ title, children, onClose }) {
+  const box = useRef();
+  const close = useRef(onClose); close.current = onClose;
   useEffect(() => {
-    const k = e => e.key === 'Escape' && onClose();
-    addEventListener('keydown', k); return () => removeEventListener('keydown', k);
+    const opener = document.activeElement;
+    const first = box.current && (box.current.querySelector('input,select,textarea') || box.current.querySelector(FOCUSABLE));
+    (first || box.current)?.focus();
+    const k = e => {
+      if (e.key === 'Escape') { close.current(); return; }
+      if (e.key !== 'Tab' || !box.current) return;
+      const f = [...box.current.querySelectorAll(FOCUSABLE)]; if (!f.length) return;
+      if (e.shiftKey && document.activeElement === f[0]) { e.preventDefault(); f[f.length - 1].focus(); }
+      else if (!e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus(); }
+      else if (!box.current.contains(document.activeElement)) { e.preventDefault(); f[0].focus(); }
+    };
+    addEventListener('keydown', k);
+    return () => { removeEventListener('keydown', k); if (opener && opener.isConnected) opener.focus(); };
   }, []);
   return html`<div class="modal-bg" onClick=${e => e.target === e.currentTarget && onClose()}>
-    <div class="modal" role="dialog" aria-modal="true" aria-label=${title}><h2>${title}</h2>${children}</div></div>`;
+    <div class="modal" role="dialog" aria-modal="true" aria-label=${title} ref=${box} tabindex="-1"><h2>${title}</h2>${children}</div></div>`;
 }
 // Button that runs an async action, shows progress and reports the result
 export function Act({ run, children, cls = 'btn', confirm, disabled, done, onError }) {
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
   const go = async () => {
     if (confirm && !window.confirm(confirm)) return;
-    setBusy(true);
+    setBusy(true); setErr(null);
     try { const r = await run(); done && done(r); }
-    catch (e) { onError ? onError(e) : alert(e.message); }
+    catch (e) { onError ? onError(e) : setErr(e.message); }      // shown next to the button, not in a browser alert
     finally { setBusy(false); }
   };
-  return html`<button class=${cls} onClick=${go} disabled=${busy || disabled} aria-busy=${busy}>${busy ? 'Working…' : children}</button>`;
+  return html`<button class=${cls} onClick=${go} disabled=${busy || disabled} aria-busy=${busy}>${busy ? 'Working…' : children}</button>${err && html`<span class="act-err" role="alert">${err}</span>`}`;
 }
 export function Brand({ sub }) {
   return html`<div class="brand"><div class="mark" aria-hidden="true"></div><div><b>PGBX</b><span>${sub}</span></div></div>`;
@@ -159,7 +177,7 @@ export function SignIn({ tool, roles, onIn, notice }) {
       : html`
         <label class="f"><span class="sr">Authenticator code</span><input ref=${codeRef} class="in code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" value=${code} onInput=${e => setCode(e.target.value.replace(/\D/g, ''))} /></label>
         <button class="btn block" disabled=${busy || code.length !== 6}>${busy ? 'Checking…' : 'Sign in'}</button>
-        <button type="button" class="btn ghost block" onClick=${() => { setStep('password'); setCode(''); setErr(null); }}>Use a different account</button>`}
+        <button type="button" class="btn ghost block" onClick=${() => { api('/staff/logout', { method: 'POST', body: {}, quiet: true }).catch(() => {}); setStep('password'); setCode(''); setErr(null); }}>Use a different account</button>`}
     </form>
   </main>`;
 }
@@ -168,12 +186,42 @@ export function SignIn({ tool, roles, onIn, notice }) {
 export function useStaff() {
   const [me, setMe] = useState(undefined);       // undefined = checking, null = signed out
   const [notice, setNotice] = useState(null);
-  const check = () => api('/staff/me').then(d => setMe(d.staff), () => setMe(null));
+  const check = () => api('/staff/me', { quiet: true }).then(d => setMe(d.staff), () => setMe(null));
   useEffect(() => {
     check();
     const out = e => { setMe(null); setNotice(e.detail || 'Your session has ended. Please sign in again.'); };
-    addEventListener('pgbx-signed-out', out); return () => removeEventListener('pgbx-signed-out', out);
+    const pw = () => setMe(m => (m ? { ...m, mustChangePassword: true } : m));
+    addEventListener('pgbx-signed-out', out); addEventListener('pgbx-password-change', pw);
+    return () => { removeEventListener('pgbx-signed-out', out); removeEventListener('pgbx-password-change', pw); };
   }, []);
   const signOut = async () => { await api('/staff/logout', { method: 'POST', body: {} }).catch(() => {}); setNotice(null); setMe(null); };
-  return { me, notice, signIn: () => { setNotice(null); check(); }, signOut };
+  return { me, notice, signIn: () => { setNotice(null); check(); }, signOut, passwordChanged: () => setMe(m => ({ ...m, mustChangePassword: false })) };
+}
+
+// Choosing a new password: required after an account is created or reset, and available any time.
+export function ChangePassword({ forced, onDone, onCancel, onSignOut }) {
+  const [f, setF] = useState({ current: '', next: '', again: '' });
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const mismatch = f.again && f.next !== f.again;
+  const submit = async e => {
+    e.preventDefault(); setErr(null);
+    if (f.next.length < 12) { setErr('Use at least 12 characters for the new password.'); return; }
+    if (f.next !== f.again) { setErr('The two new passwords don’t match.'); return; }
+    setBusy(true);
+    try { await api('/staff/password', { method: 'POST', body: { current: f.current, next: f.next } }); onDone(); }
+    catch (e2) { setErr(e2.message); } finally { setBusy(false); }
+  };
+  const field = (k, label, ac, hint) => html`<label class="f"><span>${label}</span><input class="in" type="password" autocomplete=${ac} value=${f[k]} onInput=${e => setF({ ...f, [k]: e.target.value })} aria-invalid=${k === 'again' && mismatch} />${hint && html`<small>${hint}</small>`}</label>`;
+  const form = html`<form onSubmit=${submit} noValidate>
+      ${err && html`<div class="note err" role="alert" style="margin-bottom:14px">${err}</div>`}
+      ${field('current', forced ? 'Temporary password' : 'Current password', 'current-password')}
+      ${field('next', 'New password', 'new-password', 'At least 12 characters. A short sentence is easy to remember.')}
+      ${field('again', 'New password again', 'new-password')}
+      <button class="btn block" disabled=${busy || !f.current || !f.next || !f.again}>${busy ? 'Saving…' : 'Save new password'}</button>
+      ${forced ? html`<button type="button" class="btn ghost block" onClick=${onSignOut}>Sign out</button>` : html`<button type="button" class="btn ghost block" onClick=${onCancel}>Cancel</button>`}
+    </form>`;
+  if (!forced) return html`<${Modal} title="Change password" onClose=${onCancel}>${form}</${Modal}>`;
+  return html`<main class="signin"><div class="card"><${Brand} sub="PGBX staff" /><h1>Choose a new password</h1>
+    <p class="muted">Your account was set up or reset with a temporary password. Choose your own before continuing. Other devices will be signed out.</p>${form}</div></main>`;
 }
