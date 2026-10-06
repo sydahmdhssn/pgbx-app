@@ -343,3 +343,47 @@ test('prices whose source stopped updating are never recorded or locked (FR-R4)'
   assert.notEqual((await db.one(`select gold_buy_tola from rate_snapshots order by id desc limit 1`)).gold_buy_tola, 999999);
   s2.close();
 });
+
+test('services: config for guests, appraisal booking and payment, gift quote and order, admin queues', async () => {
+  const cfg = ok(await call('GET', '/api/v1/services/config'));
+  assert.equal(cfg.purity.gold['22K'], 0.916); assert.equal(cfg.appraisal.feePkr, 2500);
+  assert.equal(cfg.gift.items.find(i => i.id === 'gg-1g').metalPkr, 40000);
+  const day = n => new Date(Date.now() + n * 86400e3).toISOString().slice(0, 10);
+
+  const token = await login('3001110030', '10.0.30.1');                 // booking a visit needs login, not identity check
+  err(await call('POST', '/api/v1/appraisals', { token, body: { city: 'Karachi', area: 'DHA', address: 'House 1, Street 2, Phase 6', phone: '12', date: day(3), slot: '10:00-12:00', items: [{ metal: 'gold', karat: '22K', approx_g: 10 }] } }), 400, 'BAD_PHONE');
+  err(await call('POST', '/api/v1/appraisals', { token, body: { city: 'Gilgit', area: 'X', address: 'House 1, Street 2, Phase 6', phone: '3001234567', date: day(3), slot: '10:00-12:00', items: [{ metal: 'gold' }] } }), 400, 'CITY_NOT_SERVED');
+  const a = ok(await call('POST', '/api/v1/appraisals', { token, body: { city: 'Karachi', area: 'DHA', address: 'House 1, Street 2, Phase 6', phone: '0300 1234567', date: day(3), slot: '10:00-12:00', items: [{ metal: 'gold', karat: '22K', approx_g: 10 }] } }));
+  assert.equal(a.appraisal.status, 'pending_payment'); assert.match(a.appraisal.visit_code, /^\d{4}$/); assert.equal(a.payment.provider, 'sandbox');
+  assert.equal(ok(await call('POST', `/api/v1/payments/sandbox/appraisal/${a.appraisal.id}`, { token, body: {} })).status, 'booked');
+  assert.equal(ok(await call('GET', '/api/v1/appraisals', { token })).appraisals[0].status, 'booked');
+
+  const opsToken = await staffLogin(await staffAccount('ops'), '10.9.30.1');
+  const queue = ok(await call('GET', '/api/v1/admin/appraisals', { token: opsToken })).appraisals;
+  assert.ok(queue.some(x => x.id === a.appraisal.id));
+  ok(await call('POST', `/api/v1/admin/appraisals/${a.appraisal.id}`, { token: opsToken, body: { action: 'assign', name: 'Usman Zargar', phone: '03001112223' } }));
+  err(await call('POST', `/api/v1/admin/appraisals/${a.appraisal.id}`, { token: opsToken, body: { action: 'complete', summary: '' } }), 400, 'BAD_RESULT');
+  const done = ok(await call('POST', `/api/v1/admin/appraisals/${a.appraisal.id}`, { token: opsToken, body: { action: 'complete', summary: 'Bangles are 22K as stated.', net_g: 9.8, karat: '22K', value_pkr: 300000 } }));
+  assert.equal(done.appraisal.status, 'completed'); assert.equal(done.appraisal.result.net_g, 9.8);
+
+  const q = ok(await call('POST', '/api/v1/gifts/quote', { body: { item: 'gg-1g', shape: 'coin', design: 'wedding', engraving: 'A & B', packaging: 'standard' } })).quote;
+  assert.equal(q.total_pkr, 40000 + 2500 + 1000 + 0 + 1500);
+  const unverified = await login('3001110031', '10.0.31.1');
+  const giftBody = { item: 'gg-1g', shape: 'coin', design: 'wedding', engraving: 'A & B', message: 'Mubarak ho', packaging: 'standard', recipientName: 'Sara Ahmed', recipientPhone: '03211234567', recipientCity: 'Lahore', recipientAddress: 'House 9, Model Town, Lahore', deliverBy: day(8) };
+  err(await call('POST', '/api/v1/gifts', { token: unverified, body: giftBody }), 403, 'KYC_REQUIRED');
+  const buyer = await verified('3001110032', '10.0.32.1');
+  const g = ok(await call('POST', '/api/v1/gifts', { token: buyer, body: giftBody }));
+  assert.equal(g.gift.total_pkr, q.total_pkr);
+  // provider webhook pays it (signed)
+  const event = JSON.stringify({ kind: 'gift', order_id: g.gift.id, provider_ref: 'prov-gift-1', amount_pkr: g.gift.total_pkr, status: 'succeeded' });
+  assert.equal(ok(await call('POST', '/api/v1/payments/webhook', { raw: event, headers: { 'x-pgbx-signature': 'sha256=' + sign(event, 'whsec-test') } })).status, 'placed');
+  ok(await call('POST', `/api/v1/admin/gifts/${g.gift.id}`, { token: opsToken, body: { action: 'produce' } }));
+  err(await call('POST', `/api/v1/gifts/${g.gift.id}/cancel`, { token: buyer, body: {} }), 409, 'CANNOT_CANCEL');
+  ok(await call('POST', `/api/v1/admin/gifts/${g.gift.id}`, { token: opsToken, body: { action: 'dispatch', tracking: 'TCS778899' } }));
+  const mine = ok(await call('GET', '/api/v1/gifts', { token: buyer })).gifts[0];
+  assert.equal(mine.status, 'dispatched'); assert.equal(mine.tracking, 'TCS778899');
+  const notes = ok(await call('GET', '/api/v1/notifications', { token: buyer })).notifications;
+  assert.ok(notes.some(n => n.title === 'Your gift is on its way' && n.link.name === 'gift'));
+  const ov = ok(await call('GET', '/api/v1/admin/overview', { token: opsToken }));
+  assert.equal(typeof ov.gifts_open, 'number'); assert.equal(typeof ov.appraisals_to_assign, 'number');
+});

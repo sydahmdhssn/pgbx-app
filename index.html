@@ -269,6 +269,19 @@ input[type=date].inp{min-width:0;-webkit-appearance:none;appearance:none}
 .chipb{min-height:40px;padding:0 16px;border-radius:999px;background:var(--surface);box-shadow:inset 0 0 0 1px var(--border-2);font-size:14px;font-weight:500;color:var(--text);transition:background-color var(--t2),color var(--t2)}
 .chipb.on{background:var(--green-800);color:#fff;box-shadow:none}
 .chipb:active{transform:scale(.97)}
+.chipb.sm{min-height:34px;padding:0 12px;font-size:13px}
+.chipb .chip-sub{display:block;font-size:11px;font-weight:500;opacity:.75;margin-top:-2px}
+.chipb:has(.chip-sub){min-height:48px;line-height:1.2;padding:4px 14px}
+.hchips{flex-wrap:nowrap;overflow-x:auto;margin:0 -16px;padding:0 16px 4px;scrollbar-width:none}.hchips::-webkit-scrollbar{display:none}.hchips .chipb{flex:none}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.grid3 label{min-width:0}
+/* services */
+.svc-hero{margin-top:4px}.svc-hero-t{font:600 22px/1.25 var(--serif);margin:8px 0 6px;color:#fff;text-align:left}
+.svc-hero .bc-sub{text-align:left;line-height:1.45}
+.worth-piece{margin-top:12px}.worth-piece .field{margin-top:16px}
+.worth-res{margin-top:16px;padding-top:12px;border-top:1px solid var(--border)}
+.gift-stage{display:grid;place-items:center;padding:20px 0 8px;background:radial-gradient(60% 70% at 50% 45%,var(--gold-50),transparent 70%)}
+.gift-stage svg{filter:drop-shadow(0 10px 18px rgba(17,32,22,.22));transition:transform var(--t3) var(--spring)}
+.gift-stage svg:hover{transform:rotate(-3deg) scale(1.02)}
 
 /* tags (status) */
 .tag{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 8px;border-radius:var(--r-xs);font:600 12px/1 var(--compact);white-space:nowrap;flex:none}

@@ -42,6 +42,23 @@ const MESSAGES = {
   ORDER_NOT_FOUND: [404, 'Order not found.'],
   ORDER_NOT_FLAGGED: [409, 'Only orders waiting for operations can be resolved.'],
   BAD_ACTION: [400, 'Unknown action.'],
+  // services
+  CITY_NOT_SERVED: [400, 'PGBX doesn’t serve that city yet. Choose another city.'],
+  BAD_SLOT: [400, 'Choose one of the available time slots.'],
+  BAD_DATE: [400, 'Choose a date within the allowed range.'],
+  NO_ITEMS: [400, 'Add at least one piece to be checked.'],
+  BAD_ADDRESS: [400, 'Enter the full address, including house number and street.'],
+  SLOT_FULL: [409, 'That time slot is fully booked. Choose another slot.'],
+  NOT_FOUND: [404, 'Not found.'],
+  CANNOT_CANCEL: [409, 'This can no longer be cancelled.'],
+  BAD_GOLDSMITH: [400, 'Enter the goldsmith’s name and phone number.'],
+  BAD_SHAPE: [400, 'That weight isn’t made in this shape.'],
+  BAD_DESIGN: [400, 'Choose a design.'],
+  BAD_PACKAGING: [400, 'Choose the packaging.'],
+  ENGRAVING_TOO_LONG: [400, 'The engraving can be up to 24 characters.'],
+  BAD_RECIPIENT: [400, 'Enter the recipient’s name, mobile number and full address.'],
+  TRACKING_REQUIRED: [400, 'Enter the courier tracking number.'],
+  AMOUNT_MISMATCH: [409, 'The amount paid doesn’t match. PGBX operations will check it.'],
 };
 
 class HttpError extends Error {
@@ -353,6 +370,12 @@ route('POST', '/payments/webhook', {}, async ({ db, raw, body, req }) => {
   if (!sec.verifySignature(raw, req.headers['x-pgbx-signature'], payments.webhookSecret)) fail(401, 'BAD_SIGNATURE', 'Invalid signature.');
   const ref = str(body.provider_ref, 120), orderId = str(body.order_id, 40);
   if (!ref || !orderId) fail(400, 'BAD_EVENT', 'Missing fields.');
+  // Services (doorstep appraisal fee, gift orders): body.kind = "appraisal" | "gift"
+  if (body.kind === 'appraisal' || body.kind === 'gift') {
+    if (body.status !== 'succeeded') return { ok: true, status: 'ignored' };
+    const r = (await db.one(`select fn_service_paid($1, $2, $3, $4) r`, [body.kind, orderId, ref, int(body.amount_pkr)])).r;
+    return { ok: true, status: r.status };
+  }
   const r = body.status === 'succeeded'
     ? await db.one(`select * from fn_payment_succeeded($1, $2, $3, $4, $5::jsonb)`, [payments.provider, ref, orderId, int(body.amount_pkr), JSON.stringify({ event: body.event_id || null })])
     : await db.one(`select * from fn_payment_failed($1, $2, $3, $4::jsonb)`, [payments.provider, ref, orderId, JSON.stringify({ event: body.event_id || null })]);
@@ -413,6 +436,78 @@ route('POST', '/support', { auth: 'customer' }, async ({ db, customer, body }) =
   await limit(db, 'support:' + customer.id, 3600, 5, 'You’ve sent several reports. We’ll reply to those first.');
   const r = await db.one(`insert into support_requests (customer_id, topic, body) values ($1, $2, $3) returning id, created_at`, [customer.id, topic, text]);
   return { request: r };
+});
+
+// ---------- services: jewellery worth, doorstep appraisal, gift bullion ----------
+// Everything the service screens need, public so guests can use the jewellery worth calculator.
+route('GET', '/services/config', {}, async ({ db, fetchRates }) => {
+  await ensureRates(db, fetchRates).catch(() => {});
+  const set = await settingsMap(db);
+  const snap = await db.one(`select * from rate_snapshots where fetched_at > now() - make_interval(secs => setting_int('rate_stale_seconds')) order by id desc limit 1`);
+  const items = await db.query(`select id, metal, label, grams::float8 grams, shapes from gift_items where active order by sort`);
+  return {
+    purity: set.purity, buybackDeductionPct: set.buyback_deduction_pct,
+    appraisal: { feePkr: set.appraisal_fee_pkr, cities: set.appraisal_cities, slots: set.appraisal_slots, freeCancelHours: set.appraisal_free_cancel_hours },
+    gift: {
+      making: set.gift_making_pkr, packaging: set.gift_packaging_pkr, deliveryPkr: set.gift_delivery_pkr, leadDays: set.gift_lead_days, cities: set.gift_cities,
+      items: items.map(i => ({ ...i, metalPkr: snap ? Math.round(i.grams * (i.metal === 'gold' ? snap.gold_buy_tola : snap.silver_buy_tola) / TOLA) : null })),
+    },
+  };
+});
+
+const serviceIntent = async (kind, row) => (payments.provider ? payments.createIntent({ id: row.id, kind, total_pkr: row.fee_pkr ?? row.total_pkr }) : null);
+const appraisalDto = a => ({ id: a.id, ref: a.ref, city: a.city, area: a.area, address: a.address, phone: a.phone, date: a.visit_date instanceof Date ? a.visit_date.toISOString().slice(0, 10) : String(a.visit_date).slice(0, 10),
+  slot: a.slot, items: a.items, notes: a.notes, fee_pkr: a.fee_pkr, visit_code: a.visit_code, status: a.status, goldsmith: a.goldsmith_name ? { name: a.goldsmith_name, phone: a.goldsmith_phone } : null,
+  result: a.result, refund_due: a.refund_due, created_at: a.created_at });
+const giftDto = g => ({ id: g.id, ref: g.ref, item_id: g.item_id, shape: g.shape, design: g.design, engraving: g.engraving, message: g.message, packaging: g.packaging,
+  recipient: { name: g.recipient_name, phone: g.recipient_phone, city: g.recipient_city, address: g.recipient_address },
+  deliver_by: g.deliver_by instanceof Date ? g.deliver_by.toISOString().slice(0, 10) : String(g.deliver_by).slice(0, 10),
+  metal_pkr: g.metal_pkr, making_pkr: g.making_pkr, packaging_pkr: g.packaging_pkr, delivery_pkr: g.delivery_pkr, total_pkr: g.total_pkr,
+  status: g.status, tracking: g.tracking, refund_due: g.refund_due, created_at: g.created_at });
+const cleanPhone = v => str(v).replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '');
+
+route('POST', '/appraisals', { auth: 'customer' }, async ({ db, customer, body }) => {
+  if (!payments.provider) fail(503, 'PAYMENTS_OFF', 'Payments aren’t available yet.');
+  const items = Array.isArray(body.items) ? body.items.slice(0, 20).map(i => ({
+    metal: i.metal === 'silver' ? 'silver' : 'gold', karat: str(i.karat, 8), approx_g: Math.max(0, Math.min(100000, Number(i.approx_g) || 0)), note: str(i.note, 80) })) : [];
+  const phone = cleanPhone(body.phone);
+  if (!PK_MOBILE.test(phone)) fail(400, 'BAD_PHONE', 'Enter a valid Pakistani mobile number, for example 300 1234567.');
+  await limit(db, 'appraisal:' + customer.id, 86400, 5, 'You’ve booked several visits today. Contact PGBX support for more.');
+  const a = await db.one(`select * from fn_book_appraisal($1, $2, $3, $4, $5, $6::date, $7, $8::jsonb, $9, $10)`,
+    [customer.id, str(body.city, 40), str(body.area, 80), str(body.address, 300), phone, str(body.date, 10), str(body.slot, 20), JSON.stringify(items), str(body.notes, 300), String(sec.newCode()).slice(0, 4)]);
+  return { appraisal: appraisalDto(a), payment: await serviceIntent('appraisal', a) };
+});
+route('GET', '/appraisals', { auth: 'customer' }, async ({ db, customer }) =>
+  ({ appraisals: (await db.query(`select * from appraisals where customer_id = $1 and status <> 'pending_payment' or (customer_id = $1 and status = 'pending_payment' and created_at > now() - interval '1 hour') order by created_at desc limit 50`, [customer.id])).map(appraisalDto) }));
+route('POST', '/appraisals/:id/cancel', { auth: 'customer' }, async ({ db, customer, params }) => ({ appraisal: appraisalDto(await db.one(`select * from fn_cancel_appraisal($1, $2)`, [customer.id, params.id])) }));
+
+route('POST', '/gifts/quote', {}, async ({ db, body, fetchRates }) => {
+  await ensureRates(db, fetchRates);
+  return { quote: (await db.one(`select fn_gift_quote($1, $2, $3, $4, $5) q`, [str(body.item, 20), str(body.shape, 10), str(body.design, 20), str(body.engraving, 40), str(body.packaging, 20)])).q };
+});
+route('POST', '/gifts', { auth: 'customer' }, async ({ db, customer, body, fetchRates }) => {
+  if (!payments.provider) fail(503, 'PAYMENTS_OFF', 'Payments aren’t available yet.');
+  const phone = cleanPhone(body.recipientPhone);
+  if (!PK_MOBILE.test(phone)) fail(400, 'BAD_RECIPIENT', MESSAGES.BAD_RECIPIENT[1]);
+  await ensureRates(db, fetchRates);
+  const g = await db.one(`select * from fn_place_gift($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::date)`,
+    [customer.id, str(body.item, 20), str(body.shape, 10), str(body.design, 20), str(body.engraving, 40), str(body.message, 200), str(body.packaging, 20),
+      str(body.recipientName, 100), phone, str(body.recipientCity, 40), str(body.recipientAddress, 300), str(body.deliverBy, 10)]);
+  return { gift: giftDto(g), payment: await serviceIntent('gift', g) };
+});
+route('GET', '/gifts', { auth: 'customer' }, async ({ db, customer }) =>
+  ({ gifts: (await db.query(`select * from gift_orders where customer_id = $1 and (status <> 'pending_payment' or created_at > now() - interval '1 hour') order by created_at desc limit 50`, [customer.id])).map(giftDto) }));
+route('POST', '/gifts/:id/cancel', { auth: 'customer' }, async ({ db, customer, params }) => ({ gift: giftDto(await db.one(`select * from fn_cancel_gift($1, $2)`, [customer.id, params.id])) }));
+
+// Sandbox only: pays a booking or gift order the way a provider webhook would
+route('POST', '/payments/sandbox/:kind/:id', { auth: 'customer' }, async ({ db, customer, params }) => {
+  if (!payments.sandbox) fail(404, 'NOT_FOUND', 'Not found.');
+  const table = { appraisal: 'appraisals', gift: 'gift_orders' }[params.kind];
+  if (!table) fail(404, 'NOT_FOUND', 'Not found.');
+  const row = await db.one(`select * from ${table} where id = $1 and customer_id = $2`, [params.id, customer.id]);
+  if (!row) fail(404, 'NOT_FOUND', 'Not found.');
+  const r = (await db.one(`select fn_service_paid($1, $2, $3, $4) r`, [params.kind, row.id, 'sbx-' + row.id, row.fee_pkr ?? row.total_pkr])).r;
+  return { status: r.status };
 });
 
 // ---------- closing the account ----------
@@ -484,6 +579,8 @@ route('GET', '/admin/overview', ops, async ({ db }) => ({
   sales_today_pkr: (await db.one(`select coalesce(sum(total_pkr), 0) v from orders where status = 'credited' and credited_at >= date_trunc('day', now())`)).v,
   orders_today: (await db.one(`select count(*)::int n from orders where status = 'credited' and credited_at >= date_trunc('day', now())`)).n,
   active_collections: (await db.one(`select count(*)::int n from redemptions where status in ('requested', 'ready') and expires_at > now()`)).n,
+  appraisals_to_assign: (await db.one(`select count(*)::int n from appraisals where status = 'booked'`)).n,
+  gifts_open: (await db.one(`select count(*)::int n from gift_orders where status in ('placed', 'in_production', 'dispatched')`)).n,
   support_open: (await db.one(`select count(*)::int n from support_requests where status = 'open'`)).n,
   rates: await db.one(`select gold_buy_tola, gold_sell_tola, silver_buy_tola, silver_sell_tola, source, fetched_at from rate_snapshots order by id desc limit 1`),
 }));
@@ -613,6 +710,31 @@ route('POST', '/admin/support/:id/close', ops, async ({ db, staff, params, body 
   return { ok: true };
 });
 
+// Services queues for operations
+route('GET', '/admin/appraisals', ops, async ({ db, query }) => {
+  const status = ['booked', 'confirmed', 'completed', 'cancelled'].includes(query.status) ? query.status : 'booked';
+  return { appraisals: (await db.query(`select a.*, c.name as customer_name from appraisals a join customers c on c.id = a.customer_id where a.status = $1 order by a.visit_date, a.slot limit 200`, [status]))
+    .map(a => ({ ...appraisalDto(a), customer_name: a.customer_name })) };
+});
+route('POST', '/admin/appraisals/:id', ops, async ({ db, staff, params, body }) => {
+  const action = ['assign', 'complete', 'cancel'].includes(body.action) ? body.action : fail(400, 'BAD_ACTION', MESSAGES.BAD_ACTION[1]);
+  const data = action === 'assign' ? { name: str(body.name, 80), phone: str(body.phone, 20) }
+    : action === 'complete' ? { summary: str(body.summary, 1000), net_g: Number(body.net_g) || null, karat: str(body.karat, 8) || null, value_pkr: int(body.value_pkr) || null }
+    : { reason: str(body.reason, 300) || null };
+  if (action === 'complete' && data.summary.length < 5) fail(400, 'BAD_RESULT', 'Write the assay result for the customer.');
+  return { appraisal: appraisalDto(await db.one(`select * from fn_appraisal_update($1, $2, $3, $4::jsonb)`, [staff.id, params.id, action, JSON.stringify(data)])) };
+});
+route('GET', '/admin/gifts', ops, async ({ db, query }) => {
+  const status = ['placed', 'in_production', 'dispatched', 'delivered', 'cancelled'].includes(query.status) ? query.status : 'placed';
+  return { gifts: (await db.query(`select g.*, c.name as customer_name, i.label as item_label, i.metal from gift_orders g join customers c on c.id = g.customer_id join gift_items i on i.id = g.item_id
+    where g.status = $1 order by g.deliver_by limit 200`, [status])).map(g => ({ ...giftDto(g), customer_name: g.customer_name, item_label: g.item_label, metal: g.metal })) };
+});
+route('POST', '/admin/gifts/:id', ops, async ({ db, staff, params, body }) => {
+  const action = ['produce', 'dispatch', 'deliver', 'cancel'].includes(body.action) ? body.action : fail(400, 'BAD_ACTION', MESSAGES.BAD_ACTION[1]);
+  const data = { tracking: str(body.tracking, 60) || undefined, reason: str(body.reason, 300) || undefined };
+  return { gift: giftDto(await db.one(`select * from fn_gift_update($1, $2, $3, $4::jsonb)`, [staff.id, params.id, action, JSON.stringify(data)])) };
+});
+
 route('GET', '/admin/audit', ops, async ({ db, query }) => {
   const entity = str(query.entity || '', 40), id = str(query.id || '', 80);
   return { entries: await db.query(`select id, at, actor, action, entity, entity_id, data from audit_log where ($1 = '' or entity = $1) and ($2 = '' or entity_id = $2) order by id desc limit 200`, [entity, id]) };
@@ -645,6 +767,7 @@ route('GET', '/cron/sweep', {}, async ({ db, req, fetchRates }) => {
   const r = {
     expired_orders: (await db.one(`select fn_expire_orders() n`)).n,
     expired_redemptions: (await db.one(`select fn_expire_redemptions() n`)).n,
+    expired_services: (await db.one(`select fn_expire_services() n`)).n,
     purged_customers: (await db.one(`select fn_purge_closed() n`)).n,
   };
   await ensureRates(db, fetchRates).catch(() => {});

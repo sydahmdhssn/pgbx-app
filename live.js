@@ -99,8 +99,8 @@ const KYC = { none: 'none', pending: 'pending', review: 'pending', verified: 've
 
 // Everything the signed-in screens show, in one round of requests
 export async function loadAll() {
-  const [me, orders, ledger, reds, notes, alerts] = await Promise.all([
-    api('/me'), api('/orders'), api('/ledger'), api('/redemptions'), api('/notifications'), api('/alerts'),
+  const [me, orders, ledger, reds, notes, alerts, apprs, gifts] = await Promise.all([
+    api('/me'), api('/orders'), api('/ledger'), api('/redemptions'), api('/notifications'), api('/alerts'), api('/appraisals'), api('/gifts'),
   ]);
   const redemptions = reds.redemptions.map(redemption);
   return {
@@ -112,8 +112,38 @@ export async function loadAll() {
     redemptions: redemptions.reverse(),
     notifications: notes.notifications.map(notification),
     alerts: alerts.alerts.map(alert),
+    appraisals: apprs.appraisals.map(appraisal),
+    giftOrders: gifts.gifts.map(gift),
   };
 }
+
+// ---------- services ----------
+const appraisal = a => ({ id: a.id, ref: a.ref, createdAt: ts(a.created_at), date: a.date, slot: a.slot, city: a.city, area: a.area, address: a.address, phone: a.phone,
+  items: a.items || [], notes: a.notes || '', fee: a.fee_pkr, visitCode: a.visit_code, status: a.status, goldsmith: a.goldsmith, result: a.result, refundDue: a.refund_due });
+const gift = g => ({ id: g.id, ref: g.ref, createdAt: ts(g.created_at), item: g.item_id, shape: g.shape, design: g.design, engraving: g.engraving || '', message: g.message || '',
+  packaging: g.packaging, recipient: g.recipient, deliverBy: g.deliver_by, metal_pkr: g.metal_pkr, making_pkr: g.making_pkr, packaging_pkr: g.packaging_pkr,
+  delivery_pkr: g.delivery_pkr, total: g.total_pkr, status: g.status, tracking: g.tracking, refundDue: g.refund_due });
+export const servicesConfig = () => api('/services/config');
+// Runs the payment for a booking or gift order (sandbox now; a real provider's page later)
+async function payService(kind, row, payment) {
+  if (payment && payment.action && payment.action.type === 'sandbox') { await api(`/payments/sandbox/${kind}/${row.id}`, { method: 'POST', body: {} }); return; }
+  if (payment && payment.action && payment.action.type === 'redirect' && payment.action.url) {
+    if (window.PGBXNative && window.PGBXNative.openUrl) window.PGBXNative.openUrl(payment.action.url); else window.open(payment.action.url, '_blank', 'noopener');
+  }
+}
+export async function bookAppraisal(d) {
+  const r = await api('/appraisals', { method: 'POST', body: { city: d.city, area: d.area, address: d.address, phone: d.phone, date: d.date, slot: d.slot, items: d.items, notes: d.notes } });
+  await payService('appraisal', r.appraisal, r.payment);
+  return appraisal(r.appraisal);
+}
+export const cancelAppraisal = id => api(`/appraisals/${id}/cancel`, { method: 'POST', body: {} });
+export async function placeGift(d) {
+  const r = await api('/gifts', { method: 'POST', body: { item: d.item, shape: d.shape, design: d.design, engraving: d.engraving.trim(), message: d.message.trim(), packaging: d.packaging,
+    recipientName: d.name.trim(), recipientPhone: d.phone, recipientCity: d.city, recipientAddress: d.address.trim(), deliverBy: d.deliverBy } });
+  await payService('gift', r.gift, r.payment);
+  return gift(r.gift);
+}
+export const cancelGift = id => api(`/gifts/${id}/cancel`, { method: 'POST', body: {} });
 // Dealers with what each can hand over now (capped at 10 by the server)
 export async function dealers() {
   const d = await api('/dealers');

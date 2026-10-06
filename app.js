@@ -304,6 +304,12 @@ const PATHS = {
   globe: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3.5 9h17M3.5 15h17M12 3c2.5 2.6 3.7 5.6 3.7 9s-1.2 6.4-3.7 9c-2.5-2.6-3.7-5.6-3.7-9S9.5 5.6 12 3z',
   sliders: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4',
   wifiOff: 'M3 3l18 18M8.5 16.5a5 5 0 0 1 7 0M5 12.5a10 10 0 0 1 4.2-2.3M19 12.5a10 10 0 0 0-3-1.9M2 8.8a15 15 0 0 1 4.3-2.6M22 8.8A15 15 0 0 0 10.6 5M12 20h.01',
+  gem: 'M6 3h12l3 6-9 12L3 9l3-6zM3 9h18M9 3l3 6 3-6M12 21L9 9M12 21l3-12',
+  services: 'M6 3h12l3 6-9 12L3 9l3-6zM3 9h18M9 3l3 6 3-6M12 21L9 9M12 21l3-12',
+  calc: 'M6 3h12a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM8 6h8v4H8zM8.5 14h.01M12 14h.01M15.5 14h.01M8.5 17.5h.01M12 17.5h.01M15.5 17.5h.01',
+  home: 'M3 11l9-7 9 7M5 9.5V20h5v-6h4v6h5V9.5',
+  gift: 'M4 11h16v9H4zM3 7h18v4H3zM12 7v13M12 7C10.5 4 7 3.5 7 5.8 7 7 9.5 7 12 7zm0 0c1.5-3 5-3.5 5-1.2C17 7 14.5 7 12 7z',
+  scale: 'M12 4v16M6 20h12M5 7h14M5 7l-3 6a3 3 0 0 0 6 0L5 7zM19 7l-3 6a3 3 0 0 0 6 0l-3-6z',
   wa: 'M4 20l1.3-4A8 8 0 1 1 8 18.7L4 20zM9 9.5c0 3 2.5 5.5 5.5 5.5l1.2-1.4-1.9-.9-.8.8a3.5 3.5 0 0 1-2.4-2.4l.8-.8-.9-1.9L9 9.5z',
 };
 const Icon = ({ n, c = '', s }) => html`<svg class=${'icon ' + c} viewBox="0 0 24 24" style=${s} aria-hidden="true"><path d=${PATHS[n]} /></svg>`;
@@ -770,9 +776,11 @@ function RatesHome({ S, A }) {
       <${WorldMarkets} rates=${rates} />
     </section>
 
-    ${guest && html`<section class="sec"><div class="group"><button class="row" onClick=${() => A.tab('redeem')}>
-      <span class="ri gold"><${Icon} n="store" c="sm"/></span><div class="rt"><b>Collect at 250 dealers</b><span>Swap your holdings for the physical bar at a PGBX dealer.</span></div><${Icon} n="chev" c="sm chev"/>
-    </button></div></section>`}
+    <section class="sec"><div class="group"><button class="row" onClick=${() => A.push({ name: 'worth' })}>
+      <span class="ri gold"><${Icon} n="calc" c="sm"/></span><div class="rt"><b>What is your jewellery worth?</b><span>Enter the karat and weight for a free buy-back estimate.</span></div><${Icon} n="chev" c="sm chev"/>
+    </button><button class="row" onClick=${() => A.tab('services')}>
+      <span class="ri gold"><${Icon} n="gem" c="sm"/></span><div class="rt"><b>More from PGBX</b><span>Doorstep appraisal, gift bullion and coins, collection at 250 dealers.</span></div><${Icon} n="chev" c="sm chev"/>
+    </button></div></section>
 
     <p class="foot">${rates.mode === 'live'
       ? `Indicative prices: international spot converted at USD/PKR ${rates.usdPkr ? rates.usdPkr.rate.toFixed(2) : ''}${rates.usdPkr && rates.usdPkr.updatedAt ? ` (exchange rate of ${dt(Date.parse(rates.usdPkr.updatedAt))}, updated daily)` : ''}, refreshed every 10 seconds. Local Sarafa rates may differ.${LIVE ? '' : ' Sell prices and product premiums are sample values until PGBX sets them.'}`
@@ -1018,8 +1026,10 @@ function PayScreen({ S, A }) {
   </div>`;
 }
 
-function Processing({ fail }) {
-  const steps = fail
+function Processing({ fail, kind }) {
+  const steps = kind === 'appraisal' ? [['ok', 'Payment confirmed'], ['ok', 'Booking your visit'], ['ok', 'Sending your confirmation']]
+    : kind === 'gift' ? [['ok', 'Payment confirmed'], ['ok', 'Sending your design to the refinery'], ['ok', 'Issuing your receipt']]
+    : fail
     ? [['ok', 'Payment received'], ['bad', 'Couldn’t add the metal to your wallet'], ['ok', 'Retrying (1 of 3)'], ['ok', 'Retrying (2 of 3)'], ['ok', 'Retrying (3 of 3)'], ['flag', 'Passed to PGBX operations']]
     : [['ok', 'Payment confirmed'], ['ok', 'Adding metal to your wallet'], ['ok', 'Issuing your receipt']];
   const [n, setN] = useState(0);
@@ -1244,7 +1254,7 @@ function WalletScreen({ S, A }) {
     </div>
     <div class="qa">
       <button onClick=${() => A.tab('buy')}><${Icon} n="plus"/>Buy</button>
-      <button onClick=${() => A.tab('redeem')}><${Icon} n="store"/>Redeem</button>
+      <button onClick=${() => A.push({ name: 'collect' })}><${Icon} n="store"/>Collect</button>
       <button onClick=${() => A.push({ name: 'statement' })}><${Icon} n="doc"/>Statement</button>
     </div>
 
@@ -1390,7 +1400,7 @@ const DealerActions = ({ d }) => html`<div class="dact" onClick=${e => e.stopPro
   <a class="btn btn-secondary btn-sm" href=${`https://www.google.com/maps/search/?api=1&query=${d.lat},${d.lng}`} target="_blank" rel="noopener"><${Icon} n="nav" c="sm"/> Directions</a>
 </div>`;
 
-function RedeemScreen({ S, A }) {
+function RedeemScreen({ S, A, pushed }) {
   const avail = id => (S.holdings[id] || 0) - (S.reserved[id] || 0);
   const held = PRODUCTS.filter(p => avail(p.id) > 0);
   const [pid, setPid] = useState(held[0] ? held[0].id : null);
@@ -1405,8 +1415,9 @@ function RedeemScreen({ S, A }) {
   // Production: no sample location, so dealers are listed by area until PGBX chooses a map provider
   const sorted = [...DEALERS].sort((a, b) => (LIVE ? (a.area + a.name).localeCompare(b.area + b.name) : a.km - b.km));
   const pickDealer = id => setDid(id);
-  return html`<div class="scroll">
-    <${TabHead} title="Redeem" sub="Collect your bars at a PGBX dealer" />
+  const body = html`
+    ${!pushed && html`<${TabHead} title="Collect" sub="Collect your bars at a PGBX dealer" />`}
+    ${pushed && html`<div class="pad"><p class="muted">Swap your holdings for the physical bar at a PGBX dealer.</p></div>`}
     ${active.length > 0 && html`<section class="sec"><div class="sec-h"><h3>Ready to collect</h3></div>
       <div class="group inset-thumb">${active.map(r => html`<${RedemptionRow} r=${r} S=${S} A=${A}/>`)}</div></section>`}
 
@@ -1457,8 +1468,8 @@ function RedeemScreen({ S, A }) {
     ${S.offline && html`<${Notice} kind="warning" icon="wifiOff" title="You’re offline">Connect to the internet to reserve a collection.</${Notice}>`}
     <div class="pad" style="margin-top:24px"><button class="btn btn-primary" disabled=${!canConfirm || S.offline} onClick=${() => A.redeem(pid, units, did)}>${did ? `Reserve ${units} bar${units > 1 ? 's' : ''} for collection` : 'Choose a dealer'}</button></div>
     `}
-    ${past.length > 0 && html`<section class="sec"><div class="sec-h"><h3>Past collections</h3></div><div class="group inset-thumb">${past.map(r => html`<${RedemptionRow} r=${r} S=${S} A=${A}/>`)}</div></section>`}
-  </div>`;
+    ${past.length > 0 && html`<section class="sec"><div class="sec-h"><h3>Past collections</h3></div><div class="group inset-thumb">${past.map(r => html`<${RedemptionRow} r=${r} S=${S} A=${A}/>`)}</div></section>`}`;
+  return pushed ? html`<div class="page"><${TopBar} title="Collect your bars" onBack=${A.back} /><div class="scroll">${body}</div></div>` : html`<div class="scroll">${body}</div>`;
 }
 const STATUS_LABEL = { requested: 'Reserved', ready: 'Ready to collect', completed: 'Collected', cancelled: 'Cancelled', expired: 'Expired' };
 const STATUS_TAG = { requested: 'gold', ready: 'success', completed: 'neutral', cancelled: 'neutral', expired: 'neutral' };
@@ -1522,8 +1533,8 @@ function CodeScreen({ S, A, rid }) {
 /* ============================================================
    Notifications (FR-N1)
    ============================================================ */
-const N_ICON = { purchase: 'buy', redemption: 'store', security: 'shield', account: 'user', alert: 'bell' };
-const N_TONE = { purchase: '', redemption: ' gold', security: ' danger', account: '', alert: ' gold' };
+const N_ICON = { purchase: 'buy', redemption: 'store', security: 'shield', account: 'user', alert: 'bell', service: 'gem' };
+const N_TONE = { purchase: '', redemption: ' gold', security: ' danger', account: '', alert: ' gold', service: ' gold' };
 function PushBanner({ n, onOpen }) {
   return html`<button class="push" key=${n.id} onClick=${onOpen} role="status">
     <${Coin} size=${32} label="PGBX" />
@@ -1643,9 +1654,11 @@ function CloseAccount({ S, A }) {
   const bars = PRODUCTS.reduce((a, p) => a + (S.holdings[p.id] || 0), 0);
   const active = S.redemptions.filter(r => ['requested', 'ready'].includes(S.statusOf(r))).length;
   const pending = S.orders.filter(o => o.status === 'flagged').length;
+  const services = S.appraisals.filter(a => ['booked', 'confirmed'].includes(a.status)).length + S.giftOrders.filter(g => ['placed', 'in_production', 'dispatched'].includes(g.status)).length;
   const blockers = [
-    bars > 0 && { t: `You still hold ${bars} bar${bars > 1 ? 's' : ''} worth ${fmt(S.walletValue.total)}`, d: 'Collect them at a dealer first. Selling back to PGBX: ', tbc: true, act: 'Collect your bars', go: () => A.tab('redeem') },
-    active > 0 && { t: `${active} collection${active > 1 ? ' is' : 's are'} still open`, d: 'Collect or cancel them first.', act: 'View collections', go: () => A.tab('redeem') },
+    bars > 0 && { t: `You still hold ${bars} bar${bars > 1 ? 's' : ''} worth ${fmt(S.walletValue.total)}`, d: 'Collect them at a dealer first. Selling back to PGBX: ', tbc: true, act: 'Collect your bars', go: () => A.push({ name: 'collect' }) },
+    active > 0 && { t: `${active} collection${active > 1 ? ' is' : 's are'} still open`, d: 'Collect or cancel them first.', act: 'View collections', go: () => A.push({ name: 'collect' }) },
+    services > 0 && { t: `${services} service booking${services > 1 ? 's are' : ' is'} still open`, d: 'Wait until your appraisal visit or gift delivery is done, or cancel it.', act: 'View services', go: () => A.tab('services') },
     pending > 0 && { t: `${pending} order${pending > 1 ? ' is' : 's are'} still being completed`, d: 'Wait until PGBX operations completes it.', act: 'View wallet', go: () => A.tab('wallet') },
   ].filter(Boolean);
   const close = () => A.confirm({ title: 'Close your PGBX account?', body: 'You won’t be able to log in or buy with this account again. Your personal details are removed from this phone. This can’t be undone.', confirm: 'Close account', cancel: 'Keep my account', danger: true, onConfirm: A.closeAccount });
@@ -1792,15 +1805,398 @@ function Report({ S, A }) {
 }
 
 /* ============================================================
+   Services: jewellery worth, doorstep appraisal, gift bullion and coins
+   ============================================================ */
+// SAMPLE values for the demo; the production build reads PGBX's settings from /api/v1/services/config.
+const SVC_SAMPLE = {
+  purity: { gold: { '24K': 0.999, '22K': 0.916, '21K': 0.875, '20K': 0.833, '18K': 0.750, '14K': 0.585 }, silver: { '999': 0.999, '925': 0.925, '900': 0.900, '800': 0.800 } },
+  buybackDeductionPct: { gold: 4, silver: 6 },
+  appraisal: { feePkr: 2500, cities: ['Karachi'], slots: ['10:00-12:00', '12:00-14:00', '14:00-16:00', '16:00-18:00', '18:00-20:00'], freeCancelHours: 24 },
+  gift: {
+    making: { plain: 1500, themed: 2500, engraving: 1000 }, packaging: { standard: 0, premium: 1500 }, deliveryPkr: 1500, leadDays: 5,
+    cities: ['Karachi', 'Lahore', 'Islamabad', 'Rawalpindi', 'Faisalabad', 'Multan', 'Peshawar', 'Quetta', 'Hyderabad', 'Sialkot'],
+    items: [
+      { id: 'gg-1g', metal: 'gold', label: '1 gram', grams: 1, shapes: ['bar', 'coin'] }, { id: 'gg-2g', metal: 'gold', label: '2 gram', grams: 2, shapes: ['bar', 'coin'] },
+      { id: 'gg-5g', metal: 'gold', label: '5 gram', grams: 5, shapes: ['bar', 'coin'] }, { id: 'gg-1t', metal: 'gold', label: '1 tola', grams: TOLA, shapes: ['bar', 'coin'] },
+      { id: 'gg-10g', metal: 'gold', label: '10 gram', grams: 10, shapes: ['bar'] },
+      { id: 'gs-1t', metal: 'silver', label: '1 tola', grams: TOLA, shapes: ['bar', 'coin'] }, { id: 'gs-5t', metal: 'silver', label: '5 tola', grams: 5 * TOLA, shapes: ['bar', 'coin'] },
+      { id: 'gs-10t', metal: 'silver', label: '10 tola', grams: 10 * TOLA, shapes: ['bar'] },
+    ],
+  },
+};
+const KARAT_NAME = { '999': '999 fine', '925': '925 sterling', '900': '900', '800': '800' };
+const DESIGNS = [['plain', 'Plain', ''], ['eid', 'Eid Mubarak', 'EID MUBARAK'], ['wedding', 'Wedding', 'SHAADI MUBARAK'], ['birthday', 'Birthday', 'HAPPY BIRTHDAY'],
+  ['newborn', 'New baby', 'WELCOME LITTLE ONE'], ['graduation', 'Graduation', 'CONGRATULATIONS']];
+const MASHA = TOLA / 12, RATTI = TOLA / 96;            // 1 tola = 12 masha = 96 ratti
+const num = v => { const n = Number(String(v || '').replace(/[^\d.]/g, '')); return Number.isFinite(n) ? n : 0; };
+const ymd = d => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
+const dayName = s => new Date(s + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+const slotName = s => s.replace('-', '–');
+const newPiece = (metal = 'gold') => ({ id: uid(), metal, karat: metal === 'gold' ? '22K' : '925', unit: 'g', g: '', tola: '', t: '', m: '', r: '', stones: '' });
+const pieceGrams = p => Math.max(0, (p.unit === 'tola' ? num(p.tola) * TOLA : p.unit === 'tmr' ? num(p.t) * TOLA + num(p.m) * MASHA + num(p.r) * RATTI : num(p.g)) - num(p.stones));
+function pieceValue(p, svc, rates) {
+  const purity = (svc.purity[p.metal] || {})[p.karat] || 0, net = pieceGrams(p);
+  const fine = net * purity, perFineGram = rateOf(rates, p.metal).sellGram / 0.999;
+  const gross = fine * perFineGram, ded = (svc.buybackDeductionPct[p.metal] || 0) / 100;
+  return { net, fine, gross: Math.round(gross), estimate: Math.round(gross * (1 - ded)), dedPct: ded * 100 };
+}
+const giftItemPrice = (it, rates) => Math.round(it.grams * rateOf(rates, it.metal).buyGram);
+function giftPrice(d, svc, rates) {
+  const it = svc.gift.items.find(i => i.id === d.item); if (!it) return null;
+  const metal = giftItemPrice(it, rates), m = svc.gift.making;
+  const making = (d.design === 'plain' ? m.plain : m.themed) + (d.engraving.trim() ? m.engraving : 0);
+  const packaging = svc.gift.packaging[d.packaging] || 0, delivery = svc.gift.deliveryPkr;
+  return { it, metal, making, packaging, delivery, total: metal + making + packaging + delivery };
+}
+const APPR_LABEL = { pending_payment: 'Awaiting payment', booked: 'Booked', confirmed: 'Goldsmith assigned', completed: 'Report ready', cancelled: 'Cancelled' };
+const APPR_TAG = { pending_payment: 'warning', booked: 'gold', confirmed: 'success', completed: 'neutral', cancelled: 'neutral' };
+const GIFT_LABEL = { pending_payment: 'Awaiting payment', placed: 'Order placed', in_production: 'Being made', dispatched: 'On its way', delivered: 'Delivered', cancelled: 'Cancelled' };
+const GIFT_TAG = { pending_payment: 'warning', placed: 'gold', in_production: 'gold', dispatched: 'success', delivered: 'neutral', cancelled: 'neutral' };
+const giftTitle = (g, svc) => { const it = svc.gift.items.find(i => i.id === g.item); return it ? `${it.label} ${metalName(it.metal).toLowerCase()} ${g.shape}` : 'Gift'; };
+
+// Live preview of a made-to-order coin or bar
+function GiftPreview({ d, svc, size = 168 }) {
+  const it = svc.gift.items.find(i => i.id === d.item) || svc.gift.items[0];
+  const silver = it.metal === 'silver', coin = d.shape === 'coin';
+  const motif = (DESIGNS.find(x => x[0] === d.design) || DESIGNS[0])[2];
+  const eng = d.engraving.trim();
+  const c = silver ? ['#F5F7F8', '#B9C2C8', '#7E8A92'] : ['#F7DE9A', '#C8962B', '#8A6414'];
+  const ink = silver ? '#4C5860' : '#6A4B0C', id = 'gp' + (silver ? 's' : 'g') + (coin ? 'c' : 'b');
+  const text = (y, s, w, t, extra = {}) => html`<text x="100" y=${y} text-anchor="middle" font-size=${s} font-weight=${w} fill=${ink} font-family="ui-serif, 'New York', Georgia, serif" ...${extra}>${t}</text>`;
+  return html`<svg viewBox="0 0 200 200" width=${size} height=${size} role="img" aria-label=${`Preview: ${it.label} ${it.metal} ${d.shape}${motif ? ', ' + motif.toLowerCase() : ''}${eng ? ', engraved ' + eng : ''}`}>
+    <defs><linearGradient id=${id} x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color=${c[0]}/><stop offset=".55" stop-color=${c[1]}/><stop offset="1" stop-color=${c[2]}/></linearGradient></defs>
+    ${coin ? html`<circle cx="100" cy="100" r="92" fill=${`url(#${id})`}/><circle cx="100" cy="100" r="82" fill="none" stroke=${ink} stroke-opacity=".35" stroke-width="1.5" stroke-dasharray="2 3"/>`
+      : html`<rect x="42" y="14" width="116" height="172" rx="14" fill=${`url(#${id})`}/><rect x="50" y="22" width="100" height="156" rx="9" fill="none" stroke=${ink} stroke-opacity=".35" stroke-width="1.2"/>`}
+    ${text(coin ? 52 : 46, 10, 700, 'PGBX', { 'letter-spacing': 3 })}
+    ${motif && text(coin ? 76 : 76, motif.length > 14 ? 8.5 : 10, 700, motif, { 'letter-spacing': 1.2 })}
+    ${eng ? text(coin ? 108 : 110, eng.length > 14 ? 11 : 15, 600, eng) : text(coin ? 108 : 110, 13, 600, '✦', { 'fill-opacity': .6 })}
+    ${text(coin ? 140 : 150, 11, 700, it.label.toUpperCase())}
+    ${text(coin ? 156 : 166, 9, 600, '999.0 ' + (silver ? 'SILVER' : 'GOLD'), { 'letter-spacing': 1.5 })}
+  </svg>`;
+}
+
+function ServicesScreen({ S, A }) {
+  const svc = S.svc;
+  const activeA = S.appraisals.filter(a => ['booked', 'confirmed'].includes(a.status));
+  const activeG = S.giftOrders.filter(g => ['placed', 'in_production', 'dispatched'].includes(g.status));
+  const collections = S.redemptions.filter(r => ['requested', 'ready'].includes(S.statusOf(r))).length;
+  const Svc = ({ icon, title, sub, onClick, badge }) => html`<button class="row" onClick=${onClick}>
+    <span class="ri gold"><${Icon} n=${icon} c="sm"/></span><div class="rt"><b>${title}</b><span>${sub}</span></div>
+    ${badge ? html`<span class="tag gold">${badge}</span>` : ''}<${Icon} n="chev" c="sm chev"/></button>`;
+  return html`<div class="scroll">
+    <${TabHead} title="Services" sub="Everything for your gold and silver, in one place" />
+    <button class="brand-card on-dark svc-hero" onClick=${() => A.push({ name: 'worth' })}>
+      <div class="between"><span class="bc-label">Free · no login needed</span><${Icon} n="chev" c="sm"/></div>
+      <div class="svc-hero-t">What is your jewellery worth today?</div>
+      <div class="bc-sub">Enter the karat and weight. Get PGBX’s buy-back estimate at today’s price, without leaving home.</div>
+    </button>
+    <section class="sec">
+      <div class="sec-h"><h3>PGBX services</h3></div>
+      <div class="group">
+        ${Svc({ icon: 'calc', title: 'Jewellery worth', sub: 'Buy-back estimate by karat and weight', onClick: () => A.push({ name: 'worth' }) })}
+        ${Svc({ icon: 'home', title: 'Doorstep appraisal', sub: `A PGBX goldsmith tests your pieces at home · ${svc ? fmt(svc.appraisal.feePkr) : '…'}`, onClick: () => A.startAppraisal(), badge: activeA.length ? `${activeA.length} booked` : '' })}
+        ${Svc({ icon: 'gift', title: 'Gift gold and silver', sub: 'Bars and coins made to order, delivered to loved ones', onClick: () => A.startGift(), badge: activeG.length ? `${activeG.length} on the way` : '' })}
+        ${Svc({ icon: 'store', title: 'Collect your bars', sub: 'Swap your holdings for the bar at a PGBX dealer', onClick: () => A.push({ name: 'collect' }), badge: collections ? `${collections} ready` : '' })}
+      </div>
+    </section>
+    ${(activeA.length > 0 || activeG.length > 0) && html`<section class="sec"><div class="sec-h"><h3>In progress</h3></div><div class="group">
+      ${activeA.map(a => html`<button class="row" onClick=${() => A.push({ name: 'appraisal', id: a.id })}><span class="ri"><${Icon} n="home" c="sm"/></span>
+        <div class="rt"><b>Appraisal · ${dayName(a.date)}, ${slotName(a.slot)}</b><span>${a.area}, ${a.city}</span></div><span class=${'tag ' + APPR_TAG[a.status]}>${APPR_LABEL[a.status]}</span></button>`)}
+      ${activeG.map(g => html`<button class="row" onClick=${() => A.push({ name: 'gift', id: g.id })}><span class="ri"><${Icon} n="gift" c="sm"/></span>
+        <div class="rt"><b>${svc ? giftTitle(g, svc) : 'Gift'} for ${g.recipient.name.split(' ')[0]}</b><span>By ${dayName(g.deliverBy)} · ${g.recipient.city}</span></div><span class=${'tag ' + GIFT_TAG[g.status]}>${GIFT_LABEL[g.status]}</span></button>`)}
+    </div></section>`}
+    ${(S.appraisals.length > activeA.length || S.giftOrders.length > activeG.length) && html`<section class="sec"><div class="sec-h"><h3>Past</h3></div><div class="group">
+      ${S.appraisals.filter(a => !activeA.includes(a)).map(a => html`<button class="row" onClick=${() => A.push({ name: 'appraisal', id: a.id })}><span class="ri"><${Icon} n="home" c="sm"/></span>
+        <div class="rt"><b>Appraisal · ${dayName(a.date)}</b><span>${a.ref}</span></div><span class=${'tag ' + APPR_TAG[a.status]}>${APPR_LABEL[a.status]}</span></button>`)}
+      ${S.giftOrders.filter(g => !activeG.includes(g)).map(g => html`<button class="row" onClick=${() => A.push({ name: 'gift', id: g.id })}><span class="ri"><${Icon} n="gift" c="sm"/></span>
+        <div class="rt"><b>${svc ? giftTitle(g, svc) : 'Gift'}</b><span>${g.ref}</span></div><span class=${'tag ' + GIFT_TAG[g.status]}>${GIFT_LABEL[g.status]}</span></button>`)}
+    </div></section>`}
+    <p class="foot">Estimates use PGBX’s live sell price. Fees, deductions and service cities are ${LIVE ? 'set by PGBX' : 'sample values until PGBX confirms them'}.</p>
+  </div>`;
+}
+
+// ---------- jewellery worth (free, for everyone) ----------
+function WorthScreen({ S, A }) {
+  const svc = S.svc;
+  const pieces = S.worth && S.worth.length ? S.worth : [newPiece()];
+  const set = list => A.set({ worth: list });
+  const upd = (i, patch) => set(pieces.map((p, j) => (j === i ? { ...p, ...patch } : p)));
+  if (!svc || S.rates.mode === 'connecting') return html`<div class="page"><${TopBar} title="Jewellery worth" onBack=${A.back} /><div class="scroll"><div class="pad"><span class="sk" style="height:240px"></span></div></div></div>`;
+  const vals = pieces.map(p => pieceValue(p, svc, S.rates));
+  const total = vals.reduce((a, v) => a + v.estimate, 0), any = vals.some(v => v.net > 0);
+  const num4 = (v, f) => html`<input class="inp" inputmode="decimal" placeholder="0" value=${v} onInput=${e => f(e.target.value.replace(/[^\d.]/g, '').slice(0, 9))} />`;
+  return html`<div class="page has-actions">
+    <${TopBar} title="Jewellery worth" onBack=${A.back} />
+    <div class="scroll">
+      <div class="pad"><p class="muted">Enter each piece’s karat and weight. We work out its gold or silver content and what PGBX would pay for it at today’s price.</p></div>
+      ${S.stale && html`<${StaleBanner}/>`}
+      ${pieces.map((p, i) => { const v = vals[i]; const karats = Object.keys(svc.purity[p.metal] || {}); return html`<section class="card worth-piece" key=${p.id}>
+        <div class="between"><b>Piece ${i + 1}</b>${pieces.length > 1 && html`<button class="linkbtn sm" onClick=${() => set(pieces.filter((_, j) => j !== i))} aria-label=${`Remove piece ${i + 1}`}>Remove</button>`}</div>
+        <div style="margin-top:12px"><${Seg} label="Metal" items=${[['gold', 'Gold'], ['silver', 'Silver']]} value=${p.metal} onChange=${m => upd(i, { metal: m, karat: m === 'gold' ? '22K' : '925' })} /></div>
+        <div class="field"><span class="lbl">${p.metal === 'gold' ? 'Karat' : 'Silver standard'}</span>
+          <div class="chips" role="radiogroup" aria-label="Karat">${karats.map(k => html`<button class=${'chipb' + (p.karat === k ? ' on' : '')} role="radio" aria-checked=${p.karat === k} onClick=${() => upd(i, { karat: k })}>${p.metal === 'gold' ? k : KARAT_NAME[k] || k}</button>`)}</div>
+          <div class="hint">${p.metal === 'gold' ? `${p.karat} is ${(svc.purity.gold[p.karat] * 100).toFixed(1)}% gold. Most jewellery in Pakistan is 21K or 22K; the stamp is usually inside the band or clasp.` : 'Silver jewellery is usually 925 (sterling).'}</div></div>
+        <div class="field"><span class="lbl">Weight</span>
+          <${Seg} label="Weight unit" items=${[['g', 'Grams'], ['tola', 'Tola'], ['tmr', 'T · M · R']]} value=${p.unit} onChange=${u => upd(i, { unit: u })} />
+          <div style="margin-top:8px">${p.unit === 'tmr' ? html`<div class="grid3">
+              <label><span class="tiny muted">Tola</span>${num4(p.t, v => upd(i, { t: v }))}</label><label><span class="tiny muted">Masha</span>${num4(p.m, v => upd(i, { m: v }))}</label><label><span class="tiny muted">Ratti</span>${num4(p.r, v => upd(i, { r: v }))}</label></div>`
+            : num4(p.unit === 'tola' ? p.tola : p.g, v => upd(i, p.unit === 'tola' ? { tola: v } : { g: v }))}</div>
+          ${p.unit === 'tmr' && html`<div class="hint">Tola, masha and ratti, as a sarafa receipt shows them: 1 tola = 12 masha = 96 ratti.</div>`}</div>
+        <label class="field"><span class="lbl">Stones, beads or lac (grams, optional)</span>${num4(p.stones, v => upd(i, { stones: v }))}
+          <div class="hint">Their weight isn’t gold or silver, so it’s taken off.</div></label>
+        ${v.net > 0 && html`<div class="worth-res">
+          <div class="kv"><span>Metal weight</span><b>${fmtW(v.net)}</b></div>
+          <div class="kv"><span>Pure ${p.metal} content</span><b>${fmtW(v.fine)}</b></div>
+          <div class="kv"><span>Value at today’s sell price</span><b>${fmt(v.gross)}</b></div>
+          <div class="kv"><span>Buy-back deduction (${v.dedPct}%)${!LIVE ? html` <${Sample}/>` : ''}</span><b>− ${fmt(v.gross - v.estimate)}</b></div>
+          <div class="kv total"><span>Estimate for this piece</span><b>${fmt(v.estimate)}</b></div></div>`}
+      </section>`; })}
+      <div class="pad"><button class="btn btn-secondary" onClick=${() => set([...pieces, newPiece(pieces[pieces.length - 1].metal)])}><${Icon} n="plus" c="sm"/> Add another piece</button></div>
+      <${Notice} kind="plain" icon="scale"><b>This is an estimate</b>The final amount depends on testing the actual pieces: solder, hollow work, stones and wear all change the metal content. A PGBX goldsmith can test them at your home.</${Notice}>
+    </div>
+    <${ActionBar} label="Estimated buy-back value" amount=${any ? html`<${Odo} value=${total} />` : '—'}>
+      <button class="btn btn-primary" disabled=${!any} onClick=${() => A.startAppraisal(pieces.filter((p, i) => vals[i].net > 0).map(p => ({ metal: p.metal, karat: p.karat, approx_g: Math.round(pieceGrams(p) * 10) / 10, note: '' })))}><${Icon} n="home" c="sm"/> Book doorstep appraisal</button>
+    </${ActionBar}>
+  </div>`;
+}
+
+// ---------- doorstep appraisal ----------
+function AppraisalBook({ S, A }) {
+  const svc = S.svc, d = S.apprDraft;
+  const up = patch => A.set(s => ({ apprDraft: { ...s.apprDraft, ...patch } }));
+  const [touched, setTouched] = useState(false);
+  if (!svc || !d) return html`<div class="page"><${TopBar} title="Doorstep appraisal" onBack=${A.back} /><div class="scroll"><div class="pad"><span class="sk" style="height:240px"></span></div></div></div>`;
+  const days = Array.from({ length: 8 }, (_, i) => ymd(Date.now() + (i + 1) * 86400e3));
+  const phone = d.phone.replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '');
+  const errs = {
+    items: !d.items.length ? 'Add at least one piece.' : '',
+    date: !d.date ? 'Choose a day.' : '', slot: !d.slot ? 'Choose a time.' : '',
+    area: d.area.trim().length < 2 ? 'Enter your area, for example DHA Phase 6.' : '',
+    address: d.address.trim().length < 10 ? 'Enter the full address, including house number and street.' : '',
+    phone: !PK_MOBILE.test(phone) ? 'Enter a mobile number the goldsmith can call.' : '',
+  };
+  const ok = !Object.values(errs).some(Boolean);
+  const E = k => touched && errs[k] && html`<div class="hint err">${errs[k]}</div>`;
+  const updItem = (i, patch) => up({ items: d.items.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
+  const karats = m => Object.keys(svc.purity[m] || {});
+  const pay = () => { if (!ok) { setTouched(true); return; } A.bookAppraisal(); };
+  return html`<div class="page has-actions">
+    <${TopBar} title="Doorstep appraisal" onBack=${A.back} />
+    <div class="scroll">
+      <div class="pad"><p class="muted">A PGBX goldsmith visits your home, tests each piece in front of you with a karat meter and scale, and tells you what it is. Nothing leaves your hands.</p></div>
+      <section class="sec"><div class="sec-h"><h3>What should we check?</h3></div>
+        <div class="group">${d.items.map((it, i) => html`<div class="row" style="flex-wrap:wrap;align-items:flex-start" key=${i}>
+          <div class="rt" style="min-width:0">
+            <div class="chips" role="radiogroup" aria-label=${`Piece ${i + 1} metal`}>${[['gold', 'Gold'], ['silver', 'Silver']].map(([m, l]) => html`<button class=${'chipb sm' + (it.metal === m ? ' on' : '')} role="radio" aria-checked=${it.metal === m} onClick=${() => updItem(i, { metal: m, karat: '' })}>${l}</button>`)}</div>
+            <div class="grid2" style="margin-top:8px">
+              <label><span class="tiny muted">Karat (if known)</span><select class="inp" value=${it.karat} onChange=${e => updItem(i, { karat: e.target.value })}><option value="">Not sure</option>${karats(it.metal).map(k => html`<option value=${k}>${it.metal === 'gold' ? k : KARAT_NAME[k]}</option>`)}</select></label>
+              <label><span class="tiny muted">About how many grams</span><input class="inp" inputmode="decimal" value=${it.approx_g || ''} onInput=${e => updItem(i, { approx_g: num(e.target.value) })} /></label>
+            </div>
+            <input class="inp" style="margin-top:8px" maxlength="80" placeholder="What is it? e.g. 4 bangles, necklace set" value=${it.note || ''} onInput=${e => updItem(i, { note: e.target.value })} />
+          </div>
+          ${d.items.length > 1 && html`<button class="iconbtn" onClick=${() => up({ items: d.items.filter((_, j) => j !== i) })} aria-label=${`Remove piece ${i + 1}`}><${Icon} n="trash" c="sm"/></button>`}
+        </div>`)}</div>
+        ${E('items')}
+        <div class="pad" style="margin-top:8px"><button class="btn btn-tertiary btn-sm" onClick=${() => up({ items: [...d.items, { metal: 'gold', karat: '', approx_g: 0, note: '' }] })}><${Icon} n="plus" c="sm"/> Add a piece</button></div>
+      </section>
+      <section class="sec"><div class="sec-h"><h3>When</h3></div>
+        <div class="card">
+          <div class="chips hchips" role="radiogroup" aria-label="Day">${days.map(x => html`<button class=${'chipb' + (d.date === x ? ' on' : '')} role="radio" aria-checked=${d.date === x} onClick=${() => up({ date: x })}>${dayName(x)}</button>`)}</div>${E('date')}
+          <div class="chips" style="margin-top:12px" role="radiogroup" aria-label="Time">${svc.appraisal.slots.map(x => html`<button class=${'chipb' + (d.slot === x ? ' on' : '')} role="radio" aria-checked=${d.slot === x} onClick=${() => up({ slot: x })}>${slotName(x)}</button>`)}</div>${E('slot')}
+        </div></section>
+      <section class="sec"><div class="sec-h"><h3>Where</h3></div>
+        <div class="card">
+          <label class="field" style="margin-top:0"><span class="lbl">City</span><select class="inp" value=${d.city} onChange=${e => up({ city: e.target.value })}>${svc.appraisal.cities.map(c => html`<option value=${c}>${c}</option>`)}</select>
+            <div class="hint">Doorstep visits are available in ${svc.appraisal.cities.join(', ')} for now.</div></label>
+          <label class="field"><span class="lbl">Area</span><input class=${'inp' + (touched && errs.area ? ' bad' : '')} placeholder="e.g. DHA Phase 6" value=${d.area} onInput=${e => up({ area: e.target.value })} />${E('area')}</label>
+          <label class="field"><span class="lbl">Full address</span><textarea class=${'inp' + (touched && errs.address ? ' bad' : '')} rows="2" autocomplete="street-address" placeholder="House, street, block" value=${d.address} onInput=${e => up({ address: e.target.value })}></textarea>${E('address')}</label>
+          <label class="field"><span class="lbl">Mobile for the goldsmith</span><span class=${'phone' + (touched && errs.phone ? ' bad' : '')}><span class="cc">+92</span><input inputmode="numeric" autocomplete="tel-national" placeholder="300 1234567" value=${d.phone} onInput=${e => up({ phone: e.target.value.replace(/\D/g, '').slice(0, 11) })} /></span>${E('phone')}</label>
+          <label class="field"><span class="lbl">Anything we should know? (optional)</span><input class="inp" maxlength="200" placeholder="e.g. Call when you reach the gate" value=${d.notes} onInput=${e => up({ notes: e.target.value })} /></label>
+        </div></section>
+      <${Notice} kind="plain" icon="shield"><b>Your safety</b>After booking you get a 4-digit visit code. The goldsmith says it at your door; don’t open for anyone who can’t. They wear a PGBX card and never take your jewellery away.</${Notice}>
+      <section class="sec"><div class="sec-h"><h3>Pay the visit fee with</h3></div>
+        <div class="group inset" role="radiogroup" aria-label="Payment method">
+          ${METHODS.map(m => html`<button class="row" onClick=${() => A.set({ method: m.id })} role="radio" aria-checked=${S.method === m.id}><span class="ri"><${Icon} n=${m.icon} c="sm"/></span><div class="rt"><b>${m.name}</b><span>${m.sub}</span></div><${Radio} on=${S.method === m.id} /></button>`)}
+        </div>
+        <p class="foot">Free cancellation up to ${svc.appraisal.freeCancelHours} hours before the visit.${LIVE ? '' : ' Fee and cancellation terms are samples.'}</p></section>
+      ${S.offline && html`<${Notice} kind="warning" icon="wifiOff" title="You’re offline">Connect to the internet to book.</${Notice}>`}
+    </div>
+    <${ActionBar} label="Visit fee" amount=${fmt(svc.appraisal.feePkr)}>
+      <button class="btn btn-primary" disabled=${S.paying || S.offline} onClick=${pay}>${S.paying ? html`<span class="spin"></span> Booking` : html`<${Icon} n="lock" c="sm"/> Pay ${fmt(svc.appraisal.feePkr)} and book`}</button>
+    </${ActionBar}>
+  </div>`;
+}
+
+function AppraisalDetail({ S, A, id }) {
+  const a = S.appraisals.find(x => x.id === id);
+  if (!a) return html`<div class="page"><${TopBar} title="Appraisal" onBack=${A.back} /><div class="scroll"><${Empty} icon="home" title="Booking not found" body="It may still be loading. Try again in a moment." /></div></div>`;
+  const order = ['booked', 'confirmed', 'completed'], idx = order.indexOf(a.status);
+  const live = ['booked', 'confirmed'].includes(a.status);
+  const start = new Date(`${a.date}T${a.slot.split('-')[0]}:00`).getTime();
+  const freeCancel = start - S.now >= (S.svc ? S.svc.appraisal.freeCancelHours : 24) * 3600e3;
+  const cancel = () => A.confirm({ title: 'Cancel this visit?', body: freeCancel ? 'Your visit fee will be refunded to your payment method.' : `It’s less than ${S.svc ? S.svc.appraisal.freeCancelHours : 24} hours before the visit, so the fee isn’t refunded.`,
+    confirm: 'Cancel visit', cancel: 'Keep it', danger: true, onConfirm: () => A.cancelAppraisal(a.id) });
+  const labels = { booked: 'Booked', confirmed: 'Goldsmith assigned', completed: 'Report ready' };
+  return html`<div class="page">
+    <${TopBar} title="Doorstep appraisal" onBack=${A.back} />
+    <div class="scroll">
+      <div class="card" style="text-align:center;padding:24px 16px">
+        <span class=${'tag ' + APPR_TAG[a.status]}>${APPR_LABEL[a.status]}</span>
+        ${live && html`<div class="small muted" style="margin-top:12px">Visit code</div>
+          <div class="code" aria-label=${`Visit code ${a.visitCode.split('').join(' ')}`}>${a.visitCode.split('').map(c => html`<span aria-hidden="true">${c}</span>`)}</div>
+          <div class="small" style="margin-top:8px">The goldsmith must say this code at your door.</div>`}
+        ${a.status !== 'cancelled' && html`<div class="steps">${order.map((k, i) => html`<div class=${'step' + (i < idx || a.status === 'completed' ? ' done' : i === idx ? ' cur' : '')}><div class="sd">${i < idx || a.status === 'completed' ? html`<${Icon} n="check"/>` : i + 1}</div>${labels[k]}</div>`)}</div>`}
+        ${a.status === 'cancelled' && html`<p class="small muted" style="margin-top:12px">${a.refundDue ? 'Cancelled. Your visit fee will be refunded.' : 'Cancelled.'}</p>`}
+      </div>
+      ${a.status === 'completed' && a.result && html`<section class="sec"><div class="sec-h"><h3>Assay report</h3></div><div class="card">
+        ${a.result.karat && html`<div class="kv"><span>Karat found</span><b>${a.result.karat}</b></div>`}
+        ${a.result.net_g && html`<div class="kv"><span>Net metal weight</span><b>${fmtW(a.result.net_g)}</b></div>`}
+        ${a.result.value_pkr && html`<div class="kv total"><span>PGBX offer</span><b>${fmt(a.result.value_pkr)}</b></div>`}
+        <p class="small" style="margin-top:12px">${a.result.summary}</p></div></section>`}
+      ${a.goldsmith && live && html`<section class="sec"><div class="sec-h"><h3>Your goldsmith</h3></div><div class="group">
+        <a class="row" href=${'tel:' + a.goldsmith.phone.replace(/[^\d+]/g, '')}><span class="ri"><${Icon} n="user" c="sm"/></span><div class="rt"><b>${a.goldsmith.name}</b><span>${a.goldsmith.phone}</span></div><${Icon} n="call" c="sm chev"/></a></div></section>`}
+      <section class="sec"><div class="sec-h"><h3>Booking</h3></div><div class="card">
+        <div class="kv"><span>Reference</span><b class="mono">${a.ref}</b></div>
+        <div class="kv"><span>When</span><b>${dayName(a.date)}, ${slotName(a.slot)}</b></div>
+        <div class="kv"><span>Where</span><b style="text-align:right">${a.address}, ${a.area}, ${a.city}</b></div>
+        <div class="kv"><span>Pieces</span><b style="text-align:right">${a.items.map(i => `${metalName(i.metal)}${i.karat ? ' ' + i.karat : ''}${i.approx_g ? ` ~${i.approx_g} g` : ''}${i.note ? ` (${i.note})` : ''}`).join(', ')}</b></div>
+        <div class="kv"><span>Visit fee</span><b>${fmt(a.fee)}</b></div>
+      </div></section>
+      ${a.status === 'completed' && html`<div class="pad stack-btns" style="margin-top:16px"><button class="btn btn-secondary" onClick=${() => A.push({ name: 'worth' })}>Estimate other jewellery</button></div>`}
+      ${live && html`<div class="pad" style="margin-top:24px"><button class="btn btn-danger" onClick=${cancel}>Cancel visit</button>
+        <p class="hint" style="text-align:center">${freeCancel ? `Free until ${S.svc ? S.svc.appraisal.freeCancelHours : 24} hours before the visit.` : 'The fee isn’t refunded this close to the visit.'}</p></div>`}
+      ${live && html`<${Demo} title="Operations" body="In the real system PGBX operations assigns the goldsmith and records the result in the admin panel.">
+        <div class="stack-btns">
+          <button class="btn btn-secondary btn-sm" style="width:100%" disabled=${a.status !== 'booked'} onClick=${() => A.demoAppraisal(a.id, 'assign')}>Assign a goldsmith</button>
+          <button class="btn btn-secondary btn-sm" style="width:100%" disabled=${a.status !== 'confirmed'} onClick=${() => A.demoAppraisal(a.id, 'complete')}>Visit done: send the report</button>
+        </div></${Demo}>`}
+    </div>
+  </div>`;
+}
+
+// ---------- gift bullion and coins ----------
+function GiftNew({ S, A }) {
+  const svc = S.svc, d = S.giftDraft;
+  const up = patch => A.set(s => ({ giftDraft: { ...s.giftDraft, ...patch } }));
+  const [touched, setTouched] = useState(false);
+  if (!svc || !d || S.rates.mode === 'connecting') return html`<div class="page"><${TopBar} title="Gift gold and silver" onBack=${A.back} /><div class="scroll"><div class="pad"><span class="sk" style="height:320px"></span></div></div></div>`;
+  const items = svc.gift.items.filter(i => i.metal === d.metal);
+  const it = svc.gift.items.find(i => i.id === d.item) || items[0];
+  const price = giftPrice({ ...d, item: it.id }, svc, S.rates);
+  const minDate = ymd(Date.now() + svc.gift.leadDays * 86400e3);
+  const phone = d.phone.replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '');
+  const errs = {
+    name: d.name.trim().length < 3 ? 'Enter the recipient’s full name.' : '',
+    phone: !PK_MOBILE.test(phone) ? 'Enter the recipient’s mobile number. The courier calls before delivery.' : '',
+    address: d.address.trim().length < 10 ? 'Enter the full address, including house number and street.' : '',
+    deliverBy: !d.deliverBy || d.deliverBy < minDate ? `Choose ${dayName(minDate)} or later. Each piece is made to order.` : '',
+  };
+  const ok = !Object.values(errs).some(Boolean);
+  const E = k => touched && errs[k] && html`<div class="hint err">${errs[k]}</div>`;
+  const pickMetal = m => { const first = svc.gift.items.find(i => i.metal === m); up({ metal: m, item: first.id, shape: first.shapes.includes(d.shape) ? d.shape : first.shapes[0] }); };
+  const pickItem = i => up({ item: i.id, shape: i.shapes.includes(d.shape) ? d.shape : i.shapes[0] });
+  const pay = () => { if (!ok) { setTouched(true); return; } A.placeGift(); };
+  return html`<div class="page has-actions">
+    <${TopBar} title="Gift gold and silver" onBack=${A.back} />
+    <div class="scroll">
+      <div class="gift-stage"><${GiftPreview} d=${{ ...d, item: it.id }} svc=${svc} /></div>
+      <div class="pad"><p class="muted" style="text-align:center">Made to order in 999.0 ${d.metal}, packed in a gift box and delivered by insured courier, like sending flowers, but it keeps its value.</p></div>
+      <section class="sec"><div class="sec-h"><h3>Choose the piece</h3></div><div class="card">
+        <${Seg} label="Metal" items=${[['gold', 'Gold'], ['silver', 'Silver']]} value=${d.metal} onChange=${pickMetal} />
+        <div class="chips" style="margin-top:12px" role="radiogroup" aria-label="Weight">${items.map(i => html`<button class=${'chipb' + (it.id === i.id ? ' on' : '')} role="radio" aria-checked=${it.id === i.id} onClick=${() => pickItem(i)}>${i.label}<span class="chip-sub">${fmt(giftItemPrice(i, S.rates))}</span></button>`)}</div>
+        <div style="margin-top:12px"><${Seg} label="Shape" items=${[['coin', 'Coin'], ['bar', 'Bar']]} value=${d.shape} onChange=${v => (it.shapes.includes(v) ? up({ shape: v }) : A.toast(`${it.label} is made as a ${it.shapes[0]} only.`))} /></div>
+      </div></section>
+      <section class="sec"><div class="sec-h"><h3>Design</h3></div><div class="card">
+        <div class="chips" role="radiogroup" aria-label="Design">${DESIGNS.map(([k, l]) => html`<button class=${'chipb' + (d.design === k ? ' on' : '')} role="radio" aria-checked=${d.design === k} onClick=${() => up({ design: k })}>${l}</button>`)}</div>
+        <label class="field"><span class="lbl">Engraving (optional)</span><input class="inp" maxlength="24" placeholder="e.g. Ayesha · 12.10.2026" value=${d.engraving} onInput=${e => up({ engraving: e.target.value.slice(0, 24) })} />
+          <div class="hint">${24 - d.engraving.length} characters left · adds ${fmt(svc.gift.making.engraving)}. Check the spelling; it can’t be changed once the piece is made.</div></label>
+        <label class="field"><span class="lbl">Gift card message (optional)</span><textarea class="inp" rows="3" maxlength="200" placeholder="Write a few words for them" value=${d.message} onInput=${e => up({ message: e.target.value.slice(0, 200) })}></textarea></label>
+        <div class="field"><span class="lbl">Packaging</span><div class="group" style="margin:0;box-shadow:inset 0 0 0 1px var(--border)" role="radiogroup" aria-label="Packaging">
+          ${[['standard', 'Gift box', 'Included'], ['premium', 'Velvet box with ribbon', '+ ' + fmt(svc.gift.packaging.premium)]].map(([k, l, s]) => html`<button class="row" onClick=${() => up({ packaging: k })} role="radio" aria-checked=${d.packaging === k}><div class="rt"><b>${l}</b><span>${s}</span></div><${Radio} on=${d.packaging === k} /></button>`)}
+        </div></div>
+      </div></section>
+      <section class="sec"><div class="sec-h"><h3>Deliver to</h3></div><div class="card">
+        <label class="field" style="margin-top:0"><span class="lbl">Recipient’s name</span><input class=${'inp' + (touched && errs.name ? ' bad' : '')} value=${d.name} onInput=${e => up({ name: e.target.value })} />${E('name')}</label>
+        <label class="field"><span class="lbl">Recipient’s mobile</span><span class=${'phone' + (touched && errs.phone ? ' bad' : '')}><span class="cc">+92</span><input inputmode="numeric" placeholder="300 1234567" value=${d.phone} onInput=${e => up({ phone: e.target.value.replace(/\D/g, '').slice(0, 11) })} /></span>${E('phone')}</label>
+        <label class="field"><span class="lbl">City</span><select class="inp" value=${d.city} onChange=${e => up({ city: e.target.value })}>${svc.gift.cities.map(c => html`<option value=${c}>${c}</option>`)}</select></label>
+        <label class="field"><span class="lbl">Full address</span><textarea class=${'inp' + (touched && errs.address ? ' bad' : '')} rows="2" placeholder="House, street, area" value=${d.address} onInput=${e => up({ address: e.target.value })}></textarea>${E('address')}</label>
+        <label class="field"><span class="lbl">Deliver by</span><input class=${'inp' + (touched && errs.deliverBy ? ' bad' : '')} type="date" min=${minDate} value=${d.deliverBy} onInput=${e => up({ deliverBy: e.target.value })} />
+          ${E('deliverBy') || html`<div class="hint">Earliest ${dayName(minDate)}: each piece is made to order.</div>`}</label>
+        <p class="small muted" style="margin-top:12px">The recipient shows their CNIC to the courier. They don’t need the PGBX app.</p>
+      </div></section>
+      <section class="sec"><div class="sec-h"><h3>Price</h3>${!LIVE && html`<${Sample}/>`}</div><div class="card">
+        <div class="kv"><span>${it.label} ${d.metal} at today’s buy price</span><b>${fmt(price.metal)}</b></div>
+        <div class="kv"><span>Making${d.design !== 'plain' ? ', themed design' : ''}${d.engraving.trim() ? ' and engraving' : ''}</span><b>${fmt(price.making)}</b></div>
+        ${price.packaging > 0 && html`<div class="kv"><span>Velvet box</span><b>${fmt(price.packaging)}</b></div>`}
+        <div class="kv"><span>Insured delivery</span><b>${fmt(price.delivery)}</b></div>
+        <div class="kv total"><span>Total</span><b><${Odo} value=${price.total} /></b></div>
+        <p class="tiny muted" style="margin-top:8px">The metal price follows the live rate and is fixed when you pay.</p>
+      </div></section>
+      <section class="sec"><div class="sec-h"><h3>Pay with</h3></div>
+        <div class="group inset" role="radiogroup" aria-label="Payment method">
+          ${METHODS.map(m => html`<button class="row" onClick=${() => A.set({ method: m.id })} role="radio" aria-checked=${S.method === m.id}><span class="ri"><${Icon} n=${m.icon} c="sm"/></span><div class="rt"><b>${m.name}</b><span>${m.sub}</span></div><${Radio} on=${S.method === m.id} /></button>`)}
+        </div></section>
+      ${S.stale && html`<${StaleBanner}/>`}
+      ${S.offline && html`<${Notice} kind="warning" icon="wifiOff" title="You’re offline">Connect to the internet to order.</${Notice}>`}
+    </div>
+    <${ActionBar} label="Total" amount=${fmt(price.total)}>
+      <button class="btn btn-primary" disabled=${S.paying || S.offline || S.stale} onClick=${pay}>${S.paying ? html`<span class="spin"></span> Placing order` : html`<${Icon} n="lock" c="sm"/> Pay ${fmt(price.total)}`}</button>
+    </${ActionBar}>
+  </div>`;
+}
+
+function GiftDetail({ S, A, id }) {
+  const g = S.giftOrders.find(x => x.id === id), svc = S.svc;
+  if (!g || !svc) return html`<div class="page"><${TopBar} title="Gift order" onBack=${A.back} /><div class="scroll"><${Empty} icon="gift" title="Order not found" body="It may still be loading. Try again in a moment." /></div></div>`;
+  const order = ['placed', 'in_production', 'dispatched', 'delivered'], idx = order.indexOf(g.status);
+  const labels = { placed: 'Placed', in_production: 'Being made', dispatched: 'On its way', delivered: 'Delivered' };
+  const it = svc.gift.items.find(i => i.id === g.item);
+  const cancel = () => A.confirm({ title: 'Cancel this gift order?', body: 'Your payment will be refunded to your payment method.', confirm: 'Cancel order', cancel: 'Keep it', danger: true, onConfirm: () => A.cancelGift(g.id) });
+  return html`<div class="page">
+    <${TopBar} title="Gift order" onBack=${A.back} />
+    <div class="scroll">
+      <div class="gift-stage"><${GiftPreview} d=${{ item: g.item, shape: g.shape, design: g.design, engraving: g.engraving || '' }} svc=${svc} size=${132} /></div>
+      <div class="card" style="text-align:center;padding:20px 16px">
+        <span class=${'tag ' + GIFT_TAG[g.status]}>${GIFT_LABEL[g.status]}</span>
+        <div style="font:600 20px/1.25 var(--serif);margin-top:10px">${giftTitle(g, svc)} for ${g.recipient.name}</div>
+        ${g.status !== 'cancelled' && html`<div class="steps">${order.map((k, i) => html`<div class=${'step' + (i < idx || g.status === 'delivered' ? ' done' : i === idx ? ' cur' : '')}><div class="sd">${i < idx || g.status === 'delivered' ? html`<${Icon} n="check"/>` : i + 1}</div>${labels[k]}</div>`)}</div>`}
+        ${g.status === 'cancelled' && html`<p class="small muted" style="margin-top:12px">${g.refundDue ? 'Cancelled. Your payment will be refunded.' : 'Cancelled.'}</p>`}
+        ${g.tracking && html`<p class="small" style="margin-top:12px">Courier tracking <b class="mono">${g.tracking}</b></p>`}
+      </div>
+      <section class="sec"><div class="sec-h"><h3>Details</h3></div><div class="card">
+        <div class="kv"><span>Reference</span><b class="mono">${g.ref}</b></div>
+        <div class="kv"><span>Piece</span><b>${it ? `${it.label} ${it.metal}` : g.item}, ${g.shape}</b></div>
+        <div class="kv"><span>Design</span><b>${(DESIGNS.find(x => x[0] === g.design) || DESIGNS[0])[1]}</b></div>
+        ${g.engraving && html`<div class="kv"><span>Engraving</span><b>“${g.engraving}”</b></div>`}
+        ${g.message && html`<div class="kv"><span>Card</span><b style="text-align:right;font-weight:500">${g.message}</b></div>`}
+        <div class="kv"><span>Deliver to</span><b style="text-align:right">${g.recipient.name}, ${g.recipient.address}, ${g.recipient.city}</b></div>
+        <div class="kv"><span>Deliver by</span><b>${dayName(g.deliverBy)}</b></div>
+        <div class="kv"><span>Metal</span><b>${fmt(g.metal_pkr)}</b></div>
+        <div class="kv"><span>Making</span><b>${fmt(g.making_pkr)}</b></div>
+        ${g.packaging_pkr > 0 && html`<div class="kv"><span>Velvet box</span><b>${fmt(g.packaging_pkr)}</b></div>`}
+        <div class="kv"><span>Insured delivery</span><b>${fmt(g.delivery_pkr)}</b></div>
+        <div class="kv total"><span>Total paid</span><b>${fmt(g.total)}</b></div>
+      </div></section>
+      ${g.status === 'placed' && html`<div class="pad" style="margin-top:24px"><button class="btn btn-danger" onClick=${cancel}>Cancel order</button>
+        <p class="hint" style="text-align:center">You can cancel until the refinery starts making it.</p></div>`}
+      ${['placed', 'in_production', 'dispatched'].includes(g.status) && html`<${Demo} title="Refinery and courier" body="In the real system PGBX operations updates this in the admin panel.">
+        <button class="btn btn-secondary btn-sm" style="width:100%" onClick=${() => A.demoGift(g.id)}>${{ placed: 'Start making it', in_production: 'Hand to the courier', dispatched: 'Mark delivered' }[g.status]}</button></${Demo}>`}
+    </div>
+  </div>`;
+}
+
+/* ============================================================
    App (shared state)
    ============================================================ */
-const TABS = [['rates', 'Rates'], ['buy', 'Buy'], ['wallet', 'Wallet'], ['redeem', 'Redeem'], ['account', 'Account']];
-const GUEST_REASON = { buy: 'Log in to buy gold and silver.', wallet: 'Log in to see your wallet.', redeem: 'Log in to collect your bars at a dealer.', account: 'Log in to manage your account.' };
+const TABS = [['rates', 'Rates'], ['buy', 'Buy'], ['services', 'Services'], ['wallet', 'Wallet'], ['account', 'Account']];
+const OPEN_TABS = ['rates', 'services'];          // guests can use these (the jewellery worth calculator is free for everyone)
+const GUEST_PUSH = ['worth'];
+const GUEST_REASON = { buy: 'Log in to buy gold and silver.', wallet: 'Log in to see your wallet.', account: 'Log in to manage your account.' };
 
 // Prototype data is kept in this browser so a refresh does not wipe the demo. Sample data only; nothing leaves the device.
 const STORE_KEY = LIVE ? 'pgbx-device-v1' : 'pgbx-demo-v1';
-const KEEP = LIVE ? ['cart', 'pin', 'pinFails', 'pinLockUntil', 'phone', 'biometric', 'notifPrefs', 'tips', 'pinSet', 'loggedIn'] : ['ledger', 'orders', 'redemptions', 'dealerStock', 'cart', 'profile', 'kyc', 'pin', 'pinFails', 'pinLockUntil', 'phone',
-  'notifications', 'notifPrefs', 'alerts', 'biometric', 'tab', 'buyMetal', 'loggedIn', 'pinSet', 'tips'];
+const KEEP = LIVE ? ['worth', 'cart', 'pin', 'pinFails', 'pinLockUntil', 'phone', 'biometric', 'notifPrefs', 'tips', 'pinSet', 'loggedIn'] : ['ledger', 'orders', 'redemptions', 'dealerStock', 'cart', 'profile', 'kyc', 'pin', 'pinFails', 'pinLockUntil', 'phone',
+  'notifications', 'notifPrefs', 'alerts', 'biometric', 'tab', 'buyMetal', 'loggedIn', 'pinSet', 'tips', 'appraisals', 'giftOrders', 'worth'];
 function loadSaved() { try { const d = JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); return d && d.v === 1 && d.s && typeof d.s === 'object' ? sanitizeSaved(d.s) : null; } catch (e) { return null; } }
 
 // Saved data is untrusted (it may be damaged or from an older app version): keep only well-formed values,
@@ -1837,7 +2233,11 @@ function sanitizeSaved(s) {
   if (num(s.pinLockUntil)) out.pinLockUntil = Math.min(s.pinLockUntil, Date.now() + 30000);
   if (str(s.phone) && (s.phone === '' || PK_MOBILE.test(s.phone))) out.phone = s.phone;
   if (typeof s.biometric === 'boolean') out.biometric = s.biometric;
-  if (TABS.some(t => t[0] === s.tab)) out.tab = s.tab;
+  set('appraisals', list(s.appraisals, a => str(a.id) && str(a.ref) && str(a.date) && str(a.slot) && Array.isArray(a.items) && str(a.status) && str(a.visitCode)));
+  set('giftOrders', list(s.giftOrders, g => str(g.id) && str(g.ref) && str(g.item) && isObj(g.recipient) && str(g.status) && num(g.total)));
+  set('worth', list(s.worth, w => str(w.id) && (w.metal === 'gold' || w.metal === 'silver') && str(w.karat)));
+  if (s.tab === 'redeem') out.tab = 'services';                       // the Redeem tab moved into Services
+  else if (TABS.some(t => t[0] === s.tab)) out.tab = s.tab;
   if (s.buyMetal === 'gold' || s.buyMetal === 'silver') out.buyMetal = s.buyMetal;
   if (typeof s.loggedIn === 'boolean') out.loggedIn = s.loggedIn;
   if (LIVE && !out.pin) { out.pinSet = false; out.loggedIn = false; }   // no usable PIN on this phone: log in again
@@ -1848,6 +2248,10 @@ function clearSaved() { try { localStorage.removeItem(STORE_KEY); } catch (e) { 
 const SAVED = loadSaved();
 // A one-off message carried across a reload (for example after closing an account)
 const CARRY_NOTE = (() => { try { const n = sessionStorage.getItem('pgbx-note'); sessionStorage.removeItem('pgbx-note'); return n || ''; } catch (e) { return ''; } })();
+
+const apprDefaults = s => ({ items: [{ metal: 'gold', karat: '', approx_g: 0, note: '' }], date: '', slot: '', city: (s.svc && s.svc.appraisal.cities[0]) || 'Karachi', area: '', address: (s.profile && s.profile.address) || '', phone: s.phone || '', notes: '' });
+const giftDefaults = s => ({ metal: 'gold', item: 'gg-1g', shape: 'coin', design: 'eid', engraving: '', message: '', packaging: 'premium', name: '', phone: '', city: 'Karachi', address: '',
+  deliverBy: ymd(Date.now() + (((s.svc && s.svc.gift.leadDays) || 5) + 2) * 86400e3) });
 
 function App() {
   const [phase, setPhase] = useState(START === 'home' ? 'app' : START === 'login' ? 'login' : START === 'pin' ? 'pin' : 'splash');
@@ -1864,6 +2268,7 @@ function App() {
     kyc: { status: KYC_START, at: KYC_START === 'verified' ? Date.now() - 20 * 86400e3 : null },
     pin: LIVE ? null : PIN_DEFAULT, pinFails: 0, pinLockUntil: 0,
     cart: [], checkout: [], checkoutFrom: 'now', simCreditFail: false,
+    appraisals: [], giftOrders: [], worth: [], apprDraft: null, giftDraft: null, svc: LIVE ? null : SVC_SAMPLE,
     notifications: [], banner: null, notifPrefs: { push: true, sms: true, email: false, alerts: true },
     alerts: [], history: {}, dialog: null, offline: typeof navigator !== 'undefined' && navigator.onLine === false,
     otpCfg: { checked: false, configured: false, channels: ['sms'] },
@@ -1958,6 +2363,9 @@ function App() {
     Live.restoreSession();
     loadDealers();
     Live.products().then(ps => set({ premiums: Object.fromEntries(ps.map(p => [p.id, p.premium_pkr])) })).catch(() => {});
+    // Service fees, deductions and cities from PGBX's settings (public, so guests can use the calculator)
+    Live.servicesConfig().then(c => set({ svc: { purity: c.purity, buybackDeductionPct: c.buybackDeductionPct, appraisal: c.appraisal,
+      gift: { ...c.gift, items: c.gift.items.map(i => ({ id: i.id, metal: i.metal, label: i.label, grams: i.grams, shapes: i.shapes })) } } })).catch(() => {});
   }, []);
   const signedIn = phase === 'app' && st.loggedIn && !st.guest;
   useEffect(() => {
@@ -2058,13 +2466,13 @@ function App() {
     leave: fn => (guardRef.current ? guardRef.current(fn) : fn()),
     guard: fn => { guardRef.current = fn; },
     tab: t => {
-      if (st.guest && t !== 'rates') { A.login(GUEST_REASON[t], { tab: t }); return; }
+      if (st.guest && !OPEN_TABS.includes(t)) { A.login(GUEST_REASON[t], { tab: t }); return; }
       A.leave(() => set(s => ({ tab: t, stack: [], navDir: s.stack.length ? 'back' : tabIndex(t) > tabIndex(s.tab) ? 'fwd' : tabIndex(t) < tabIndex(s.tab) ? 'back' : 'fade' })));
     },
-    push: r => { if (st.guest) { A.login('Log in to continue.'); return; } set(s => ({ stack: [...s.stack, r], navDir: 'fwd' })); },
+    push: r => { if (st.guest && !GUEST_PUSH.includes(r.name)) { A.login(r.name === 'collect' ? 'Log in to collect your bars at a dealer.' : 'Log in to continue.', { push: r }); return; } set(s => ({ stack: [...s.stack, r], navDir: 'fwd' })); },
     back: () => A.leave(() => set(s => ({ stack: s.stack.slice(0, -1), navDir: 'back' }))),
     // Open whatever a notification points to; receipts opened this way get a back button.
-    openLink: link => { if (!link) return; if (link.name === 'receipt' && link.from === undefined) link = { ...link, from: 'inbox' }; if (link.name === 'receipt' && !st.orders.some(o => o.id === link.oid)) return; if (link.name === 'code' && !st.redemptions.some(r => r.id === link.rid)) return;
+    openLink: link => { if (!link) return; if (link.name === 'receipt' && link.from === undefined) link = { ...link, from: 'inbox' }; if (link.name === 'receipt' && !st.orders.some(o => o.id === link.oid)) return; if (link.name === 'code' && !st.redemptions.some(r => r.id === link.rid)) return; if (link.name === 'appraisal' && !st.appraisals.some(a => a.id === link.id)) return; if (link.name === 'gift' && !st.giftOrders.some(g => g.id === link.id)) return;
       set(s => ({ banner: null, navDir: 'fwd', stack: [...s.stack, link] })); },
     // Guests are told why they need to log in, and taken where they were going afterwards.
     login: (note, go) => { set({ stack: [], loginNote: '', loginIntent: note ? { note, go } : null }); setPhase('login'); },
@@ -2094,6 +2502,91 @@ function App() {
       if (!LIVE) { A.guard(null); A.toast('Report sent to PGBX support (demo)'); A.back(); return; }
       const about = ref.startsWith('o:') ? 'Order ' + ((st.orders.find(o => o.id === ref.slice(2)) || {}).receipt || '') : ref.startsWith('r:') ? 'Collection' : 'General';
       Live.report(ref.startsWith('o:') ? 'order' : ref.startsWith('r:') ? 'collection' : 'general', `${about}\n\n${text.trim()}`).then(done, liveFail);
+    },
+    // ---------- services ----------
+    startAppraisal: items => {
+      if (st.guest) { A.login('Log in to book a doorstep appraisal.', { push: { name: 'appraisal-book' } }); if (items) set(s => ({ apprDraft: { ...apprDefaults(s), items } })); return; }
+      set(s => ({ apprDraft: items ? { ...apprDefaults(s), ...(s.apprDraft || {}), items } : s.apprDraft || apprDefaults(s), navDir: 'fwd', stack: [...s.stack.filter(r => r.name !== 'appraisal-book'), { name: 'appraisal-book' }] }));
+    },
+    bookAppraisal: () => {
+      const d = st.apprDraft, svc = st.svc;
+      if (!d || !svc || st.paying || st.offline) return;
+      const phone = d.phone.replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '');
+      if (LIVE) {
+        set(s => ({ paying: true, navDir: 'fade', stack: [...s.stack, { name: 'processing', kind: 'appraisal' }] }));
+        Live.bookAppraisal({ ...d, phone }).then(async a => { await sync(); set(s => ({ paying: false, apprDraft: null, navDir: 'fade', stack: [...s.stack.filter(r => !['processing', 'appraisal-book'].includes(r.name)), { name: 'appraisal', id: a.id }] })); },
+          e => { set(s => ({ paying: false, navDir: 'back', stack: s.stack.filter(r => r.name !== 'processing') })); liveFail(e); });
+        return;
+      }
+      const a = { id: 'AP-' + uid(), ref: `PGBX-A-${ymd(Date.now()).slice(2).replace(/-/g, '')}-${uid().slice(0, 5)}`, createdAt: Date.now(), date: d.date, slot: d.slot, city: d.city, area: d.area.trim(),
+        address: d.address.trim(), phone, items: d.items, notes: d.notes.trim(), fee: svc.appraisal.feePkr, visitCode: String(Math.floor(1000 + Math.random() * 9000)), status: 'booked', goldsmith: null, result: null, refundDue: false };
+      set(s => ({ paying: true, navDir: 'fade', stack: [...s.stack, { name: 'processing', kind: 'appraisal' }] }));
+      setTimeout(() => {
+        set(s => ({ paying: false, apprDraft: null, appraisals: [a, ...s.appraisals], navDir: 'fade', stack: [...s.stack.filter(r => !['processing', 'appraisal-book'].includes(r.name)), { name: 'appraisal', id: a.id }] }));
+        notify('service', 'Appraisal booked', `${a.ref} · ${dayName(a.date)}, ${slotName(a.slot)}. We’ll confirm your goldsmith before the visit.`, true, { name: 'appraisal', id: a.id });
+      }, 1600);
+    },
+    cancelAppraisal: id => {
+      if (LIVE) { Live.cancelAppraisal(id).then(() => { sync(); toast('Visit cancelled'); }, liveFail); return; }
+      const a = st.appraisals.find(x => x.id === id); if (!a) return;
+      const refund = new Date(`${a.date}T${a.slot.split('-')[0]}:00`).getTime() - Date.now() >= st.svc.appraisal.freeCancelHours * 3600e3;
+      set(s => ({ appraisals: s.appraisals.map(x => (x.id === id ? { ...x, status: 'cancelled', refundDue: refund } : x)) }));
+      notify('service', 'Appraisal cancelled', refund ? `${a.ref}. Your visit fee will be refunded.` : `${a.ref}. The fee isn’t refunded this close to the visit.`, true, { name: 'appraisal', id });
+      toast('Visit cancelled');
+    },
+    demoAppraisal: (id, step) => {
+      const a = st.appraisals.find(x => x.id === id); if (!a || LIVE) return;
+      if (step === 'assign') {
+        set(s => ({ appraisals: s.appraisals.map(x => (x.id === id ? { ...x, status: 'confirmed', goldsmith: { name: 'Usman Zargar (sample)', phone: '+92 300 0000000' } } : x)) }));
+        notify('service', 'Appraisal confirmed', `Usman Zargar will visit on ${dayName(a.date)}, ${slotName(a.slot)}. Ask for your visit code before opening the door.`, false, { name: 'appraisal', id });
+      } else {
+        const g = a.items.reduce((t, i) => t + (Number(i.approx_g) || 0), 0) || 10, k = (a.items.find(i => i.karat) || {}).karat || '21K', metal = a.items[0].metal;
+        const net = Math.round(g * 0.97 * 10) / 10, pur = (st.svc.purity[metal] || {})[k] || 0.875;
+        const value = Math.round(net * pur * rateOf(st.rates, metal).sellGram / 0.999 * (1 - st.svc.buybackDeductionPct[metal] / 100));
+        set(s => ({ appraisals: s.appraisals.map(x => (x.id === id ? { ...x, status: 'completed', result: { karat: k, net_g: net, value_pkr: value, summary: `Sample report: tested with a karat meter and calibrated scale. ${k} confirmed; ${fmtW(g - net)} of solder and stones deducted.` } } : x)) }));
+        notify('service', 'Appraisal report ready', 'Your assay results are in the app.', false, { name: 'appraisal', id });
+      }
+    },
+    startGift: () => {
+      if (st.guest) { A.login('Log in to send gold or silver as a gift.', { push: { name: 'gift-new' } }); return; }
+      set(s => ({ giftDraft: s.giftDraft || giftDefaults(s), navDir: 'fwd', stack: [...s.stack, { name: 'gift-new' }] }));
+    },
+    placeGift: () => {
+      const d = st.giftDraft, svc = st.svc;
+      if (!d || !svc || st.paying || st.offline || stale) return;
+      if (st.kyc.status !== 'verified') { A.push({ name: 'kyc', next: 'gift' }); return; }
+      const phone = d.phone.replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '');
+      if (LIVE) {
+        set(s => ({ paying: true, navDir: 'fade', stack: [...s.stack, { name: 'processing', kind: 'gift' }] }));
+        Live.placeGift({ ...d, phone }).then(async g => { await sync(); set(s => ({ paying: false, giftDraft: null, navDir: 'fade', stack: [...s.stack.filter(r => !['processing', 'gift-new'].includes(r.name)), { name: 'gift', id: g.id }] })); },
+          e => { set(s => ({ paying: false, navDir: 'back', stack: s.stack.filter(r => r.name !== 'processing') })); liveFail(e); });
+        return;
+      }
+      const pr = giftPrice(d, svc, st.rates);
+      if (spentToday + pr.total > DAY_LIMIT) { toast(`You can spend up to ${fmt(Math.max(0, DAY_LIMIT - spentToday))} more today.`); return; }
+      const g = { id: 'GF-' + uid(), ref: `PGBX-G-${ymd(Date.now()).slice(2).replace(/-/g, '')}-${uid().slice(0, 5)}`, createdAt: Date.now(), item: d.item, shape: d.shape, design: d.design,
+        engraving: d.engraving.trim(), message: d.message.trim(), packaging: d.packaging, recipient: { name: d.name.trim(), phone, city: d.city, address: d.address.trim() }, deliverBy: d.deliverBy,
+        metal_pkr: pr.metal, making_pkr: pr.making, packaging_pkr: pr.packaging, delivery_pkr: pr.delivery, total: pr.total, status: 'placed', tracking: null, refundDue: false };
+      set(s => ({ paying: true, navDir: 'fade', stack: [...s.stack, { name: 'processing', kind: 'gift' }] }));
+      setTimeout(() => {
+        set(s => ({ paying: false, giftDraft: null, giftOrders: [g, ...s.giftOrders], navDir: 'fade', stack: [...s.stack.filter(r => !['processing', 'gift-new'].includes(r.name)), { name: 'gift', id: g.id }] }));
+        notify('service', 'Gift order placed', `${g.ref} · ${fmt(g.total)}. Delivery by ${dayName(g.deliverBy)}.`, true, { name: 'gift', id: g.id });
+      }, 1800);
+    },
+    cancelGift: id => {
+      if (LIVE) { Live.cancelGift(id).then(() => { sync(); toast('Gift order cancelled'); }, liveFail); return; }
+      set(s => ({ giftOrders: s.giftOrders.map(x => (x.id === id && x.status === 'placed' ? { ...x, status: 'cancelled', refundDue: true } : x)) }));
+      notify('service', 'Gift order cancelled', 'Your payment will be refunded to your payment method.', true, { name: 'gift', id });
+      toast('Gift order cancelled');
+    },
+    demoGift: id => {
+      const g = st.giftOrders.find(x => x.id === id); if (!g || LIVE) return;
+      const next = { placed: 'in_production', in_production: 'dispatched', dispatched: 'delivered' }[g.status]; if (!next) return;
+      const tracking = next === 'dispatched' ? 'TCS' + Math.floor(100000000 + Math.random() * 900000000) : g.tracking;
+      set(s => ({ giftOrders: s.giftOrders.map(x => (x.id === id ? { ...x, status: next, tracking } : x)) }));
+      const msg = { in_production: ['Your gift is being made', `${g.ref} is in production at the PGBX refinery.`], dispatched: ['Your gift is on its way', `Insured courier, tracking ${tracking}. The recipient will need their CNIC.`],
+        delivered: ['Gift delivered', `${g.ref} was delivered to ${g.recipient.name}.`] }[next];
+      notify('service', msg[0], msg[1], false, { name: 'gift', id });
     },
     lockNow: () => { set({ lockNote: 'App locked', stack: [] }); setPhase('pin'); },
     openHistory: metal => set(s => ({ stack: [...s.stack, { name: 'history', metal }], navDir: 'fwd' })),
@@ -2250,6 +2743,7 @@ function App() {
     set(s => { const go = s.loginIntent && s.loginIntent.go;
       return { guest: false, lockNote: '', loginNote: '', loginIntent: null, navDir: 'fade', pinFails: 0, pinLockUntil: 0, loggedIn: true,
         ...(go && go.tab ? { tab: go.tab, stack: [] } : {}),
+        ...(go && go.push ? { tab: 'services', stack: [go.push] } : {}),
         ...(go && go.pid ? { buyMetal: P[go.pid].metal, qty: 1, stack: [{ name: 'product', pid: go.pid }], lock: lockFor(s, [go.pid]) } : {}) }; });
     setPhase('app');
   };
@@ -2273,9 +2767,15 @@ function App() {
     if (n === 'product') content = html`<${ProductScreen} S=${S} A=${A} pid=${top.pid}/>`;
     else if (n === 'cart') content = html`<${CartScreen} S=${S} A=${A}/>`;
     else if (n === 'pay') content = html`<${PayScreen} S=${S} A=${A}/>`;
-    else if (n === 'processing') content = html`<${Processing} fail=${top.fail}/>`;
+    else if (n === 'processing') content = html`<${Processing} fail=${top.fail} kind=${top.kind}/>`;
     else if (n === 'receipt') content = html`<${Receipt} S=${S} A=${A} oid=${top.oid} showBack=${top.from === 'inbox'}/>`;
     else if (n === 'code') content = html`<${CodeScreen} S=${S} A=${A} rid=${top.rid}/>`;
+    else if (n === 'collect') content = html`<${RedeemScreen} S=${S} A=${A} pushed=${true}/>`;
+    else if (n === 'worth') content = html`<${WorthScreen} S=${S} A=${A}/>`;
+    else if (n === 'appraisal-book') content = html`<${AppraisalBook} S=${S} A=${A}/>`;
+    else if (n === 'appraisal') content = html`<${AppraisalDetail} S=${S} A=${A} id=${top.id}/>`;
+    else if (n === 'gift-new') content = html`<${GiftNew} S=${S} A=${A}/>`;
+    else if (n === 'gift') content = html`<${GiftDetail} S=${S} A=${A} id=${top.id}/>`;
     else if (n === 'info') content = html`<${InfoScreen} S=${S} A=${A} kind=${top.kind}/>`;
     else if (n === 'changepin') content = html`<${ChangePin} S=${S} A=${A}/>`;
     else if (n === 'history') content = html`<${HistoryScreen} S=${S} A=${A} metal=${top.metal}/>`;
@@ -2286,7 +2786,7 @@ function App() {
     else if (n === 'statement') content = html`<${StatementScreen} S=${S} A=${A}/>`;
     else if (n === 'closeaccount') content = html`<${CloseAccount} S=${S} A=${A}/>`;
   } else {
-    const M = { rates: RatesHome, buy: BuyList, wallet: WalletScreen, redeem: RedeemScreen, account: AccountScreen }[st.tab];
+    const M = { rates: RatesHome, buy: BuyList, services: ServicesScreen, wallet: WalletScreen, account: AccountScreen }[st.tab] || RatesHome;
     content = html`<${M} S=${S} A=${A}/>`;
   }
   const routeKey = st.tab + '/' + (top ? top.name + (top.pid || top.rid || top.kind || top.oid || top.orderKey || '') : '') + '/' + st.stack.length;
@@ -2299,7 +2799,7 @@ function App() {
     const m = document.querySelector('meta[name="theme-color"]'); if (m) m.setAttribute('content', c);
   }, [darkTop]);
   // Checkout and verification are focused tasks: the tab bar steps aside for their sticky actions.
-  const hideTabs = top && ['product', 'cart', 'pay', 'processing', 'receipt', 'kyc', 'changepin'].includes(top.name);
+  const hideTabs = top && ['product', 'cart', 'pay', 'processing', 'receipt', 'kyc', 'changepin', 'worth', 'appraisal-book', 'gift-new'].includes(top.name);
   const enterCls = st.navDir === 'fwd' ? 'enter-fwd' : st.navDir === 'back' ? 'enter-back' : 'enter';
 
   // System back (Android back button, iOS edge swipe, browser back) walks back through the app's screens.
@@ -2354,7 +2854,7 @@ function App() {
         ${!hideTabs && html`<nav class="tabbar" aria-label="Main"><div class="tabs">
           <span class="tab-ind" style=${{ transform: `translateX(${Math.max(0, tabIndex(st.tab)) * 100}%)` }} aria-hidden="true"><i></i></span>
           ${TABS.map(([k, l]) => html`<button class=${'tab' + (st.tab === k ? ' on' : '')} onClick=${() => A.tab(k)} aria-current=${st.tab === k ? 'page' : null}>
-            <${Icon} n=${k}/>${l}${st.guest && k !== 'rates' ? html`<span class="lk" aria-label="Log in required"><${Icon} n="lock" c="xs"/></span>` : ''}</button>`)}
+            <${Icon} n=${k}/>${l}${st.guest && !OPEN_TABS.includes(k) ? html`<span class="lk" aria-label="Log in required"><${Icon} n="lock" c="xs"/></span>` : ''}</button>`)}
         </div></nav>`}
         ${st.offline && html`<div class="offline" role="status"><${Icon} n="wifiOff" c="sm"/> You’re offline. Prices will update when you reconnect.</div>`}
         ${st.banner && html`<${PushBanner} n=${st.banner} onOpen=${() => (st.banner.link ? A.openLink(st.banner.link) : set(s => ({ banner: null, stack: [...s.stack, { name: 'inbox' }], navDir: 'fwd' })))} />`}

@@ -8,7 +8,7 @@ const ORDER = Object.keys(PRODUCT_NAMES);
 const byProduct = (a, b) => ORDER.indexOf(a.product_id) - ORDER.indexOf(b.product_id);
 
 const SECTIONS = [
-  ['overview', 'Overview'], ['kyc', 'Identity checks'], ['orders', 'Orders'], ['customers', 'Customers'], ['support', 'Support'], ['dealers', 'Dealers & stock'],
+  ['overview', 'Overview'], ['kyc', 'Identity checks'], ['orders', 'Orders'], ['appraisals', 'Doorstep appraisals'], ['gifts', 'Gift orders'], ['customers', 'Customers'], ['support', 'Support'], ['dealers', 'Dealers & stock'],
   ['products', 'Products & premiums'], ['reconciliation', 'Reconciliation'], ['settings', 'Settings'], ['audit', 'Audit log'], ['staff', 'Staff', 'admin'],
 ];
 const go = (s, id) => { location.hash = id ? `${s}/${id}` : s; };
@@ -34,6 +34,8 @@ function Overview() {
       <div class="grid g4">
         <a class=${'card stat' + (d.kyc_review ? ' attn' : '')} href="#kyc" style="text-decoration:none;color:inherit"><div class="k">Identity checks to review</div><div class="v">${d.kyc_review}</div></a>
         <a class=${'card stat' + (d.flagged_orders ? ' attn' : '')} href="#orders" style="text-decoration:none;color:inherit"><div class="k">Orders needing operations</div><div class="v">${d.flagged_orders}</div></a>
+        <a class=${'card stat' + (d.appraisals_to_assign ? ' attn' : '')} href="#appraisals" style="text-decoration:none;color:inherit"><div class="k">Appraisals to assign</div><div class="v">${d.appraisals_to_assign ?? 0}</div></a>
+        <a class="card stat" href="#gifts" style="text-decoration:none;color:inherit"><div class="k">Gift orders in progress</div><div class="v">${d.gifts_open ?? 0}</div></a>
         <div class="card stat"><div class="k">Sales today</div><div class="v">${pkr(d.sales_today_pkr)}</div><div class="muted small">${d.orders_today} orders</div></div>
         <div class="card stat"><div class="k">Active collections</div><div class="v">${d.active_collections}</div></div>
         <div class="card stat"><div class="k">Customers</div><div class="v">${d.customers}</div><div class="muted small">${d.verified} verified</div></div>
@@ -139,6 +141,88 @@ function Customer({ id, me, toast }) {
       <${Card} title="Identity checks"><${Table} head=${['Provider', 'Status', 'Reason', 'Decided']} empty="No checks." rows=${d.kyc.map(k => html`<tr>
         <td>${k.provider}</td><td><${Tag} s=${k.status} /></td><td class="small">${k.reason || '—'}</td><td class="small">${k.decided_at ? when(k.decided_at) + ' · ' + (k.decided_by || '') : '—'}</td></tr>`)} /></${Card}>
     </div>`}</${Screen}>`;
+}
+
+// ---------- doorstep appraisals ----------
+const SLOT_DAY = d => new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+function Appraisals({ toast }) {
+  const [status, setStatus] = useState('booked');
+  const load = useLoad('/admin/appraisals?status=' + status);
+  const [act, setAct] = useState(null);                       // { a, action }
+  const [f, setF] = useState({});
+  const run = async () => {
+    await api(`/admin/appraisals/${act.a.id}`, { method: 'POST', body: { action: act.action, ...f } });
+    toast({ assign: 'Goldsmith assigned. The customer has been told.', complete: 'Result sent to the customer.', cancel: 'Visit cancelled. The customer has been told.' }[act.action]);
+    setAct(null); setF({}); load.reload();
+  };
+  const items = a => (a.items || []).map(i => `${i.metal === 'silver' ? 'Silver' : 'Gold'}${i.karat ? ' ' + i.karat : ''}${i.approx_g ? ' ~' + i.approx_g + ' g' : ''}${i.note ? ' (' + i.note + ')' : ''}`).join(', ');
+  return html`<${Head} title="Doorstep appraisals" sub="Paid visits: assign a goldsmith, then record the assay result">
+      <${Seg} label="Status" value=${status} onChange=${setStatus} options=${[['booked', 'To assign'], ['confirmed', 'Assigned'], ['completed', 'Completed'], ['cancelled', 'Cancelled']]} /></${Head}>
+    <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Visit', 'Customer', 'Address', 'Pieces', status === 'confirmed' ? 'Goldsmith' : 'Ref', '']} empty="Nothing here." rows=${d.appraisals.map(a => html`<tr>
+      <td><b>${SLOT_DAY(a.date)}</b><div class="muted small">${a.slot}</div></td>
+      <td>${a.customer_name || '—'}<div class="muted small">+92 ${a.phone}</div></td>
+      <td class="small" style="max-width:240px">${a.address}, ${a.area}, ${a.city}${a.notes ? html`<div class="muted">${a.notes}</div>` : ''}</td>
+      <td class="small" style="max-width:220px">${items(a)}</td>
+      <td class="small">${status === 'confirmed' && a.goldsmith ? html`${a.goldsmith.name}<div class="muted">${a.goldsmith.phone} · code ${a.visit_code}</div>` : html`<span class="mono">${a.ref}</span>`}
+        ${a.refund_due ? html`<div><span class="tag warn">refund due</span></div>` : ''}</td>
+      <td class="r"><div class="row" style="justify-content:flex-end">
+        ${a.status === 'booked' && html`<button class="btn sm" onClick=${() => setAct({ a, action: 'assign' })}>Assign</button>`}
+        ${a.status === 'confirmed' && html`<button class="btn sm" onClick=${() => setAct({ a, action: 'complete' })}>Record result</button>`}
+        ${['booked', 'confirmed'].includes(a.status) && html`<button class="btn sm sec" onClick=${() => setAct({ a, action: 'cancel' })}>Cancel</button>`}
+        ${a.status === 'completed' && a.result && html`<span class="small muted" style="max-width:220px;display:inline-block">${a.result.summary}</span>`}
+      </div></td></tr>`)} /></${Card}>`}</${Screen}>
+    ${act && html`<${Modal} title=${{ assign: 'Assign goldsmith', complete: 'Record assay result', cancel: 'Cancel visit' }[act.action]} onClose=${() => setAct(null)}>
+      <p class="muted small">${act.a.ref} · ${SLOT_DAY(act.a.date)}, ${act.a.slot} · ${act.a.area}, ${act.a.city}</p>
+      ${act.action === 'assign' && html`
+        <label class="f"><span>Goldsmith’s name</span><input class="in" value=${f.name || ''} onInput=${e => setF({ ...f, name: e.target.value })} /></label>
+        <label class="f"><span>Goldsmith’s phone</span><input class="in" inputmode="tel" value=${f.phone || ''} onInput=${e => setF({ ...f, phone: e.target.value })} />
+          <small>Give the goldsmith the visit code <b class="mono">${act.a.visit_code}</b>. The customer opens the door only to someone who says it.</small></label>`}
+      ${act.action === 'complete' && html`
+        <div class="grid g2" style="gap:12px"><label class="f"><span>Karat found</span><input class="in" value=${f.karat || ''} placeholder="e.g. 21K" onInput=${e => setF({ ...f, karat: e.target.value })} /></label>
+          <label class="f"><span>Net metal weight (g)</span><input class="in" inputmode="decimal" value=${f.net_g || ''} onInput=${e => setF({ ...f, net_g: e.target.value })} /></label></div>
+        <label class="f"><span>Value offered (PKR, optional)</span><input class="in" inputmode="numeric" value=${f.value_pkr || ''} onInput=${e => setF({ ...f, value_pkr: e.target.value.replace(/\D/g, '') })} /></label>
+        <label class="f"><span>Result for the customer</span><textarea class="in" rows="4" value=${f.summary || ''} onInput=${e => setF({ ...f, summary: e.target.value })}></textarea></label>`}
+      ${act.action === 'cancel' && html`<label class="f"><span>Reason (sent to the customer)</span><input class="in" value=${f.reason || ''} onInput=${e => setF({ ...f, reason: e.target.value })} />
+        <small>A paid visit cancelled by PGBX is marked for refund.</small></label>`}
+      <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setAct(null)}>Close</button>
+        <${Act} cls=${act.action === 'cancel' ? 'btn danger' : 'btn'} run=${run}>${{ assign: 'Assign', complete: 'Send result', cancel: 'Cancel visit' }[act.action]}</${Act}></div>
+    </${Modal}>`}`;
+}
+
+// ---------- gift orders ----------
+const DESIGN = { plain: 'Plain', eid: 'Eid Mubarak', wedding: 'Wedding', birthday: 'Birthday', newborn: 'New baby', graduation: 'Graduation' };
+function Gifts({ toast }) {
+  const [status, setStatus] = useState('placed');
+  const load = useLoad('/admin/gifts?status=' + status);
+  const [act, setAct] = useState(null);
+  const [f, setF] = useState({});
+  const run = async () => {
+    await api(`/admin/gifts/${act.g.id}`, { method: 'POST', body: { action: act.action, ...f } });
+    toast('Updated. The customer has been told.'); setAct(null); setF({}); load.reload();
+  };
+  const NEXT = { placed: ['produce', 'Start production'], in_production: ['dispatch', 'Dispatch'], dispatched: ['deliver', 'Mark delivered'] };
+  return html`<${Head} title="Gift orders" sub="Bullion and coins made to order and delivered by insured courier">
+      <${Seg} label="Status" value=${status} onChange=${setStatus} options=${[['placed', 'New'], ['in_production', 'In production'], ['dispatched', 'Dispatched'], ['delivered', 'Delivered'], ['cancelled', 'Cancelled']]} /></${Head}>
+    <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Deliver by', 'Piece', 'Engraving and card', 'Recipient', '#Total', '']} empty="Nothing here." rows=${d.gifts.map(g => html`<tr>
+      <td><b>${SLOT_DAY(g.deliver_by)}</b><div class="muted small mono">${g.ref}</div></td>
+      <td>${g.metal === 'silver' ? 'Silver' : 'Gold'} ${g.item_label} ${g.shape}<div class="muted small">${DESIGN[g.design]} · ${g.packaging} box</div></td>
+      <td class="small" style="max-width:220px">${g.engraving ? html`<b>“${g.engraving}”</b>` : html`<span class="muted">No engraving</span>`}${g.message ? html`<div class="muted">${g.message}</div>` : ''}</td>
+      <td class="small" style="max-width:240px">${g.recipient.name} · +92 ${g.recipient.phone}<div class="muted">${g.recipient.address}, ${g.recipient.city}</div><div class="muted">Ordered by ${g.customer_name || '—'}</div></td>
+      <td class="r num">${pkr(g.total_pkr)}${g.refund_due ? html`<div><span class="tag warn">refund due</span></div>` : ''}</td>
+      <td class="r"><div class="row" style="justify-content:flex-end">
+        ${NEXT[g.status] && html`<button class="btn sm" onClick=${() => setAct({ g, action: NEXT[g.status][0] })}>${NEXT[g.status][1]}</button>`}
+        ${['placed', 'in_production'].includes(g.status) && html`<button class="btn sm sec" onClick=${() => setAct({ g, action: 'cancel' })}>Cancel</button>`}
+        ${g.tracking && html`<span class="small mono">${g.tracking}</span>`}
+      </div></td></tr>`)} /></${Card}>`}</${Screen}>
+    ${act && html`<${Modal} title=${{ produce: 'Start production', dispatch: 'Dispatch', deliver: 'Mark delivered', cancel: 'Cancel order' }[act.action]} onClose=${() => setAct(null)}>
+      <p class="muted small">${act.g.ref} · ${act.g.item_label} ${act.g.shape} for ${act.g.recipient.name}</p>
+      ${act.action === 'dispatch' && html`<label class="f"><span>Courier tracking number</span><input class="in mono" value=${f.tracking || ''} onInput=${e => setF({ ...f, tracking: e.target.value })} />
+        <small>Insured courier only. The recipient shows their CNIC on delivery.</small></label>`}
+      ${act.action === 'cancel' && html`<label class="f"><span>Reason (sent to the customer)</span><input class="in" value=${f.reason || ''} onInput=${e => setF({ ...f, reason: e.target.value })} /><small>The payment is marked for refund.</small></label>`}
+      ${act.action === 'produce' && html`<p class="small">Check the engraving spelling with the customer before production. It can’t be cancelled by the customer after this.</p>`}
+      <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setAct(null)}>Close</button>
+        <${Act} cls=${act.action === 'cancel' ? 'btn danger' : 'btn'} run=${run}>Confirm</${Act}></div>
+    </${Modal}>`}`;
 }
 
 // ---------- support ----------
@@ -255,6 +339,11 @@ const SETTING_HELP = {
   price_lock_seconds: ['Price lock length', 'seconds'], rate_stale_seconds: ['Prices count as old after', 'seconds'], redemption_valid_hours: ['Collection code valid for', 'hours'],
   order_payment_minutes: ['Time to pay an order', 'minutes'], session_days: ['Customers stay logged in for', 'days'], spread: ['Buy/sell spread', 'JSON'],
   retention_days: ['Keep closed accounts’ records for', 'days, empty until PGBX decides'], redemption_fee_pkr: ['Collection fee', 'PKR, empty for none'],
+  purity: ['Fineness of each karat and silver standard', 'JSON'], buyback_deduction_pct: ['Jewellery buy-back deduction', '% by metal, JSON'],
+  appraisal_fee_pkr: ['Doorstep appraisal fee', 'PKR'], appraisal_cities: ['Cities with doorstep appraisal', 'JSON list'], appraisal_slots: ['Appraisal time slots', 'JSON list, HH:MM-HH:MM'],
+  appraisal_free_cancel_hours: ['Free appraisal cancellation until', 'hours before the visit'], gift_making_pkr: ['Gift making charges', 'PKR, JSON: plain, themed, engraving'],
+  gift_packaging_pkr: ['Gift packaging', 'PKR, JSON: standard, premium'], gift_delivery_pkr: ['Gift insured delivery', 'PKR'], gift_lead_days: ['Gift earliest delivery', 'days after ordering'],
+  gift_cities: ['Gift delivery cities', 'JSON list'],
 };
 function Settings({ me, toast }) {
   const load = useLoad('/admin/settings');
@@ -328,9 +417,9 @@ function Admin() {
   useEffect(() => { setMenu(false); window.scrollTo(0, 0); }, [section, id]);
   if (me === undefined) return html`<div class="signin"></div>`;
   if (!me) return html`<${SignIn} tool="Admin panel" roles=${['admin', 'ops']} onIn=${signIn} notice=${notice} />`;
-  const badge = { kyc: counts.data?.kyc_review, orders: counts.data?.flagged_orders, support: counts.data?.support_open };
+  const badge = { kyc: counts.data?.kyc_review, orders: counts.data?.flagged_orders, support: counts.data?.support_open, appraisals: counts.data?.appraisals_to_assign };
   const props = { me, toast: show };
-  const views = { overview: Overview, kyc: Kyc, orders: Orders, customers: Customers, support: Support, dealers: Dealers, products: Products, reconciliation: Reconciliation, settings: Settings, audit: Audit, staff: Staff };
+  const views = { overview: Overview, kyc: Kyc, orders: Orders, appraisals: Appraisals, gifts: Gifts, customers: Customers, support: Support, dealers: Dealers, products: Products, reconciliation: Reconciliation, settings: Settings, audit: Audit, staff: Staff };
   const View = section === 'customers' && id ? null : views[section] || Overview;
   return html`<div class="shell">
     <nav class=${'side' + (menu ? ' open' : '')} aria-label="Sections">

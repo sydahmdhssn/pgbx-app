@@ -212,11 +212,33 @@ so they hold across server instances. Every staff action and every look at a cus
    It prints a one-time password and an authenticator secret. Everyone else is added in the admin panel.
 5. In the admin panel: enter dealers and their stock, the real premiums, limits and spread (Settings), and record a vault count.
 
+## Services (jewellery worth, doorstep appraisal, gift bullion)
+
+The **Services** tab replaces the old Redeem tab: collecting bars now sits inside it and in Wallet.
+
+- **Jewellery worth** works for guests: estimate = metal weight × fineness of the karat × today's sell price per pure
+  gram × (1 − buy-back deduction). Fineness, deductions and everything below are PGBX settings (admin panel → Settings):
+  `purity`, `buyback_deduction_pct`, `appraisal_fee_pkr`, `appraisal_cities`, `appraisal_slots`,
+  `appraisal_free_cancel_hours`, `gift_making_pkr`, `gift_packaging_pkr`, `gift_delivery_pkr`, `gift_lead_days`,
+  `gift_cities`. All current values are **samples** until PGBX sets them.
+- **Doorstep appraisal**: booking needs a login but not an identity check. The fee is paid like an order (one payment,
+  wrong amounts refused). Each paid booking gets a 4-digit visit code; at most 6 visits per time slot. Customers can
+  cancel; the fee is refunded only if it's more than `appraisal_free_cancel_hours` before the visit. Operations
+  assigns a goldsmith and records the assay result in **Admin → Doorstep appraisals**; the customer is notified at each step.
+- **Gift gold and silver**: buying metal, so identity must be verified, and it counts towards the daily purchase limit.
+  The server prices it from its own fresh rate snapshot: metal at the buy price + making (plain or themed, + engraving)
+  + packaging + insured delivery. Customers can cancel until production starts. Operations moves orders through
+  production, dispatch (courier tracking number required) and delivery in **Admin → Gift orders**.
+- Open bookings and gift orders block account closure; purge removes addresses and recipients' details.
+- Database: `supabase/migrations/20261006000000_services.sql`. Tests: `tests/services.test.mjs` and `tests/api.test.mjs`.
+
 ## Staff tools
 
 - **Admin panel** (`/admin`): overview, identity checks to review, orders waiting for operations (credit or refund with a
   note), customers (search, details, suspend), support requests (reply to the customer's inbox), dealers and stock,
   products and premiums, reconciliation (money and metal, with vault counts), settings, audit log, staff accounts.
+  Also: **Doorstep appraisals** (assign goldsmith, record result, cancel) and **Gift orders** (production, dispatch
+  with tracking, delivery, cancel).
   Operations staff can't change settings, premiums, dealers' details or staff, or suspend customers.
 - **Dealer app** (`/dealer`, phone-first): enter the customer's code, prepare and mark ready, tick the CNIC check,
   record one serial per bar and confirm. Shows today's queue and the counter's stock.
@@ -275,7 +297,8 @@ instead of a blank page. Returning users see a short splash (under 1 s) before t
 | Rates | Live gold and silver buy/sell per tola and per gram, rolling-digit prices, change % since opening, sparkline, world spot (platinum, palladium, copper), freshness, delayed state; tap a card for the day/week/month history chart and price alerts | FR-R1–R6 |
 | Buy | 11 products, whole-unit stepper, cart mixing gold and silver in one order, 60 s price lock with refresh, per-order (10 units) and per-day (Rs 1,500,000) sample limits, payment choice, receipt; a prototype switch shows payment succeeding but crediting failing, with 3 retries, hand-off to operations and later credit | FR-P1–P7, FR-B1–B8 |
 | Wallet | Holdings by product count, weights, sell value, reserved units, pending credits, history from an append-only ledger, statement for a chosen period as CSV or printable PDF | FR-W1–W4 |
-| Redeem | Product and quantity, schematic dealer map, 4 sample dealers with area, hours, distance and stock, call and directions, 6-digit collection code, 24 h expiry, status steps, cancel with confirmation, dealer simulation (ready, ID check, hand over with serials) | FR-D1–D9 |
+| Services | **Jewellery worth** (free, no login): karat and weight in grams, tola or tola-masha-ratti, stones deducted, several pieces, buy-back estimate from the live sell price minus a deduction. **Doorstep appraisal**: pieces, day and time slot, address, fee payment, 4-digit visit code the goldsmith must say at the door, goldsmith details, assay report, cancellation rules. **Gift gold and silver**: bars and coins made to order (weight, coin or bar, design, engraving, card, packaging), live preview, recipient and delivery date, price breakdown, tracking from order to delivery. **Collect your bars** (below) | — |
+| Collect (in Services and Wallet) | Product and quantity, schematic dealer map, 4 sample dealers with area, hours, distance and stock, call and directions, 6-digit collection code, 24 h expiry, status steps, cancel with confirmation, dealer simulation (ready, ID check, hand over with serials) | FR-D1–D9 |
 | Account | Profile, identity verification, security (change PIN, Face ID, auto-lock), notifications inbox and notification settings, price alerts, questions and answers, contact, report a problem, fees and limits, terms and privacy, About this prototype (live vs sample data, open items, reset demo) | FR-N1–N4 |
 
 The table describes the demo build. The dealer interface (FR-DL1–6) and the admin panel (FR-M1–10) are at `/dealer` and
