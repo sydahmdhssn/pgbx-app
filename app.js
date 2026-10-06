@@ -2064,7 +2064,11 @@ function ServicesScreen({ S, A }) {
 // ---------- jewellery worth (free, for everyone) ----------
 function WorthScreen({ S, A }) {
   const svc = S.svc;
-  const pieces = S.worth && S.worth.length ? S.worth : [newPiece()];
+  // One default piece for the life of the screen: a new one on every redraw (the app redraws every second for the
+  // live prices) would get a new key each time, rebuilding the card and making it flicker.
+  const blank = useRef(null);
+  if (!blank.current) blank.current = newPiece();
+  const pieces = S.worth && S.worth.length ? S.worth : [blank.current];
   const set = list => A.set({ worth: list });
   const upd = (i, patch) => set(pieces.map((p, j) => (j === i ? { ...p, ...patch } : p)));
   if (!svc || S.rates.mode === 'connecting') return html`<div class="page"><${TopBar} title="Jewellery worth" onBack=${A.back} /><div class="scroll"><div class="pad"><span class="sk" style="height:240px"></span></div></div></div>`;
