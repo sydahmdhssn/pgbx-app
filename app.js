@@ -357,7 +357,7 @@ function Coin({ size = 200, animate = false, label = 'PGBX logo' }) {
 // `orbit` adds the original touches from the first version: two slowly rotating rings, a gold ball orbiting the coin
 // and the coin's dotted rim turning (splash and sign-in).
 // Brand badge. The claim depends on PGBX's written Shariah approval (CMP-3), still to be confirmed.
-const Shariah = ({ small }) => html`<span class=${'shariah' + (small ? ' sm' : '')}><${Icon} n="shield" c="xs"/>Shariah compliant</span>`;
+const Shariah = ({ small }) => html`<span class=${'shariah' + (small ? ' sm' : '')}><${Icon} n="shield" c="xs"/><span class="sh-t">Shariah compliant</span></span>`;
 
 const Logo = ({ size, animate = true, orbit = false }) => html`<div class=${'logo-stage' + (orbit ? ' orbiting' : '')} style=${{ width: size + 'px', height: size + 'px' }}>
   ${orbit && html`<span class="ring r2" aria-hidden="true"></span><span class="ring r1" aria-hidden="true"></span>`}
@@ -1229,7 +1229,7 @@ function ProfileScreen({ S, A }) {
           <label class="field"><span class="lbl">Address (optional)</span><textarea class="inp" rows="2" autocomplete="street-address" placeholder="House, street, area, city" value=${f.address || ''} onInput=${e => setF({ ...f, address: e.target.value })}></textarea></label>
         </div>
       </section>
-      <div class="pad" style="margin-top:24px"><button class="btn btn-primary" disabled=${!dirty || emailBad || nameBad} onClick=${() => A.saveProfile(f)}>Save changes</button></div>
+      <div class="pad" style="margin-top:24px"><button class="btn btn-primary" disabled=${!dirty || emailBad || nameBad || S.sending} aria-busy=${!!S.sending} onClick=${() => A.saveProfile(f)}>${S.sending ? 'Saving…' : 'Save changes'}</button></div>
     </div>
   </div>`;
 }
@@ -1396,8 +1396,8 @@ function DealerMap({ selected, isOk, onSelect }) {
   </div>`;
 }
 const DealerActions = ({ d }) => html`<div class="dact" onClick=${e => e.stopPropagation()}>
-  <a class="btn btn-secondary btn-sm" href=${'tel:' + d.phone.replace(/\s/g, '')}><${Icon} n="call" c="sm"/> Call</a>
-  <a class="btn btn-secondary btn-sm" href=${`https://www.google.com/maps/search/?api=1&query=${d.lat},${d.lng}`} target="_blank" rel="noopener"><${Icon} n="nav" c="sm"/> Directions</a>
+  ${d.phone && html`<a class="btn btn-secondary btn-sm" href=${'tel:' + String(d.phone).replace(/[^\d+]/g, '')}><${Icon} n="call" c="sm"/> Call</a>`}
+  <a class="btn btn-secondary btn-sm" href=${Number.isFinite(d.lat) && Number.isFinite(d.lng) ? `https://www.google.com/maps/search/?api=1&query=${d.lat},${d.lng}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent((d.name || '') + ' ' + (d.address || d.area || ''))}`} target="_blank" rel="noopener"><${Icon} n="nav" c="sm"/> Directions</a>
 </div>`;
 
 function RedeemScreen({ S, A, pushed }) {
@@ -1483,9 +1483,11 @@ function RedemptionRow({ r, S, A }) {
 }
 
 function CodeScreen({ S, A, rid }) {
-  const r = S.redemptions.find(x => x.id === rid); const p = P[r.pid]; const d = dealerOf(r);
-  const st = S.statusOf(r);
+  const r = S.redemptions.find(x => x.id === rid);
   const [idOk, setIdOk] = useState(false);
+  if (!r || !P[r.pid] || !dealerOf(r)) return html`<div class="page"><${TopBar} title="Collection" onBack=${A.back} /><div class="scroll"><${Empty} icon="pin" title="Collection not found" body="It may still be loading. Try again in a moment." /></div></div>`;
+  const p = P[r.pid]; const d = dealerOf(r);
+  const st = S.statusOf(r);
   const order = ['requested', 'ready', 'completed'];
   const idx = order.indexOf(st);
   const live = st === 'requested' || st === 'ready';
@@ -1800,7 +1802,7 @@ function Report({ S, A }) {
     <label class="field"><span class="lbl">What happened?</span>
       <textarea class="inp" rows="5" maxlength="1000" placeholder="For example: I paid but the bar isn’t in my wallet" value=${text} onInput=${e => setText(e.target.value)}></textarea></label>
     <div class="hint">${text.trim().length < 10 ? 'Please add a few more details.' : `${1000 - text.length} characters left`}</div>
-    <button class="btn btn-primary" style="margin-top:24px" disabled=${text.trim().length < 10} onClick=${() => A.report(ref, text)}>Send report</button>
+    <button class="btn btn-primary" style="margin-top:24px" disabled=${text.trim().length < 10 || S.sending} aria-busy=${!!S.sending} onClick=${() => A.report(ref, text)}>${S.sending ? 'Sending…' : 'Send report'}</button>
   </div>`;
 }
 
@@ -1824,6 +1826,9 @@ const SVC_SAMPLE = {
     ],
   },
 };
+// Screens a notification link may open
+const LINK_NAMES = ['receipt', 'code', 'appraisal', 'gift', 'history', 'product', 'wallet', 'statement'];
+const KARATS_ALL = { gold: ['24K', '22K', '21K', '20K', '18K', '14K'], silver: ['999', '925', '900', '800'] };
 const KARAT_NAME = { '999': '999 fine', '925': '925 sterling', '900': '900', '800': '800' };
 const DESIGNS = [['plain', 'Plain', ''], ['eid', 'Eid Mubarak', 'EID MUBARAK'], ['wedding', 'Wedding', 'SHAADI MUBARAK'], ['birthday', 'Birthday', 'HAPPY BIRTHDAY'],
   ['newborn', 'New baby', 'WELCOME LITTLE ONE'], ['graduation', 'Graduation', 'CONGRATULATIONS']];
@@ -1924,7 +1929,7 @@ function WorthScreen({ S, A }) {
   if (!svc || S.rates.mode === 'connecting') return html`<div class="page"><${TopBar} title="Jewellery worth" onBack=${A.back} /><div class="scroll"><div class="pad"><span class="sk" style="height:240px"></span></div></div></div>`;
   const vals = pieces.map(p => pieceValue(p, svc, S.rates));
   const total = vals.reduce((a, v) => a + v.estimate, 0), any = vals.some(v => v.net > 0);
-  const num4 = (v, f) => html`<input class="inp" inputmode="decimal" placeholder="0" value=${v} onInput=${e => f(e.target.value.replace(/[^\d.]/g, '').slice(0, 9))} />`;
+  const num4 = (v, f) => html`<input class="inp" inputmode="decimal" placeholder="0" value=${v} onInput=${e => f(e.target.value.replace(/,/g, '.').replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1').slice(0, 9))} />`;   // "12,5" is 12.5; one decimal point
   return html`<div class="page has-actions">
     <${TopBar} title="Jewellery worth" onBack=${A.back} />
     <div class="scroll">
@@ -1935,7 +1940,7 @@ function WorthScreen({ S, A }) {
         <div style="margin-top:12px"><${Seg} label="Metal" items=${[['gold', 'Gold'], ['silver', 'Silver']]} value=${p.metal} onChange=${m => upd(i, { metal: m, karat: m === 'gold' ? '22K' : '925' })} /></div>
         <div class="field"><span class="lbl">${p.metal === 'gold' ? 'Karat' : 'Silver standard'}</span>
           <div class="chips" role="radiogroup" aria-label="Karat">${karats.map(k => html`<button class=${'chipb' + (p.karat === k ? ' on' : '')} role="radio" aria-checked=${p.karat === k} onClick=${() => upd(i, { karat: k })}>${p.metal === 'gold' ? k : KARAT_NAME[k] || k}</button>`)}</div>
-          <div class="hint">${p.metal === 'gold' ? `${p.karat} is ${(svc.purity.gold[p.karat] * 100).toFixed(1)}% gold. Most jewellery in Pakistan is 21K or 22K; the stamp is usually inside the band or clasp.` : 'Silver jewellery is usually 925 (sterling).'}</div></div>
+          <div class="hint">${p.metal === 'gold' ? `${svc.purity.gold[p.karat] ? `${p.karat} is ${(svc.purity.gold[p.karat] * 100).toFixed(1)}% gold.` : 'Choose the karat.'} Most jewellery in Pakistan is 21K or 22K; the stamp is usually inside the band or clasp.` : 'Silver jewellery is usually 925 (sterling).'}</div></div>
         <div class="field"><span class="lbl">Weight</span>
           <${Seg} label="Weight unit" items=${[['g', 'Grams'], ['tola', 'Tola'], ['tmr', 'T · M · R']]} value=${p.unit} onChange=${u => upd(i, { unit: u })} />
           <div style="margin-top:8px">${p.unit === 'tmr' ? html`<div class="grid3">
@@ -1990,7 +1995,7 @@ function AppraisalBook({ S, A }) {
             <div class="chips" role="radiogroup" aria-label=${`Piece ${i + 1} metal`}>${[['gold', 'Gold'], ['silver', 'Silver']].map(([m, l]) => html`<button class=${'chipb sm' + (it.metal === m ? ' on' : '')} role="radio" aria-checked=${it.metal === m} onClick=${() => updItem(i, { metal: m, karat: '' })}>${l}</button>`)}</div>
             <div class="grid2" style="margin-top:8px">
               <label><span class="tiny muted">Karat (if known)</span><select class="inp" value=${it.karat} onChange=${e => updItem(i, { karat: e.target.value })}><option value="">Not sure</option>${karats(it.metal).map(k => html`<option value=${k}>${it.metal === 'gold' ? k : KARAT_NAME[k]}</option>`)}</select></label>
-              <label><span class="tiny muted">About how many grams</span><input class="inp" inputmode="decimal" value=${it.approx_g || ''} onInput=${e => updItem(i, { approx_g: num(e.target.value) })} /></label>
+              <label><span class="tiny muted">About how many grams</span><input class="inp" inputmode="decimal" value=${it.approx_g || ''} onInput=${e => updItem(i, { approx_g: e.target.value.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1').slice(0, 8) })} /></label>
             </div>
             <input class="inp" style="margin-top:8px" maxlength="80" placeholder="What is it? e.g. 4 bangles, necklace set" value=${it.note || ''} onInput=${e => updItem(i, { note: e.target.value })} />
           </div>
@@ -2210,16 +2215,18 @@ function sanitizeSaved(s) {
   const list = (v, ok) => (Array.isArray(v) ? v.filter(x => isObj(x) && ok(x)) : null);
   const line = l => isObj(l) && P[l.pid] && int(l.units, 1, MAX_UNITS) && (l.unit === undefined || num(l.unit));
   const set = (k, v) => { if (v !== null && v !== undefined) out[k] = v; };
-  set('ledger', list(s.ledger, e => P[e.pid] && Number.isInteger(e.delta) && num(e.ts) && str(e.reason) && str(e.ref)));
+  const serialsOk = v => v === undefined || (Array.isArray(v) && v.every(str));
+  set('ledger', list(s.ledger, e => P[e.pid] && Number.isInteger(e.delta) && num(e.ts) && str(e.reason) && str(e.ref) && serialsOk(e.serials)));
   if (Array.isArray(s.orders)) set('orders', s.orders.map(o => {
     if (!isObj(o) || !str(o.id) || !str(o.receipt) || !num(o.ts)) return null;
     const lines = Array.isArray(o.lines) ? o.lines : (P[o.pid] ? [{ pid: o.pid, units: o.units, unit: o.unit }] : null);
     if (!lines || !lines.length || !lines.every(l => line(l) && num(l.unit))) return null;
     return { ...o, lines, total: num(o.total) ? o.total : lines.reduce((a, l) => a + l.unit * l.units, 0), method: METHODS.some(m => m.id === o.method) ? o.method : 'bank', status: o.status === 'flagged' ? 'flagged' : 'credited' };
   }).filter(Boolean));
-  set('redemptions', list(s.redemptions, r => str(r.id) && P[r.pid] && int(r.units, 1, 1000) && DEALERS.some(d => d.id === r.dealerId) && /^\d{6}$/.test(r.code) && num(r.expiresAt) && ['requested', 'ready', 'completed', 'cancelled'].includes(r.status)));
+  set('redemptions', list(s.redemptions, r => str(r.id) && P[r.pid] && int(r.units, 1, 1000) && DEALERS.some(d => d.id === r.dealerId) && /^\d{6}$/.test(r.code) && num(r.expiresAt) && ['requested', 'ready', 'completed', 'cancelled'].includes(r.status) && serialsOk(r.serials)));
   set('cart', list(s.cart, line));
-  set('notifications', list(s.notifications, n => str(n.id) && num(n.ts) && str(n.title) && str(n.body) && str(n.kind)));
+  const notes = list(s.notifications, n => str(n.id) && num(n.ts) && str(n.title) && str(n.body) && str(n.kind));
+  set('notifications', notes && notes.map(n => (n.link && !(isObj(n.link) && LINK_NAMES.includes(n.link.name)) ? { ...n, link: undefined } : n)));
   set('alerts', list(s.alerts, a => str(a.id) && (a.metal === 'gold' || a.metal === 'silver') && (a.dir === 'above' || a.dir === 'below') && num(a.target) && a.target > 0));
   if (isObj(s.dealerStock) && DEALERS.every(d => isObj(s.dealerStock[d.id]) && PRODUCTS.every(p => int(s.dealerStock[d.id][p.id], 0, 1e6)))) out.dealerStock = s.dealerStock;
   if (isObj(s.profile) && str(s.profile.name) && s.profile.name.trim().length >= 1)
@@ -2233,9 +2240,10 @@ function sanitizeSaved(s) {
   if (num(s.pinLockUntil)) out.pinLockUntil = Math.min(s.pinLockUntil, Date.now() + 30000);
   if (str(s.phone) && (s.phone === '' || PK_MOBILE.test(s.phone))) out.phone = s.phone;
   if (typeof s.biometric === 'boolean') out.biometric = s.biometric;
-  set('appraisals', list(s.appraisals, a => str(a.id) && str(a.ref) && str(a.date) && str(a.slot) && Array.isArray(a.items) && str(a.status) && str(a.visitCode)));
-  set('giftOrders', list(s.giftOrders, g => str(g.id) && str(g.ref) && str(g.item) && isObj(g.recipient) && str(g.status) && num(g.total)));
-  set('worth', list(s.worth, w => str(w.id) && (w.metal === 'gold' || w.metal === 'silver') && str(w.karat)));
+  const metalOk = m => m === 'gold' || m === 'silver';
+  set('appraisals', list(s.appraisals, a => str(a.id) && str(a.ref) && /^\d{4}-\d{2}-\d{2}$/.test(a.date) && str(a.slot) && Array.isArray(a.items) && a.items.every(i => isObj(i) && metalOk(i.metal)) && str(a.status) && str(a.visitCode) && str(a.city) && str(a.area)));
+  set('giftOrders', list(s.giftOrders, g => str(g.id) && str(g.ref) && str(g.item) && isObj(g.recipient) && str(g.recipient.name) && str(g.recipient.city) && str(g.status) && num(g.total) && str(g.deliverBy)));
+  set('worth', list(s.worth, w => str(w.id) && metalOk(w.metal) && str(w.karat) && KARATS_ALL[w.metal].includes(w.karat)));
   if (s.tab === 'redeem') out.tab = 'services';                       // the Redeem tab moved into Services
   else if (TABS.some(t => t[0] === s.tab)) out.tab = s.tab;
   if (s.buyMetal === 'gold' || s.buyMetal === 'silver') out.buyMetal = s.buyMetal;
@@ -2249,6 +2257,10 @@ const SAVED = loadSaved();
 // A one-off message carried across a reload (for example after closing an account)
 const CARRY_NOTE = (() => { try { const n = sessionStorage.getItem('pgbx-note'); sessionStorage.removeItem('pgbx-note'); return n || ''; } catch (e) { return ''; } })();
 
+// Account data. Cleared on logout and session end; hidden while browsing as a guest.
+const ACCOUNT_BLANK = LIVE ? { ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], banner: null, apprDraft: null, giftDraft: null,
+  profile: { name: '', cnic: '', dob: '', email: '', address: '' }, kyc: { status: 'none', at: null }, checkout: [], lock: null } : {};
+const GUEST_VIEW = { ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], banner: null };
 const apprDefaults = s => ({ items: [{ metal: 'gold', karat: '', approx_g: 0, note: '' }], date: '', slot: '', city: (s.svc && s.svc.appraisal.cities[0]) || 'Karachi', area: '', address: (s.profile && s.profile.address) || '', phone: s.phone || '', notes: '' });
 const giftDefaults = s => ({ metal: 'gold', item: 'gg-1g', shape: 'coin', design: 'eid', engraving: '', message: '', packaging: 'premium', name: '', phone: '', city: 'Karachi', address: '',
   deliverBy: ymd(Date.now() + (((s.svc && s.svc.gift.leadDays) || 5) + 2) * 86400e3) });
@@ -2283,6 +2295,8 @@ function App() {
   const committed = useRef(new Set(st.orders.map(o => o.id)));       // idempotency (Rule 2 / NFR-1), survives refresh
   const receipts = useRef(new Set(st.orders.map(o => o.receipt)));
   const histLoading = useRef({});
+  const lockSeq = useRef(0);
+  const aRef = useRef(null);
   const guardRef = useRef(null);          // set by a screen with unsaved work; called with the navigation it would interrupt
   const stRef = useRef(null);             // latest state for the system back handler
   const histDepth = useRef(0), ignorePop = useRef(null);   // ignorePop: depth an app-initiated history.go() is heading to
@@ -2343,11 +2357,14 @@ function App() {
 
   // ---------- production: the server is the source of truth ----------
   const knownNotes = useRef(null);
-  const sessionEnded = note => { Live.forget(); knownNotes.current = null; set({ loggedIn: false, guest: false, stack: [], loginIntent: null, loginNote: note || 'Your session has ended. Log in again to continue.' }); setPhase('login'); };
+  const syncSeq = useRef(0);              // only the newest sync's answer is applied
+  const sessionEnded = note => { Live.forget(); knownNotes.current = null; syncSeq.current++; set({ ...ACCOUNT_BLANK, loggedIn: false, guest: false, stack: [], loginIntent: null, loginNote: note || 'Your session has ended. Log in again to continue.' }); setPhase('login'); };
   const sync = async () => {
     if (!LIVE) return;
+    const n = ++syncSeq.current;
     try {
       const d = await Live.loadAll();
+      if (n !== syncSeq.current) return true;                  // a newer sync (or a logout) superseded this one
       const fresh = knownNotes.current ? d.notifications.filter(n => !knownNotes.current.has(n.id) && !n.read && !n.quiet) : [];
       knownNotes.current = new Set(d.notifications.map(n => n.id));
       set(s => ({ ...d, banner: fresh.length && s.notifPrefs.push && !(fresh[0].kind === 'alert' && s.notifPrefs.alerts === false) ? fresh[0] : s.banner }));
@@ -2381,7 +2398,7 @@ function App() {
     const push = LIVE && window.PGBXNative && window.PGBXNative.push;
     if (!push || !signedIn) return;
     push.register(t => Live.registerPush(t.token, t.platform).catch(() => {}));
-    const open = e => { sync().then(() => A.openLink(e.detail)); };
+    const open = e => { sync().then(() => aRef.current.openLink(e.detail)); };   // the newest actions, with the synced state
     addEventListener('pgbx-open-link', open); return () => removeEventListener('pgbx-open-link', open);
   }, [signedIn]);
   // A failed request shows its plain-language message; an expired session goes back to login.
@@ -2405,11 +2422,21 @@ function App() {
   // FR-B2: refresh locked prices at zero while on product, cart or pay
   useEffect(() => {
     if (st.lock && top && ['product', 'cart', 'pay'].includes(top.name) && now >= st.lock.expiresAt) {
-      if (LIVE) { if (!st.lock.renewing) { set(s => ({ lock: { ...s.lock, renewing: true } })); serverLock(Object.keys(st.lock.prices), true); } return; }
+      if (LIVE) { if (!st.lock.renewing && now >= (st.lock.retryAt || 0)) { set(s => ({ lock: { ...s.lock, renewing: true } })); serverLock(Object.keys(st.lock.prices), true); } return; }
       set(s => ({ lock: { prices: Object.fromEntries(Object.keys(s.lock.prices).map(pid => [pid, priceOf(P[pid], s.rates)])), expiresAt: Date.now() + LOCK_S * 1000 } }));
       toast('Prices updated to the latest rate');
     }
   }, [now]);
+
+  // Every price on product, cart and payment must come from the current lock. Going back from the cart to a product
+  // (or any other path) that leaves a needed price out of the lock gets a new lock instead of showing no price.
+  const needPids = !top ? [] : top.name === 'product' ? [top.pid] : top.name === 'cart' ? st.cart.map(l => l.pid) : top.name === 'pay' ? st.checkout.map(l => l.pid) : [];
+  const needKey = needPids.join(',');
+  useEffect(() => {
+    if (!needPids.length || (st.lock && needPids.every(pid => pid in st.lock.prices))) return;
+    if (LIVE) { set(s => ({ lock: lockFor(s, needPids) })); serverLock(needPids); }
+    else set(s => ({ lock: lockFor(s, needPids) }));
+  }, [needKey, top && top.name, st.lock && Object.keys(st.lock.prices).join(',')]);
 
   // FR-A4: auto-lock after 2 minutes of inactivity
   useEffect(() => {
@@ -2445,16 +2472,20 @@ function App() {
   };
   const walletValue = (() => { let gold = 0, silver = 0, goldG = 0, silverG = 0; PRODUCTS.forEach(p => { const n = holdings[p.id] || 0; if (!n) return; const v = n * p.grams * rateOf(st.rates, p.metal).sellGram;
     if (p.metal === 'gold') { gold += v; goldG += n * p.grams; } else { silver += v; silverG += n * p.grams; } }); return { gold, silver, goldG, silverG, total: gold + silver }; })();
-  const spentToday = st.orders.filter(o => sameDay(o.ts, now)).reduce((a, o) => a + o.total, 0);
+  // Same rule as the server: today's orders that are paid or still payable, plus gift orders (failed, expired and refunded ones don't count)
+  const spentToday = st.orders.filter(o => sameDay(o.ts, now) && (!LIVE || ['pending_payment', 'credited', 'flagged'].includes(o.status))).reduce((a, o) => a + (Number(o.total) || 0), 0)
+    + st.giftOrders.filter(g => sameDay(g.createdAt, now) && !['cancelled', 'expired'].includes(g.status)).reduce((a, g) => a + (Number(g.total) || 0), 0);
   const unread = st.notifications.filter(n => !n.read).length;
 
   const tabIndex = t => TABS.findIndex(x => x[0] === t);
   const lockFor = (s, pids) => ({ expiresAt: Date.now() + LOCK_S * 1000, prices: Object.fromEntries(pids.map(pid => [pid, priceOf(P[pid], s.rates)])), pending: LIVE });
   // Production: the price shown on product, cart and payment is the server's lock; nothing can be paid until it arrives.
+  // Only the newest request's answer is used, so a slow lock for another product can't replace this one.
   const serverLock = (pids, renewed) => {
     if (!LIVE || !pids.length) return;
-    Live.lock(pids).then(l => { set({ lock: l }); if (renewed) toast('Prices updated to the latest rate'); },
-      e => { set(s => (s.lock ? { lock: { ...s.lock, pending: true, renewing: false, error: e.message } } : {})); liveFail(e); });
+    const n = ++lockSeq.current;
+    Live.lock(pids).then(l => { if (n !== lockSeq.current) return; set({ lock: l }); if (renewed) toast('Prices updated to the latest rate'); },
+      e => { if (n !== lockSeq.current) return; set(s => (s.lock ? { lock: { ...s.lock, pending: true, renewing: false, retryAt: Date.now() + 15000, error: e.message } } : {})); liveFail(e); });
   };
   const credit = (s, o) => [...s.ledger, ...o.lines.map(l => ({ id: 'L-' + uid(), ts: Date.now(), pid: l.pid, delta: l.units, reason: 'purchase', ref: o.receipt, price: l.unit }))];
   const A = {
@@ -2472,11 +2503,15 @@ function App() {
     push: r => { if (st.guest && !GUEST_PUSH.includes(r.name)) { A.login(r.name === 'collect' ? 'Log in to collect your bars at a dealer.' : 'Log in to continue.', { push: r }); return; } set(s => ({ stack: [...s.stack, r], navDir: 'fwd' })); },
     back: () => A.leave(() => set(s => ({ stack: s.stack.slice(0, -1), navDir: 'back' }))),
     // Open whatever a notification points to; receipts opened this way get a back button.
-    openLink: link => { if (!link) return; if (link.name === 'receipt' && link.from === undefined) link = { ...link, from: 'inbox' }; if (link.name === 'receipt' && !st.orders.some(o => o.id === link.oid)) return; if (link.name === 'code' && !st.redemptions.some(r => r.id === link.rid)) return; if (link.name === 'appraisal' && !st.appraisals.some(a => a.id === link.id)) return; if (link.name === 'gift' && !st.giftOrders.some(g => g.id === link.id)) return;
+    openLink: link => {
+      // Links come from notifications (saved or from the server): only known screens with valid ids are opened.
+      if (!link || typeof link !== 'object' || !LINK_NAMES.includes(link.name)) return;
+      if (link.name === 'product' && !P[link.pid]) return;
+      if (link.name === 'history' && link.metal !== 'gold' && link.metal !== 'silver') return; if (link.name === 'receipt' && link.from === undefined) link = { ...link, from: 'inbox' }; if (link.name === 'receipt' && !st.orders.some(o => o.id === link.oid)) return; if (link.name === 'code' && !st.redemptions.some(r => r.id === link.rid)) return; if (link.name === 'appraisal' && !st.appraisals.some(a => a.id === link.id)) return; if (link.name === 'gift' && !st.giftOrders.some(g => g.id === link.id)) return;
       set(s => ({ banner: null, navDir: 'fwd', stack: [...s.stack, link] })); },
     // Guests are told why they need to log in, and taken where they were going afterwards.
     login: (note, go) => { set({ stack: [], loginNote: '', loginIntent: note ? { note, go } : null }); setPhase('login'); },
-    logout: () => { if (LIVE) { Live.logout(); knownNotes.current = null; } set({ stack: [], guest: false, tab: 'rates', loginNote: '', loginIntent: { note: 'You’ve logged out. Your holdings are safe.' }, loggedIn: false }); setPhase('login'); },
+    logout: () => { if (LIVE) { Live.logout(); knownNotes.current = null; syncSeq.current++; } set({ ...ACCOUNT_BLANK, stack: [], guest: false, tab: 'rates', loginNote: '', loginIntent: { note: 'You’ve logged out. Your holdings are safe.' }, loggedIn: false }); setPhase('login'); },
     forgotPin: () => { set({ pinReset: true, lockNote: '', loginNote: '', loginIntent: { note: 'Log in with your mobile number to choose a new PIN.' } }); setPhase('login'); },
     dismissTip: k => set(s => ({ tips: { ...s.tips, [k]: true } })),
     removeLine: pid => {
@@ -2501,7 +2536,9 @@ function App() {
       const done = () => { A.guard(null); A.toast('Report sent. PGBX support will reply in your notifications.'); A.back(); };
       if (!LIVE) { A.guard(null); A.toast('Report sent to PGBX support (demo)'); A.back(); return; }
       const about = ref.startsWith('o:') ? 'Order ' + ((st.orders.find(o => o.id === ref.slice(2)) || {}).receipt || '') : ref.startsWith('r:') ? 'Collection' : 'General';
-      Live.report(ref.startsWith('o:') ? 'order' : ref.startsWith('r:') ? 'collection' : 'general', `${about}\n\n${text.trim()}`).then(done, liveFail);
+      if (st.sending) return;                                    // one report per tap
+      set({ sending: true });
+      Live.report(ref.startsWith('o:') ? 'order' : ref.startsWith('r:') ? 'collection' : 'general', `${about}\n\n${text.trim()}`).then(() => { set({ sending: false }); done(); }, e => { set({ sending: false }); liveFail(e); });
     },
     // ---------- services ----------
     startAppraisal: items => {
@@ -2509,8 +2546,9 @@ function App() {
       set(s => ({ apprDraft: items ? { ...apprDefaults(s), ...(s.apprDraft || {}), items } : s.apprDraft || apprDefaults(s), navDir: 'fwd', stack: [...s.stack.filter(r => r.name !== 'appraisal-book'), { name: 'appraisal-book' }] }));
     },
     bookAppraisal: () => {
-      const d = st.apprDraft, svc = st.svc;
-      if (!d || !svc || st.paying || st.offline) return;
+      const d0 = st.apprDraft, svc = st.svc;
+      if (!d0 || !svc || st.paying || st.offline) return;
+      const d = { ...d0, items: d0.items.map(i => ({ ...i, approx_g: Math.max(0, Number(i.approx_g) || 0) })) };   // typed as text so "2.5" can be entered
       const phone = d.phone.replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '');
       if (LIVE) {
         set(s => ({ paying: true, navDir: 'fade', stack: [...s.stack, { name: 'processing', kind: 'appraisal' }] }));
@@ -2610,6 +2648,7 @@ function App() {
       if (LIVE && MIN_PURCHASE && linesTotal(from === 'cart' ? st.cart : [{ pid: top.pid, units: st.qty }], st.lock.prices) < MIN_PURCHASE) { toast(`The minimum order is ${fmt(MIN_PURCHASE)}.`); return; }
       const lines = from === 'cart' ? st.cart : [{ pid: top.pid, units: st.qty }];
       if (!lines.length) return;
+      if (!st.lock || !lines.every(l => Number.isFinite(st.lock.prices[l.pid]))) { toast('Getting the latest price. Try again in a moment.'); return; }
       const total = linesTotal(lines, st.lock.prices);
       if (linesUnits(lines) > MAX_UNITS) { toast(`You can buy up to ${MAX_UNITS} bars per order.`); return; }
       if (spentToday + total > DAY_LIMIT) { toast(`You can buy up to ${fmt(Math.max(0, DAY_LIMIT - spentToday))} more today.`); return; }
@@ -2619,7 +2658,7 @@ function App() {
     pay: () => {
       if (stale || st.paying || st.offline) return;
       if (LIVE) {
-        if (!st.lock || st.lock.pending) return;
+        if (!st.lock || st.lock.pending || !st.checkout.every(l => Number.isFinite(st.lock.prices[l.pid]))) return;
         const key = top.orderKey;
         set(s => ({ paying: true, navDir: 'fade', stack: [...s.stack, { name: 'processing' }] }));
         Live.placeOrder({ lockId: st.lock.id, lines: st.checkout, method: st.method, key }).then(async o => {
@@ -2634,6 +2673,7 @@ function App() {
         return;
       }
       const key = top.orderKey; const fail = st.simCreditFail;
+      if (!st.lock || !st.checkout.length || !st.checkout.every(l => Number.isFinite(st.lock.prices[l.pid]))) { toast('Getting the latest price. Try again in a moment.'); return; }
       const lines = st.checkout.map(l => ({ ...l, unit: st.lock.prices[l.pid] }));
       const total = lines.reduce((a, l) => a + l.unit * l.units, 0);
       if (spentToday + total > DAY_LIMIT) return;
@@ -2671,7 +2711,9 @@ function App() {
     }),
     saveProfile: f => {
       if (LIVE) {
-        Live.saveProfile(f).then(r => { sync(); set(s => ({ navDir: 'back', stack: s.stack.slice(0, -1) })); toast(r.reverify ? 'Saved. Verify your identity again before your next purchase.' : 'Changes saved'); }, liveFail);
+        if (st.sending) return;
+        set({ sending: true });
+        Live.saveProfile(f).then(r => { sync(); set(s => ({ sending: false, navDir: 'back', stack: s.stack.slice(0, -1) })); toast(r.reverify ? 'Saved. Verify your identity again before your next purchase.' : 'Changes saved'); }, e => { set({ sending: false }); liveFail(e); });
         return;
       }
       const idChanged = ['name', 'cnic', 'dob'].some(k => (f[k] || '') !== (st.profile[k] || ''));
@@ -2683,8 +2725,9 @@ function App() {
     changePhone: n => { if (LIVE) { sync(); toast('Mobile number updated'); return; } set({ phone: n }); notify('security', 'Mobile number changed', `Your account now uses +92 ${n.slice(0, 3)} ${n.slice(3)}. If this wasn’t you, contact PGBX.`, true); toast('Mobile number updated'); },
     setPin: p => { set({ pin: pinStore(p) }); notify('security', 'PIN changed', 'Your app PIN was changed on this device.', true); toast('PIN changed'); },
     markAllRead: () => { set(s => ({ notifications: s.notifications.map(n => ({ ...n, read: true })) })); if (LIVE) Live.markRead().catch(liveFail); },
-    addAlert: (metal, dir, target) => { if (LIVE) { Live.addAlert(metal, dir, target).then(a => { set(s => ({ alerts: [a, ...s.alerts] })); toast(`We’ll notify you when ${metalName(metal).toLowerCase()} goes ${dir} ${fmt(target)}`); }, liveFail); return; } set(s => ({ alerts: [...s.alerts, { id: uid(), metal, dir, target, active: true }] })); toast(`We’ll notify you when ${metalName(metal).toLowerCase()} goes ${dir} ${fmt(target)}`); },
+    addAlert: (metal, dir, target) => { if (st.guest) { A.login('Log in to get price alerts.', { tab: 'rates' }); return; } if (LIVE) { Live.addAlert(metal, dir, target).then(a => { set(s => ({ alerts: [a, ...s.alerts] })); toast(`We’ll notify you when ${metalName(metal).toLowerCase()} goes ${dir} ${fmt(target)}`); }, liveFail); return; } set(s => ({ alerts: [...s.alerts, { id: uid(), metal, dir, target, active: true }] })); toast(`We’ll notify you when ${metalName(metal).toLowerCase()} goes ${dir} ${fmt(target)}`); },
     removeAlert: id => {
+      if (st.guest) return;
       const a = st.alerts.find(x => x.id === id); if (!a) return;
       set(s => ({ alerts: s.alerts.filter(x => x.id !== id) }));
       if (LIVE) { Live.removeAlert(id).then(() => toast('Alert deleted', { label: 'Undo', fn: () => A.addAlert(a.metal, a.dir, a.target) }), liveFail); return; }
@@ -2707,7 +2750,7 @@ function App() {
       if (LIVE) {
         if (st.paying) return;
         set({ paying: true });
-        Live.reserve(pid, units, dealerId).then(async r => { await sync(); loadDealers(); set(s => ({ paying: false, navDir: 'fwd', stack: [...s.stack, { name: 'code', rid: r.id }] })); },
+        Live.reserve(pid, units, dealerId).then(async r => { set(s => ({ redemptions: s.redemptions.some(x => x.id === r.id) ? s.redemptions : [r, ...s.redemptions] })); await sync(); loadDealers(); set(s => ({ paying: false, navDir: 'fwd', stack: [...s.stack, { name: 'code', rid: r.id }] })); },
           e => { set({ paying: false }); loadDealers(); liveFail(e); });
         return;
       }
@@ -2736,15 +2779,19 @@ function App() {
     },
   };
 
-  const S = { ...st, now, stale, holdings, reserved, dealerFree, walletValue, statusOf, spentToday, unread };
-  const framed = window.innerWidth > 500;
+  // A guest (including someone who chose "Browse as guest" on the lock screen) sees none of the account's data.
+  aRef.current = A;
+  const S = { ...st, ...(st.guest ? GUEST_VIEW : {}), now, stale, holdings: st.guest ? {} : holdings, reserved, dealerFree, walletValue, statusOf, spentToday, unread: st.guest ? 0 : unread };
+  const framed = !matchMedia('(max-width:500px), (hover:none) and (pointer:coarse) and (max-height:600px)').matches;   // same rule as the CSS
   const enterApp = () => {
     lastActive.current = Date.now();
     set(s => { const go = s.loginIntent && s.loginIntent.go;
       return { guest: false, lockNote: '', loginNote: '', loginIntent: null, navDir: 'fade', pinFails: 0, pinLockUntil: 0, loggedIn: true,
         ...(go && go.tab ? { tab: go.tab, stack: [] } : {}),
         ...(go && go.push ? { tab: 'services', stack: [go.push] } : {}),
-        ...(go && go.pid ? { buyMetal: P[go.pid].metal, qty: 1, stack: [{ name: 'product', pid: go.pid }], lock: lockFor(s, [go.pid]) } : {}) }; });
+        ...(go && go.pid && P[go.pid] ? { buyMetal: P[go.pid].metal, qty: 1, stack: [{ name: 'product', pid: go.pid }], lock: lockFor(s, [go.pid]) } : {}) }; });
+    const go = st.loginIntent && st.loginIntent.go;
+    if (go && go.pid && P[go.pid]) serverLock([go.pid]);
     setPhase('app');
   };
   // After the code is verified: a phone without a chosen PIN (first login, or "Forgot PIN") creates one first.
@@ -2753,7 +2800,9 @@ function App() {
   const pinFail = () => {
     const f = st.pinFails + 1;
     if (f >= PIN_MAX_FAILS) {
-      set({ pinFails: 0, pinLockUntil: 0, stack: [], loggedIn: false, pinReset: true, loginNote: `${PIN_MAX_FAILS} wrong PINs. For your security, log in again with your mobile number, then choose a new PIN.` });
+      // The PIN is forgotten on this phone (so a reload can't offer it again) and the server session is ended.
+      if (LIVE) Live.logout();
+      set({ ...ACCOUNT_BLANK, pin: null, pinSet: false, pinFails: 0, pinLockUntil: 0, stack: [], loggedIn: false, guest: false, pinReset: true, loginNote: `${PIN_MAX_FAILS} wrong PINs. For your security, log in again with your mobile number, then choose a new PIN.` });
       notify('security', 'Session ended after wrong PINs', `${PIN_MAX_FAILS} wrong PIN attempts on this device. If this wasn’t you, contact PGBX.`);
       setPhase('login'); return;
     }
@@ -2910,10 +2959,10 @@ function CrashScreen() {
   return html`<div class="device"><div class="device-inner"><div class="lock" style="justify-content:center">
     <${Coin} size=${64} />
     <h2>Something went wrong</h2>
-    <p class="note" style="line-height:1.5">The app couldn’t load your demo data. Try again, or reset the demo to start fresh.</p>
+    <p class="note" style="line-height:1.5">${LIVE ? 'Try again. Your account and holdings are safe on PGBX’s servers. If it keeps happening, clear this phone’s app settings; you’ll need to log in again.' : 'The app couldn’t load your demo data. Try again, or reset the demo to start fresh.'}</p>
     <div class="stack-btns" style="width:100%;max-width:320px;margin-top:24px">
       <button class="btn btn-accent" onClick=${() => location.reload()}>Try again</button>
-      <button class="btn btn-tertiary" style="color:#fff" onClick=${() => { clearSaved(); location.href = location.pathname; }}>Reset demo data</button>
+      <button class="btn btn-tertiary" style="color:#fff" onClick=${() => { clearSaved(); location.href = location.pathname; }}>${LIVE ? 'Clear settings on this phone' : 'Reset demo data'}</button>
     </div>
   </div></div></div>`;
 }

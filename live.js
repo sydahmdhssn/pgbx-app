@@ -147,14 +147,15 @@ export const cancelGift = id => api(`/gifts/${id}/cancel`, { method: 'POST', bod
 // Dealers with what each can hand over now (capped at 10 by the server)
 export async function dealers() {
   const d = await api('/dealers');
-  return d.dealers.map(x => ({ id: x.id, name: x.name, area: x.area, address: x.address, phone: x.phone, lat: x.lat, lng: x.lng, hours: x.hours, available: x.available || {} }));
+  return d.dealers.map(x => ({ id: x.id, name: x.name, area: x.area, address: x.address || '', phone: x.phone || '', lat: Number.isFinite(x.lat) ? x.lat : null, lng: Number.isFinite(x.lng) ? x.lng : null, hours: x.hours, available: x.available || {} }));
 }
 export async function products() { return (await api('/products')).products; }
 
 // ---------- actions ----------
 export async function lock(pids) {
   const d = await api('/locks', { method: 'POST', body: { products: pids } });
-  return { id: d.lock.id, prices: d.lock.prices, expiresAt: ts(d.lock.expires_at) };
+  // Timed from the server's "seconds left", so a phone clock that is minutes off can't expire it early or late
+  return { id: d.lock.id, prices: d.lock.prices, expiresAt: Number.isFinite(d.lock.expires_in) ? Date.now() + d.lock.expires_in * 1000 : ts(d.lock.expires_at) };
 }
 // Places the order (idempotent on `key`) and runs the payment. Returns the server order.
 export async function placeOrder({ lockId, lines, method, key }) {
