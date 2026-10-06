@@ -630,6 +630,51 @@ $$;
 alter table customers add column phone_changed_at timestamptz;
 -- Unused
 drop view if exists v_reserved;
+-- The app PIN is checked by the server, per login session: nothing on the phone can be used to guess it offline.
+-- A session with a PIN is locked after a few minutes without use and unlocks only with the PIN (or the phone's
+-- biometric key); 3 wrong PINs pause entry for 30 seconds, 5 end the session.
+alter table sessions add column pin_hash text;
+alter table sessions add column bio_hash text;
+alter table sessions add column pin_fails int not null default 0;
+alter table sessions add column pin_wait_until timestamptz;
+alter table sessions add column unlocked_until timestamptz;
+-- Bookings and gift orders can be retried safely with the same request key
+alter table appraisals add column idempotency_key text;
+alter table gift_orders add column idempotency_key text;
+create unique index appraisals_idem on appraisals (customer_id, idempotency_key) where idempotency_key is not null;
+create unique index gift_orders_idem on gift_orders (customer_id, idempotency_key) where idempotency_key is not null;
+-- Books (or returns the earlier booking for the same key): the key is set inside the same call, and a retry that races
+-- the first one finds the first one's row instead of booking twice.
+create function fn_book_appraisal_once(p_key text, p_customer uuid, p_city text, p_area text, p_address text, p_phone text, p_date date, p_slot text,
+  p_items jsonb, p_notes text, p_visit_code text) returns appraisals language plpgsql as $$
+declare v appraisals;
+begin
+  select * into v from appraisals where customer_id = p_customer and idempotency_key = p_key;
+  if found then return v; end if;
+  begin
+    v := fn_book_appraisal(p_customer, p_city, p_area, p_address, p_phone, p_date, p_slot, p_items, p_notes, p_visit_code);
+    update appraisals set idempotency_key = p_key where id = v.id returning * into v;
+  exception when unique_violation then
+    select * into v from appraisals where customer_id = p_customer and idempotency_key = p_key;
+    if not found then raise; end if;
+  end;
+  return v;
+end $$;
+create function fn_place_gift_once(p_key text, p_customer uuid, p_item text, p_shape text, p_design text, p_engraving text, p_message text, p_packaging text,
+  p_name text, p_phone text, p_city text, p_address text, p_deliver_by date) returns gift_orders language plpgsql as $$
+declare v gift_orders;
+begin
+  select * into v from gift_orders where customer_id = p_customer and idempotency_key = p_key;
+  if found then return v; end if;
+  begin
+    v := fn_place_gift(p_customer, p_item, p_shape, p_design, p_engraving, p_message, p_packaging, p_name, p_phone, p_city, p_address, p_deliver_by);
+    update gift_orders set idempotency_key = p_key where id = v.id returning * into v;
+  exception when unique_violation then
+    select * into v from gift_orders where customer_id = p_customer and idempotency_key = p_key;
+    if not found then raise; end if;
+  end;
+  return v;
+end $$;
 
 -- =====================================================================
 -- 11. Hardening: fixed search_path on every function; rs() depends on locale settings, so it is stable

@@ -166,6 +166,7 @@ async function ensureRates(db, fetchRates) {
 }
 
 // ---------- authentication ----------
+const UNLOCK_MIN = 5;                                          // a PIN-protected session locks after 5 minutes without use
 async function customerFrom(ctx) {
   const { req, db } = ctx;
   const auth = String(req.headers.authorization || '');
@@ -173,10 +174,16 @@ async function customerFrom(ctx) {
   const token = viaCookie ? cookies(req).pgbx_s : auth.slice(7);
   if (!token) fail(401, 'SESSION_REQUIRED', 'Please log in.');
   if (viaCookie && req.method !== 'GET') sameOrigin(req);
-  const s = await db.one(`select s.token_hash, c.* from sessions s join customers c on c.id = s.customer_id
+  const s = await db.one(`select s.token_hash, s.pin_hash, s.bio_hash, s.pin_fails, s.pin_wait_until, s.unlocked_until, c.* from sessions s join customers c on c.id = s.customer_id
     where s.token_hash = $1 and s.revoked_at is null and s.expires_at > now()`, [sec.hashToken(token)]);
   if (!s) fail(401, 'SESSION_EXPIRED', 'Your session has expired. Please log in again.');
   if (s.status !== 'active') fail(403, 'ACCOUNT_INACTIVE', MESSAGES.ACCOUNT_INACTIVE[1]);
+  // A session with a PIN is usable only while unlocked; every request keeps it unlocked for a few more minutes.
+  if (s.pin_hash && !ctx.allowLocked) {
+    if (!s.unlocked_until || new Date(s.unlocked_until) < new Date()) fail(423, 'LOCKED', 'Enter your PIN to continue.');
+    if (new Date(s.unlocked_until) - Date.now() < (UNLOCK_MIN - 1) * 60000)
+      db.query(`update sessions set unlocked_until = now() + make_interval(mins => $2) where token_hash = $1`, [s.token_hash, UNLOCK_MIN]).catch(() => {});
+  }
   db.query(`update sessions set last_seen_at = now() where token_hash = $1 and last_seen_at < now() - interval '5 minutes'`, [s.token_hash]).catch(() => {});
   return s;
 }
@@ -291,7 +298,55 @@ route('POST', '/auth/otp/verify', {}, async ({ db, body, req, res }) => {
   return { customer: { id: c.id, isNew } };
 });
 
-route('POST', '/auth/logout', { auth: 'customer' }, async ({ db, customer, res, body }) => {
+// ---------- the app PIN (checked here, never stored on the phone) ----------
+const SERVER_WEAK_PINS = new Set(['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '0123', '9876', '1212', '2580']);
+route('POST', '/auth/pin', { auth: 'customer', allowLocked: false }, async ({ db, customer, body }) => {
+  const pin = str(body.pin, 4);
+  if (!/^\d{4}$/.test(pin)) fail(400, 'BAD_PIN', 'Choose a 4-digit PIN.');
+  if (SERVER_WEAK_PINS.has(pin)) fail(400, 'WEAK_PIN', 'That PIN is easy to guess. Choose a different one.');
+  if (customer.pin_hash) {                                        // changing it: the current PIN is required, and wrong ones count
+    if (!sec.verifyPassword(str(body.current, 4), customer.pin_hash)) return wrongPin(db, customer);
+  }
+  await db.query(`update sessions set pin_hash = $2, pin_fails = 0, pin_wait_until = null, unlocked_until = now() + make_interval(mins => $3) where token_hash = $1`,
+    [customer.token_hash, sec.hashPassword(pin), UNLOCK_MIN]);
+  await audit(db, 'customer:' + customer.id, customer.pin_hash ? 'pin.changed' : 'pin.set', 'customer', customer.id, {});
+  return { ok: true };
+});
+async function wrongPin(db, customer) {
+  const r = await db.one(`update sessions set pin_fails = pin_fails + 1,
+      pin_wait_until = case when pin_fails + 1 = 3 then now() + interval '30 seconds' else pin_wait_until end,
+      revoked_at = case when pin_fails + 1 >= 5 then now() end
+    where token_hash = $1 returning pin_fails`, [customer.token_hash]);
+  if (r.pin_fails >= 5) {
+    await audit(db, 'customer:' + customer.id, 'pin.locked_out', 'customer', customer.id, {});
+    await db.query(`select notify_customer($1, 'security', 'Session ended after wrong PINs', '5 wrong PIN attempts on a device. If this wasn’t you, contact PGBX.', null, true)`, [customer.id]);
+    fail(401, 'PIN_LOCKED_OUT', '5 wrong PINs. For your security, log in again with your mobile number, then choose a new PIN.');
+  }
+  fail(400, 'WRONG_PIN', `Wrong PIN. ${5 - r.pin_fails} attempt${5 - r.pin_fails === 1 ? '' : 's'} left before you need to log in again.`, { fails: r.pin_fails, waitSeconds: r.pin_fails === 3 ? 30 : 0 });
+}
+route('POST', '/auth/unlock', { auth: 'customer', allowLocked: true }, async ({ db, customer, body }) => {
+  if (!customer.pin_hash) return { ok: true };
+  if (customer.pin_wait_until && new Date(customer.pin_wait_until) > new Date())
+    fail(429, 'PIN_WAIT', 'Too many wrong PINs. Try again in a few seconds.', { retryIn: Math.ceil((new Date(customer.pin_wait_until) - Date.now()) / 1000) });
+  const bio = str(body.bioKey, 100);
+  const good = bio ? !!customer.bio_hash && sec.hashToken(bio) === customer.bio_hash : sec.verifyPassword(str(body.pin, 4), customer.pin_hash);
+  if (!good) return wrongPin(db, customer);
+  await db.query(`update sessions set pin_fails = 0, pin_wait_until = null, unlocked_until = now() + make_interval(mins => $2) where token_hash = $1`, [customer.token_hash, UNLOCK_MIN]);
+  return { ok: true };
+});
+route('POST', '/auth/lock', { auth: 'customer', allowLocked: true }, async ({ db, customer }) => {
+  await db.query(`update sessions set unlocked_until = now() where token_hash = $1`, [customer.token_hash]);
+  return { ok: true };
+});
+// Face ID / fingerprint: a random key kept in the phone's secure storage, released only after the biometric check
+route('POST', '/auth/biokey', { auth: 'customer' }, async ({ db, customer, body }) => {
+  if (body.off === true) { await db.query(`update sessions set bio_hash = null where token_hash = $1`, [customer.token_hash]); return { ok: true }; }
+  const key = sec.newToken();
+  await db.query(`update sessions set bio_hash = $2 where token_hash = $1`, [customer.token_hash, sec.hashToken(key)]);
+  return { bioKey: key };
+});
+
+route('POST', '/auth/logout', { auth: 'customer', allowLocked: true }, async ({ db, customer, res, body }) => {
   await db.query(`update sessions set revoked_at = now() where token_hash = $1`, [customer.token_hash]);
   const pushToken = str(body.pushToken, 400);                // this phone stops getting the account's notifications
   if (pushToken) await db.query(`delete from push_tokens where token = $1 and customer_id = $2`, [pushToken, customer.id]);
@@ -665,9 +720,11 @@ route('POST', '/appraisals', { auth: 'customer' }, async ({ db, customer, body }
   if (!PK_MOBILE.test(phone)) fail(400, 'BAD_PHONE', 'Enter a valid Pakistani mobile number, for example 300 1234567.');
   await limit(db, 'appraisal:' + customer.id, 86400, 5, 'You’ve booked several visits today. Contact PGBX support for more.');
   await expireNow(db);
-  const a = await db.one(`select * from fn_book_appraisal($1, $2, $3, $4, $5, $6::date, $7, $8::jsonb, $9, $10)`,
-    [customer.id, str(body.city, 40), str(body.area, 80), str(body.address, 300), phone, str(body.date, 10), str(body.slot, 20), JSON.stringify(items), str(body.notes, 300), String(sec.newCode()).slice(0, 4)]);
-  return { appraisal: appraisalDto(a), payment: await startPayment(db, 'appraisal', a) };
+  // With a request key, a retry after a dropped connection returns the first booking instead of making a second one
+  const key = str(body.idempotencyKey, 80) || sec.newToken();
+  const a = await db.one(`select * from fn_book_appraisal_once($11, $1, $2, $3, $4, $5, $6::date, $7, $8::jsonb, $9, $10)`,
+    [customer.id, str(body.city, 40), str(body.area, 80), str(body.address, 300), phone, str(body.date, 10), str(body.slot, 20), JSON.stringify(items), str(body.notes, 300), String(sec.newCode()).slice(0, 4), key]);
+  return { appraisal: appraisalDto(a), payment: a.status === 'pending_payment' ? await startPayment(db, 'appraisal', a) : null };
 });
 route('GET', '/appraisals', { auth: 'customer' }, async ({ db, customer }) =>
   ({ appraisals: (await db.query(`select * from appraisals where customer_id = $1 and status <> 'pending_payment' or (customer_id = $1 and status = 'pending_payment' and created_at > now() - interval '1 hour') order by created_at desc limit 50`, [customer.id])).map(appraisalDto) }));
@@ -684,10 +741,11 @@ route('POST', '/gifts', { auth: 'customer' }, async ({ db, customer, body, fetch
   await limit(db, 'gift:' + customer.id, 86400, 10, 'You’ve placed several gift orders today. Contact PGBX support for more.');
   await expireNow(db);
   await ensureRates(db, fetchRates);
-  const g = await db.one(`select * from fn_place_gift($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::date)`,
+  const key = str(body.idempotencyKey, 80) || sec.newToken();
+  const g = await db.one(`select * from fn_place_gift_once($13, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::date)`,
     [customer.id, str(body.item, 20), str(body.shape, 10), str(body.design, 20), str(body.engraving, 40), str(body.message, 200), str(body.packaging, 20),
-      str(body.recipientName, 100), phone, str(body.recipientCity, 40), str(body.recipientAddress, 300), str(body.deliverBy, 10)]);
-  return { gift: giftDto(g), payment: await startPayment(db, 'gift', g) };
+      str(body.recipientName, 100), phone, str(body.recipientCity, 40), str(body.recipientAddress, 300), str(body.deliverBy, 10), key]);
+  return { gift: giftDto(g), payment: g.status === 'pending_payment' ? await startPayment(db, 'gift', g) : null };
 });
 route('GET', '/gifts', { auth: 'customer' }, async ({ db, customer }) =>
   ({ gifts: (await db.query(`select * from gift_orders where customer_id = $1 and (status <> 'pending_payment' or created_at > now() - interval '1 hour') order by created_at desc limit 50`, [customer.id])).map(giftDto) }));
@@ -1272,7 +1330,7 @@ export async function handle(req, res, opts = {}) {
     const { raw, json } = await readBody(req);
     const ctx = { req, res, db, raw, body: json && typeof json === 'object' ? json : {}, params, query, fetchRates };
     if (!match.opts.auth && !match.opts.staff && req.method === 'GET') publicLimit(req);
-    if (match.opts.auth === 'customer') ctx.customer = await customerFrom(ctx);
+    if (match.opts.auth === 'customer') { ctx.allowLocked = !!match.opts.allowLocked; ctx.customer = await customerFrom(ctx); }
     if (match.opts.staff) ctx.staff = await staffFrom(ctx, match.opts.staff);
     send(200, await match.handler(ctx));
   } catch (e) {

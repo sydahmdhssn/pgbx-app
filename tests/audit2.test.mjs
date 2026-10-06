@@ -181,3 +181,52 @@ test('C2: the production deployment refuses to run on sandbox providers', async 
     ok(await call('GET', '/api/v1/products'));
   } finally { delete process.env.VERCEL_ENV; delete process.env.ALLOW_SANDBOX; }
 });
+
+test('M15/H1: the app PIN is checked by the server per session; locked sessions can’t be used; 5 wrong PINs end it', async () => {
+  const t = await login('3004440009', '10.4.9.1');
+  err(await call('POST', '/api/v1/auth/pin', { token: t, body: { pin: '1234' } }), 400, 'WEAK_PIN');
+  ok(await call('POST', '/api/v1/auth/pin', { token: t, body: { pin: '4826' } }));
+  ok(await call('GET', '/api/v1/me', { token: t }));
+  ok(await call('POST', '/api/v1/auth/lock', { token: t, body: {} }));
+  err(await call('GET', '/api/v1/me', { token: t }), 423, 'LOCKED');
+  ok(await call('POST', '/api/v1/auth/unlock', { token: t, body: { pin: '4826' } }));
+  ok(await call('GET', '/api/v1/me', { token: t }));
+  // changing the PIN needs the current one, and wrong ones count
+  err(await call('POST', '/api/v1/auth/pin', { token: t, body: { pin: '7391', current: '0000' } }), 400, 'WRONG_PIN');
+  ok(await call('POST', '/api/v1/auth/pin', { token: t, body: { pin: '7391', current: '4826' } }));
+  // biometric key
+  const { bioKey } = ok(await call('POST', '/api/v1/auth/biokey', { token: t, body: {} }));
+  ok(await call('POST', '/api/v1/auth/lock', { token: t, body: {} }));
+  ok(await call('POST', '/api/v1/auth/unlock', { token: t, body: { bioKey } }));
+  // wrong PINs: pause after 3, end after 5
+  ok(await call('POST', '/api/v1/auth/lock', { token: t, body: {} }));
+  err(await call('POST', '/api/v1/auth/unlock', { token: t, body: { pin: '0001' } }), 400, 'WRONG_PIN');
+  err(await call('POST', '/api/v1/auth/unlock', { token: t, body: { pin: '0002' } }), 400, 'WRONG_PIN');
+  assert.equal(err(await call('POST', '/api/v1/auth/unlock', { token: t, body: { pin: '0003' } }), 400, 'WRONG_PIN').waitSeconds, 30);
+  err(await call('POST', '/api/v1/auth/unlock', { token: t, body: { pin: '7391' } }), 429, 'PIN_WAIT');   // even the right PIN waits
+  await db.query(`update sessions set pin_wait_until = now() - interval '1 second' where customer_id = (select id from customers where phone = '3004440009')`);
+  err(await call('POST', '/api/v1/auth/unlock', { token: t, body: { pin: '0004' } }), 400, 'WRONG_PIN');
+  err(await call('POST', '/api/v1/auth/unlock', { token: t, body: { pin: '0005' } }), 401, 'PIN_LOCKED_OUT');
+  err(await call('GET', '/api/v1/me', { token: t }), 401, 'SESSION_EXPIRED');
+  // a new login on the same phone has no PIN until that customer chooses one
+  const t2 = await login('3004440010', '10.4.9.2');
+  ok(await call('GET', '/api/v1/me', { token: t2 }));
+});
+
+test('H2: a booking or gift order retried with the same key is made once', async () => {
+  const day = n => new Date(Date.now() + 5 * 3600e3 + n * 86400e3).toISOString().slice(0, 10);
+  const token = await verified('3001119901', '10.9.90.1');
+  const k = key();
+  const body = { city: 'Karachi', area: 'DHA', address: 'House 1, Street 2, Phase 6', phone: '0300 1234567', date: day(3), slot: '10:00-12:00', items: [{ metal: 'gold', karat: '22K', approx_g: 10 }], idempotencyKey: k };
+  const [a1, a2] = await Promise.all([call('POST', '/api/v1/appraisals', { token, body }), call('POST', '/api/v1/appraisals', { token, body })]);
+  assert.equal(ok(a1).appraisal.id, ok(a2).appraisal.id);
+  const again = ok(await call('POST', '/api/v1/appraisals', { token, body }));
+  assert.equal(again.appraisal.id, a1.data.appraisal.id);
+  assert.equal((await db.one(`select count(*)::int n from appraisals where idempotency_key = $1`, [k])).n, 1);
+  const gk = key();
+  const giftBody = { item: 'gg-1g', shape: 'coin', design: 'wedding', engraving: '', message: '', packaging: 'standard', recipientName: 'Sara Ahmed', recipientPhone: '03211234567', recipientCity: 'Lahore', recipientAddress: 'House 9, Model Town, Lahore', deliverBy: day(8), idempotencyKey: gk };
+  const g1 = ok(await call('POST', '/api/v1/gifts', { token, body: giftBody }));
+  const g2 = ok(await call('POST', '/api/v1/gifts', { token, body: giftBody }));
+  assert.equal(g1.gift.id, g2.gift.id);
+  assert.equal((await db.one(`select count(*)::int n from gift_orders where idempotency_key = $1`, [gk])).n, 1);
+});
