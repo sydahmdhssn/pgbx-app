@@ -4,3 +4,5 @@ supabase
 mobile
 *.md
 scripts
+PGBX-source.txt
+PGBX-audit-*.md

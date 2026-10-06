@@ -4,7 +4,7 @@ import { ALLOWED_ORIGIN, allowOrigin } from './_origin.mjs';
 //
 // Provider: Twilio Verify (it generates, sends, expires and checks the code; the code never reaches this server).
 // Secrets live only in Vercel environment variables, never in the app (Rule 6):
-//   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_VERIFY_SERVICE_SID
+//   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_DEMO_VERIFY_SERVICE_SID (a separate Verify service, never production's)
 //   OTP_WHATSAPP=1   set only after a WhatsApp Business sender is connected to the Verify service
 //
 //   GET  /api/otp                                   -> { configured, channels }
@@ -12,7 +12,8 @@ import { ALLOWED_ORIGIN, allowOrigin } from './_origin.mjs';
 //   POST /api/otp { action: 'check', phone, code }    -> { ok, approved }
 // `phone` is the 10-digit national mobile number without the leading 0 (e.g. 3001234567).
 
-const { TWILIO_ACCOUNT_SID: SID, TWILIO_AUTH_TOKEN: TOKEN, TWILIO_VERIFY_SERVICE_SID: SERVICE } = process.env;
+// The demo uses its own Verify service, so it can never consume or send production login codes.
+const { TWILIO_ACCOUNT_SID: SID, TWILIO_AUTH_TOKEN: TOKEN, TWILIO_DEMO_VERIFY_SERVICE_SID: SERVICE } = process.env;
 // This endpoint only serves the demo app. Its limits live in one server instance's memory, so a determined script
 // could still run up SMS costs ("SMS pumping"). It therefore stays off unless OTP_DEMO_SMS=1 is also set. The
 // production app uses /api/v1/auth/otp/*, which has the human check and database-backed limits.

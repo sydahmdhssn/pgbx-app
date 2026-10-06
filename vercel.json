@@ -67,7 +67,7 @@
       "headers": [
         {
           "key": "Cache-Control",
-          "value": "public, max-age=300, must-revalidate"
+          "value": "no-cache"
         }
       ]
     }
@@ -94,5 +94,10 @@
       "destination": "/",
       "permanent": false
     }
-  ]
+  ],
+  "functions": {
+    "api/**/*.mjs": {
+      "maxDuration": 30
+    }
+  }
 }

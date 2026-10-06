@@ -14,7 +14,7 @@ if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !name || !['admin', 'ops', 'dea
 }
 const db = await connectPostgres(process.env.DATABASE_URL);
 const password = newPassword(), secret = newTotpSecret();
-const s = await db.one(`insert into staff (email, name, role, dealer_id, password_hash, totp_secret) values ($1, $2, $3, $4, $5, $6) returning id`,
+const s = await db.one(`insert into staff (email, name, role, dealer_id, password_hash, totp_secret, must_change_password) values ($1, $2, $3, $4, $5, $6, true) returning id`,
   [email, name, role, role === 'dealer' ? dealer : null, hashPassword(password), secret]);
 await db.query(`select audit('cli', 'staff.created', 'staff', $1, $2::jsonb)`, [s.id, JSON.stringify({ email, role })]);
 console.log(`Created ${role} ${email}\n  One-time password: ${password}\n  Authenticator secret: ${secret}\n  Authenticator link: ${otpauthUrl(secret, email)}`);

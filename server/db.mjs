@@ -22,6 +22,7 @@ export async function connectPostgres(url) {
   const { default: postgres } = await import('postgres');
   const sql = postgres(url, {
     max: 3, idle_timeout: 20, connect_timeout: 10, prepare: false,  // prepare:false for Supabase's transaction pooler
+    connection: { statement_timeout: 10000 },                // no query may hold a connection for more than 10 s
     ssl: /localhost|127\.0\.0\.1/.test(url) ? false : 'require',
     types: { bigint: { to: INT8, from: [INT8], serialize: String, parse: Number } },
   });

@@ -24,7 +24,13 @@ async function hmac(secret, text) {
 }
 const same = (a, b) => { if (a.length !== b.length) return false; let d = 0; for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i); return d === 0; };
 const cookieOf = (req, name) => (req.headers.get('cookie') || '').split(';').map(c => c.trim()).find(c => c.startsWith(name + '='))?.slice(name.length + 1) || '';
-const token = pw => hmac(pw, 'pgbx-site-gate-v1');
+// The cookie is "<expiry>.<HMAC of the expiry>", so it stops working on its own after 30 days and can't be extended.
+const token = (pw, exp) => hmac(pw, 'pgbx-site-gate-v2:' + exp);
+const validCookie = async (pw, v) => { const [exp, sig] = String(v).split('.'); return /^\d{10}$/.test(exp || '') && Number(exp) * 1000 > Date.now() && !!sig && same(sig, await token(pw, exp)); };
+// Wrong passwords per address (per edge instance): 10 in 15 minutes, then a pause
+const tries = new Map();
+const tooMany = ip => { const t = tries.get(ip); return t && Date.now() - t.start < 900e3 && t.n >= 10; };
+const failed = ip => { const now = Date.now(), t = tries.get(ip); if (!t || now - t.start > 900e3) tries.set(ip, { start: now, n: 1 }); else t.n++; if (tries.size > 5000) tries.clear(); };
 
 const SECURITY = {
   'Cache-Control': 'no-store',
@@ -69,7 +75,7 @@ const SCRIPT = `document.getElementById('f').addEventListener('submit', async e 
   try {
     const r = await fetch('/__gate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw.value }) });
     if (r.ok) { location.reload(); return; }
-    err.textContent = r.status === 400 ? 'That password isn’t right. Try again.' : 'Something went wrong. Try again.';
+    err.textContent = r.status === 400 ? 'That password isn’t right. Try again.' : r.status === 429 ? 'Too many tries. Wait 15 minutes and try again.' : 'Something went wrong. Try again.';
   } catch (x) { err.textContent = 'Can’t reach the site. Check your connection.'; }
   pw.value = ''; pw.setAttribute('aria-invalid', 'true'); pw.focus(); go.disabled = false; go.textContent = 'Continue';
 });`;
@@ -82,21 +88,25 @@ export default async function middleware(request) {
 
   if (path === '/__gate.js') return new Response(SCRIPT, { headers: { ...SECURITY, 'Content-Type': 'text/javascript; charset=utf-8' } });
   if (path === '/__gate' && request.method === 'POST') {
+    const ip = (request.headers.get('x-real-ip') || request.headers.get('x-forwarded-for') || '').split(',')[0].trim() || 'unknown';
+    if (tooMany(ip)) return new Response(JSON.stringify({ ok: false, error: 'wait' }), { status: 429, headers: { ...SECURITY, 'Content-Type': 'application/json' } });
     let given = '';
     try { given = String((await request.json()).password || '').slice(0, 200); } catch { }
-    const [want, got] = await Promise.all([token(password), token(given)]);
+    const [want, got] = await Promise.all([hmac(password, 'pgbx-site-gate-check'), hmac(given, 'pgbx-site-gate-check')]);
     if (!same(want, got)) {
+      failed(ip);
       await new Promise(r => setTimeout(r, 600));                // slows guessing
       return new Response(JSON.stringify({ ok: false }), { status: 400, headers: { ...SECURITY, 'Content-Type': 'application/json' } });
     }
+    const exp = String(Math.floor(Date.now() / 1000) + DAYS * 86400);
     return new Response(JSON.stringify({ ok: true }), { headers: { ...SECURITY, 'Content-Type': 'application/json',
-      'Set-Cookie': `${COOKIE}=${want}; Path=/; Max-Age=${DAYS * 86400}; HttpOnly; Secure; SameSite=Lax` } });
+      'Set-Cookie': `${COOKIE}=${exp}.${await token(password, exp)}; Path=/; Max-Age=${DAYS * 86400}; HttpOnly; Secure; SameSite=Lax` } });
   }
   // A "path" parameter could make an open URL reach a different API route through the rewrite, so it isn't open then.
   if (OPEN.some(re => re.test(path)) && !url.searchParams.has('path')) return next();
 
   const have = cookieOf(request, COOKIE);
-  if (have && same(have, await token(password))) return next();
+  if (have && await validCookie(password, have)) return next();
 
   // Locked. API calls get JSON; pages get the password screen.
   if (path.startsWith('/api/')) return new Response(JSON.stringify({ error: 'PRIVATE', message: 'This site is private. Enter the password first.' }), { status: 401, headers: { ...SECURITY, 'Content-Type': 'application/json' } });

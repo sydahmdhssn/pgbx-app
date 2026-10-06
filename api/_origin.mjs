@@ -2,7 +2,11 @@
 // Browsers may call these APIs only from the app itself: production, its preview deployments, local development, and
 // the native apps (Capacitor serves them from capacitor://localhost on iOS and https://localhost on Android).
 // Preview URLs are pinned to this Vercel team's suffix: any Vercel user could create a project called "pgbx-app-something".
-export const ALLOWED_ORIGIN = /^https:\/\/pgbx-app(?:-[a-z0-9-]+-ssyedahmadhassan-6204s-projects)?\.vercel\.app$|^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$|^capacitor:\/\/localhost$|^https:\/\/localhost$/;
+// Plain-http localhost (local development) is allowed everywhere except the production deployment.
+const DEV = process.env.VERCEL_ENV !== 'production';
+export const ALLOWED_ORIGIN = DEV
+  ? /^https:\/\/pgbx-app(?:-[a-z0-9-]+-ssyedahmadhassan-6204s-projects)?\.vercel\.app$|^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$|^capacitor:\/\/localhost$|^https:\/\/localhost$/
+  : /^https:\/\/pgbx-app(?:-[a-z0-9-]+-ssyedahmadhassan-6204s-projects)?\.vercel\.app$|^capacitor:\/\/localhost$|^https:\/\/localhost$/;
 
 // Adds CORS headers only for allowed origins. Same-origin requests need none. Note that CORS only limits other
 // websites running in a browser; it does not stop scripts on a server, so it is not an access control.

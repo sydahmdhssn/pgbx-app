@@ -64,6 +64,11 @@ const MESSAGES = {
   INSUFFICIENT_GOLD: [409, 'You don’t have that much gold. Check your balance and try again.'],
   BAD_IBAN: [400, 'Enter your bank IBAN: 24 characters starting with PK, for example PK36SCBL0000001123456702.'],
   LOT_NOT_FULL: [409, 'This lot isn’t a full tola yet.'],
+  BAR_SERIAL_USED: [409, 'That bar serial is already recorded for another lot. Check the serial on the bar.'],
+  DUPLICATE_LINE: [400, 'Each product can appear only once in an order.'],
+  BAD_AMOUNT: [400, 'The payment amount is missing or not valid.'],
+  BAD_EVENT: [400, 'The payment event is missing its reference.'],
+  BAD_KEY: [400, 'Missing request key.'],
   BAD_REF: [400, 'Enter the bank transfer reference.'],
 };
 
@@ -74,6 +79,7 @@ const fail = (status, code, message, extra) => { throw new HttpError(status, cod
 
 // ---------- routing ----------
 const routes = [];
+const DUMMY_HASH = sec.hashPassword('not-a-real-password');   // for unknown emails, so sign-in takes the same time
 function route(method, pattern, opts, handler) {
   const keys = [];
   const re = new RegExp('^' + pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '/?$');
@@ -104,7 +110,7 @@ async function readBody(req) {
   try { return { raw, json: JSON.parse(raw) }; } catch { fail(400, 'BAD_JSON', 'The request couldn’t be read.'); }
 }
 const str = (v, max = 200) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
-const int = v => (Number.isInteger(v) ? v : typeof v === 'string' && /^-?\d+$/.test(v.trim()) ? Number(v) : NaN);   // '' and null are not 0
+const int = v => (Number.isSafeInteger(v) ? v : typeof v === 'string' && /^-?\d{1,15}$/.test(v.trim()) ? Number(v) : NaN);   // '' and null are not 0
 async function limit(db, key, windowSec, max, message) {
   const r = await db.one(`select fn_rate_limit($1, $2, $3) as wait`, [key, windowSec, max]);
   if (r.wait > 0) fail(429, 'RATE_LIMITED', message || 'Too many attempts. Please wait and try again.', { retryIn: r.wait });
@@ -126,13 +132,13 @@ const validRates = d => d && d.ok && ['gold', 'silver'].every(k => d.metals?.[k]
 // Each snapshot also keeps the USD/PKR rate, which prices $1 gold. A missing or implausible dollar rate is left out,
 // so $1 purchases pause (RATES_STALE) instead of using a wrong rate.
 async function recordRates(db, d) {
-  const r = await db.one(`select fn_record_rates($1, $2, $3, $4, $5) as id`, [d.metals.gold.buyTola, d.metals.gold.sellTola, d.metals.silver.buyTola, d.metals.silver.sellTola, d.metals.gold.source || 'live']);
-  const usd = Number(d.usdPkr && d.usdPkr.rate);
-  if (usd > 100 && usd < 1000) {
+  let usd = Number(d.usdPkr && d.usdPkr.rate);
+  if (!(usd > 100 && usd < 1000)) usd = null;
+  if (usd) {
     const prev = await db.one(`select usd_pkr from rate_snapshots where usd_pkr is not null and fetched_at > now() - interval '1 day' order by id desc limit 1`);
-    if (!prev || Math.abs(usd / Number(prev.usd_pkr) - 1) <= MAX_JUMP) await db.query(`update rate_snapshots set usd_pkr = $2 where id = $1`, [r.id, usd]);
+    if (prev && Math.abs(usd / Number(prev.usd_pkr) - 1) > MAX_JUMP) usd = null;
   }
-  return r;
+  return db.one(`select fn_record_rates($1, $2, $3, $4, $5, $6) as id`, [d.metals.gold.buyTola, d.metals.gold.sellTola, d.metals.silver.buyTola, d.metals.silver.sellTola, d.metals.gold.source || 'live', usd]);
 }
 
 // The live sources are called at most every 5 s per server instance, however many requests arrive.
@@ -187,6 +193,8 @@ async function staffFrom(ctx, { preMfa = false, roles, beforePasswordChange = fa
   if (!preMfa && !s.mfa_passed) fail(401, 'MFA_REQUIRED', 'Enter the code from your authenticator app.');
   if (!preMfa && !beforePasswordChange && s.must_change_password) fail(403, 'PASSWORD_CHANGE_REQUIRED', 'Choose a new password before continuing.');
   if (roles && !roles.includes(s.role)) fail(403, 'FORBIDDEN', 'Your role can’t do this.');
+  if (roles && s.role === 'dealer' && !(await db.one(`select 1 from dealers where id = $1 and active`, [s.dealer_id])))
+    fail(403, 'DEALER_INACTIVE', 'This dealer counter is not active. Contact PGBX operations.');
   return s;
 }
 // Cookie-authenticated changes must come from the app's own pages (with SameSite=Strict this blocks cross-site requests).
@@ -263,8 +271,9 @@ route('POST', '/auth/otp/verify', {}, async ({ db, body, req, res }) => {
   const code = str(body.code).replace(/\D/g, '');
   if (!PK_MOBILE.test(phone) || code.length !== 6) fail(400, 'BAD_CODE', 'Enter the 6-digit code you received.');
   await limit(db, 'otp-check-ip:' + clientIp(req), 600, 20, 'Too many attempts from this device. Try again later.');
-  await limit(db, 'otp-check-h:' + phone, 3600, 10, 'Too many wrong codes. Request a new code later.');
-  if (!(await otp.check(phone, code))) fail(400, 'WRONG_CODE', 'That code is incorrect. Check the message and try again.');
+  // Wrong codes per number are counted only when they are wrong, so nobody can lock a number out by guessing first
+  if ((await db.one(`select rate_hits($1, 3600) n`, ['otp-fail-h:' + phone])).n >= 10) fail(429, 'RATE_LIMITED', 'Too many wrong codes. Request a new code later.');
+  if (!(await otp.check(phone, code))) { await limit(db, 'otp-fail-h:' + phone, 3600, 1000); fail(400, 'WRONG_CODE', 'That code is incorrect. Check the message and try again.'); }
   let c = await db.one(`select * from customers where phone = $1`, [phone]);
   const isNew = !c;
   if (!c) c = await db.one(`insert into customers (phone) values ($1) returning *`, [phone]);
@@ -298,7 +307,7 @@ async function walletOf(db, customerId) {
   const sell = m => (snap ? (m === 'gold' ? snap.gold_sell_tola : snap.silver_sell_tola) / TOLA : 0);
   const holdings = rows.map(r => ({ ...r, value_pkr: Math.round(r.units * r.grams * sell(r.metal)) }));
   const g = Number((await db.one(`select micro_grams($1) g`, [customerId])).g);
-  const gold_savings = { grams: g, value_pkr: Math.floor(g * sell('gold')) };     // $1 gold, valued at the sell price
+  const gold_savings = { grams: g, value_pkr: snap ? Math.floor(g * Math.round(snap.gold_sell_tola / TOLA * 100) / 100) : 0 };     // as a sale would pay
   return { holdings, gold_savings, total_value_pkr: holdings.reduce((a, h) => a + h.value_pkr, 0) + gold_savings.value_pkr, priced_at: snap?.fetched_at || null };
 }
 route('GET', '/me', { auth: 'customer' }, async ({ db, customer }) => {
@@ -339,12 +348,23 @@ route('PATCH', '/me', { auth: 'customer' }, async ({ db, customer, body }) => {
   return { ok: true, reverify };
 });
 
-route('POST', '/me/phone/start', { auth: 'customer' }, async ({ db, customer, body }) => {
+// Changing the number needs a login from the last 10 minutes (proof of the current number), so a borrowed or stolen
+// session can't take the account over. Sales and collections pause for 24 hours afterwards.
+const RECENT_LOGIN_MIN = 10;
+async function requireRecentLogin(db, customer) {
+  const s = await db.one(`select created_at > now() - make_interval(mins => $2) as recent from sessions where token_hash = $1`, [customer.token_hash, RECENT_LOGIN_MIN]);
+  if (!s || !s.recent) fail(403, 'REAUTH_REQUIRED', 'For your security, log in again with your current number, then change it.');
+}
+route('POST', '/me/phone/start', { auth: 'customer' }, async ({ db, customer, body, req }) => {
   const phone = str(body.phone).replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '');
   if (!PK_MOBILE.test(phone)) fail(400, 'BAD_PHONE', 'Enter a valid Pakistani mobile number, for example 300 1234567.');
+  await requireRecentLogin(db, customer);
+  if (!(await turnstile.verify(body.turnstileToken, clientIp(req)))) fail(400, 'HUMAN_CHECK', 'Please complete the check that you’re not a robot.');
   await limit(db, 'phone-change:' + customer.id, 3600, 3, 'Too many attempts. Try again later.');   // before the lookup, so numbers can't be probed
   if (await db.one(`select 1 from customers where phone = $1`, [phone])) fail(409, 'PHONE_IN_USE', 'That number is already used by another PGBX account.');
   await limit(db, 'otp-send-30s:' + phone, 30, 1, 'Please wait a moment before requesting another code.');
+  await limit(db, 'otp-send-h:' + phone, 3600, 3, 'Too many codes sent to this number. Try again later.');
+  await limit(db, 'otp-send-ip:' + clientIp(req), 600, 5, 'Too many codes requested from this device. Try again later.');
   await otp.send(phone, 'sms');
   return { ok: true };
 });
@@ -352,22 +372,26 @@ route('POST', '/me/phone/verify', { auth: 'customer' }, async ({ db, customer, b
   const phone = str(body.phone).replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '');
   const code = str(body.code).replace(/\D/g, '');
   if (!PK_MOBILE.test(phone) || code.length !== 6) fail(400, 'BAD_CODE', 'Enter the 6-digit code you received.');
+  await requireRecentLogin(db, customer);
   await limit(db, 'phone-check:' + customer.id, 3600, 10, 'Too many wrong codes. Try again later.');
   if (!(await otp.check(phone, code))) fail(400, 'WRONG_CODE', 'That code is incorrect. Check the SMS and try again.');
-  try { await db.query(`update customers set phone = $2 where id = $1`, [customer.id, phone]); }
+  try { await db.query(`update customers set phone = $2, phone_changed_at = now() where id = $1`, [customer.id, phone]); }
   catch (e) { if (e.code === '23505') fail(409, 'PHONE_IN_USE', 'That number is already used by another PGBX account.'); throw e; }
   // Other devices signed in to this account are signed out; this one stays signed in.
   await db.query(`update sessions set revoked_at = now() where customer_id = $1 and token_hash <> $2 and revoked_at is null`, [customer.id, customer.token_hash]);
   await audit(db, 'customer:' + customer.id, 'phone.changed', 'customer', customer.id, {});
-  await db.query(`select notify_customer($1, 'security', 'Mobile number changed', $2, null, true)`, [customer.id, `Your account now uses +92 ${phone.slice(0, 3)} ${phone.slice(3)}. If this wasn’t you, contact PGBX.`]);
+  await db.query(`select notify_customer($1, 'security', 'Mobile number changed', $2, null, true)`, [customer.id, `Your account now uses +92 ${phone.slice(0, 3)} ${phone.slice(3)}. For your security, selling gold and collecting bars pause for 24 hours. If this wasn’t you, contact PGBX at once.`]);
   return { ok: true };
 });
 
 route('POST', '/devices/push', { auth: 'customer' }, async ({ db, customer, body }) => {
   const token = str(body.token, 400); const platform = ['ios', 'android', 'web'].includes(body.platform) ? body.platform : null;
   if (!token || !platform) fail(400, 'BAD_TOKEN', 'Invalid device.');
+  await limit(db, 'push-token:' + customer.id, 3600, 20, 'Too many device registrations. Try again later.');
   await db.query(`insert into push_tokens (token, customer_id, platform) values ($1, $2, $3)
     on conflict (token) do update set customer_id = excluded.customer_id, last_seen_at = now()`, [token, customer.id, platform]);
+  // a customer's 5 most recently seen devices receive notifications
+  await db.query(`delete from push_tokens where customer_id = $1 and token not in (select token from push_tokens where customer_id = $1 order by last_seen_at desc limit 5)`, [customer.id]);
   return { ok: true };
 });
 
@@ -377,12 +401,18 @@ route('POST', '/kyc', { auth: 'customer' }, async ({ db, customer }) => {
   if (customer.kyc_status === 'verified') fail(409, 'KYC_DONE', 'Your identity is already verified.');
   if (customer.kyc_status === 'review') fail(409, 'KYC_IN_PROGRESS', 'A PGBX team member is reviewing your check, usually within one working day.');
   await limit(db, 'kyc-start:' + customer.id, 86400, 10, 'Too many identity checks today. Contact PGBX support.');
+  // Only the newest check can be submitted: earlier unfinished ones are closed, so a second check can't change the
+  // identity while the first is with a reviewer.
+  await db.query(`update kyc_checks set status = 'failed', reason = 'Replaced by a newer check', decided_at = now(), decided_by = 'system' where customer_id = $1 and status = 'started'`, [customer.id]);
   const k = await db.one(`insert into kyc_checks (customer_id, provider) values ($1, $2) returning id, status`, [customer.id, kyc.provider]);
   await db.query(`update customers set kyc_status = 'pending' where id = $1 and kyc_status in ('none', 'failed', 'reverify')`, [customer.id]);
   return { check: k };
 });
 route('POST', '/kyc/:id/submit', { auth: 'customer' }, async ({ db, customer, body, params }) => {
-  const k = await db.one(`select * from kyc_checks where id = $1 and customer_id = $2 and status = 'started'`, [params.id, customer.id]);
+  if (!['none', 'failed', 'reverify', 'pending'].includes(customer.kyc_status))
+    fail(409, customer.kyc_status === 'verified' ? 'KYC_DONE' : 'KYC_IN_PROGRESS', customer.kyc_status === 'verified' ? 'Your identity is already verified.' : 'A PGBX team member is reviewing your check, usually within one working day.');
+  const k = await db.one(`select * from kyc_checks where id = $1 and customer_id = $2 and status = 'started'
+    and id = (select id from kyc_checks where customer_id = $2 order by created_at desc, id desc limit 1)`, [params.id, customer.id]);
   if (!k) fail(404, 'KYC_NOT_FOUND', 'Start identity verification again.');
   const cnic = str(body.cnic).replace(/\D/g, ''); const name = str(body.name, 100); const dob = str(body.dob, 10); const expiry = str(body.expiry, 10);
   const dobD = isoDate(dob), expD = isoDate(expiry);
@@ -394,13 +424,43 @@ route('POST', '/kyc/:id/submit', { auth: 'customer' }, async ({ db, customer, bo
   // One person, one account: a CNIC already verified on another open account always goes to a person to check.
   if (d.status === 'passed' && await db.one(`select 1 from customers where cnic = $1 and id <> $2 and status <> 'closed' and kyc_status in ('verified', 'reverify', 'review')`, [cnicFmt(cnic), customer.id]))
     d = { status: 'review', reason: 'CNIC already used on another account' };
+  // The identity a check approves is stored with the check; a reviewer approves exactly these details.
+  const ident = { name, cnic: cnicFmt(cnic), dob, expiry };
+  let status = { passed: 'verified', failed: 'failed', review: 'review', submitted: 'pending' }[d.status];
+  const save = st => db.one(`update customers set name = $2, cnic = $3, dob = $4, kyc_status = $5, kyc_at = case when $5 = 'verified' then now() else kyc_at end
+      where id = $1 and kyc_status not in ('review', 'verified') returning id`, [customer.id, name, ident.cnic, dob, st]);
+  let saved;
+  try { saved = await save(status); }
+  catch (e) {                                                      // the same CNIC was verified on another account at the same moment
+    if (e.code !== '23505') throw e;
+    d = { status: 'review', reason: 'CNIC already used on another account' }; status = 'review'; saved = await save(status);
+  }
+  if (!saved) fail(409, 'KYC_IN_PROGRESS', 'A PGBX team member is reviewing your check, usually within one working day.');
   await db.query(`update kyc_checks set status = $2, reason = $3, data = $4::jsonb, decided_at = case when $2 in ('passed', 'failed') then now() end, decided_by = $5 where id = $1`,
-    [k.id, d.status, d.reason || null, JSON.stringify({ expiry }), kyc.sandbox ? 'provider:sandbox' : null]);
-  const status = { passed: 'verified', failed: 'failed', review: 'review', submitted: 'pending' }[d.status];
-  await db.query(`update customers set name = $2, cnic = $3, dob = $4, kyc_status = $5, kyc_at = case when $5 = 'verified' then now() else kyc_at end where id = $1`,
-    [customer.id, name, cnicFmt(cnic), dob, status]);
+    [k.id, d.status, d.reason || null, JSON.stringify(ident), kyc.sandbox ? 'provider:sandbox' : null]);
   await audit(db, 'customer:' + customer.id, 'kyc.submitted', 'kyc', k.id, { result: d.status });
   return { status, reason: d.status === 'failed' ? 'We couldn’t verify these details. Check them against your CNIC and try again.' : d.status === 'review' ? 'A PGBX team member will review your check, usually within one working day.' : null };
+});
+
+// Identity provider result: body { check_id, status: "passed" | "failed" | "review", reason }, signed with KYC_WEBHOOK_SECRET
+route('POST', '/kyc/webhook', {}, async ({ db, raw, body, req }) => {
+  if (!signedWebhook(req, raw, kyc.webhookSecret)) fail(401, 'BAD_SIGNATURE', 'Invalid signature.');
+  const id = str(body.check_id, 40), status = ['passed', 'failed', 'review'].includes(body.status) ? body.status : null;
+  if (!id || !status) fail(400, 'BAD_EVENT', 'Missing fields.');
+  const k = await db.one(`select * from kyc_checks where id = $1 and status in ('submitted', 'review')`, [id]);
+  if (!k) return { ok: true, status: 'ignored' };                  // unknown or already decided: acknowledged, nothing changes
+  await db.query(`update kyc_checks set status = $2, reason = $3, decided_at = case when $2 in ('passed', 'failed') then now() end, decided_by = $4 where id = $1`,
+    [id, status, str(body.reason, 300) || null, 'provider:' + kyc.provider]);
+  const newest = (await db.one(`select id from kyc_checks where customer_id = $1 order by created_at desc, id desc limit 1`, [k.customer_id])).id === k.id;
+  if (newest) {
+    const st = { passed: 'verified', failed: 'failed', review: 'review' }[status];
+    try { await db.query(`update customers set kyc_status = $2, kyc_at = case when $2 = 'verified' then now() else kyc_at end where id = $1`, [k.customer_id, st]); }
+    catch (e) { if (e.code !== '23505') throw e; await db.query(`update customers set kyc_status = 'review' where id = $1`, [k.customer_id]); await db.query(`update kyc_checks set status = 'review', reason = 'CNIC already used on another account' where id = $1`, [id]); }
+    if (status !== 'review') await db.query(`select notify_customer($1, 'account', $2, $3, null, true)`, [k.customer_id, status === 'passed' ? 'Identity verified' : 'We couldn’t verify your identity',
+      status === 'passed' ? 'You can now buy gold and silver.' : 'Check your CNIC details and try again, or contact PGBX support.']);
+  }
+  await audit(db, 'provider:' + kyc.provider, 'kyc.decided', 'kyc', id, { decision: status });
+  return { ok: true, status };
 });
 
 // ---------- buying (FR-B1–B8) ----------
@@ -411,6 +471,8 @@ async function expireNow(db) {
   if (Date.now() - lastExpiry < 60000) return;
   lastExpiry = Date.now();
   await db.query(`select fn_expire_orders(), fn_expire_services(), fn_expire_redemptions(), fn_expire_micro()`).catch(e => console.error('PGBX expiry', e.message));
+  // The scheduled sweep may run only daily (Vercel Hobby), so pushes also go out here, at most once a minute
+  if (push.enabled) await sendPendingPush(db).catch(e => console.error('PGBX push', e.message));
 }
 // If the payment provider can't start a payment, the order or booking is closed at once instead of holding the
 // customer's limit or a visit slot until it expires.
@@ -437,7 +499,7 @@ route('POST', '/locks', { auth: 'customer' }, async ({ db, customer, body, fetch
 });
 
 route('POST', '/orders', { auth: 'customer' }, async ({ db, customer, body }) => {
-  const lines = Array.isArray(body.lines) ? body.lines.slice(0, 20).map(l => ({ product_id: str(l.productId || l.product_id, 40), units: int(l.units) })) : [];
+  const lines = Array.isArray(body.lines) ? body.lines.slice(0, 20).map(l => (l && typeof l === 'object' ? { product_id: str(l.productId || l.product_id, 40), units: int(l.units) } : { product_id: '', units: NaN })) : [];
   if (lines.some(l => !Number.isInteger(l.units))) fail(400, 'BAD_UNITS', MESSAGES.BAD_UNITS[1]);
   const method = ['bank', 'card', 'mwallet'].includes(body.method) ? body.method : fail(400, 'BAD_METHOD', 'Choose a payment method.');
   const key = str(body.idempotencyKey, 80); if (key.length < 8) fail(400, 'BAD_KEY', 'Missing request key.');
@@ -467,26 +529,34 @@ route('POST', '/payments/sandbox/:id', { auth: 'customer' }, async ({ db, custom
   if (!o) fail(404, 'ORDER_NOT_FOUND', MESSAGES.ORDER_NOT_FOUND[1]);
   const r = body.outcome === 'fail'
     ? await db.one(`select * from fn_payment_failed('sandbox', $1, $2, '{}')`, ['sbx-' + o.id, o.id])
-    : await db.one(`select * from fn_payment_succeeded('sandbox', $1, $2, $3, '{}')`, ['sbx-' + o.id, o.id, body.outcome === 'wrong_amount' ? o.total_pkr - 1 : o.total_pkr]);
+    : await db.one(`select * from fn_payment_succeeded('sandbox', $1, $2, $3, '{}')`, ['sbx-' + o.id + (body.attempt ? '-' + str(String(body.attempt), 10) : ''), o.id, body.outcome === 'wrong_amount' ? o.total_pkr - 1 : o.total_pkr]);
   return { order: orderDto(r) };
 });
 
 // Provider webhook: body { order_id, provider_ref, amount_pkr, status: "succeeded" | "failed" }, header x-pgbx-signature = HMAC-SHA256(raw body)
+// With an x-pgbx-timestamp header (seconds) the signature covers "<timestamp>.<body>" and is accepted for 5 minutes,
+// so a captured request can't be replayed later. Without it, the signature covers the body alone.
+function signedWebhook(req, raw, secret) {
+  const ts = req.headers['x-pgbx-timestamp'];
+  if (ts !== undefined) return /^\d{9,11}$/.test(String(ts)) && Math.abs(Date.now() / 1000 - Number(ts)) <= 300 && sec.verifySignature(ts + '.' + raw, req.headers['x-pgbx-signature'], secret);
+  return sec.verifySignature(raw, req.headers['x-pgbx-signature'], secret);
+}
 route('POST', '/payments/webhook', {}, async ({ db, raw, body, req }) => {
-  if (!sec.verifySignature(raw, req.headers['x-pgbx-signature'], payments.webhookSecret)) fail(401, 'BAD_SIGNATURE', 'Invalid signature.');
+  if (!signedWebhook(req, raw, payments.webhookSecret)) fail(401, 'BAD_SIGNATURE', 'Invalid signature.');
   const ref = str(body.provider_ref, 120), orderId = str(body.order_id, 40);
   if (!ref || !orderId) fail(400, 'BAD_EVENT', 'Missing fields.');
+  if (body.status === 'succeeded' && !Number.isSafeInteger(body.amount_pkr) && !/^\d{1,12}$/.test(String(body.amount_pkr))) fail(400, 'BAD_EVENT', 'amount_pkr must be a whole number of rupees.');
   // Services (doorstep appraisal fee, gift orders): body.kind = "appraisal" | "gift"
   // Only final results change anything; other provider events (pending, processing…) are acknowledged and ignored.
   if (body.status !== 'succeeded' && body.status !== 'failed') return { ok: true, status: 'ignored' };
   if (body.kind === 'micro') {                                 // $1 gold: order_id is the micro order
     if (body.status !== 'succeeded') return { ok: true, status: 'ignored' };   // it lapses on its own if never paid
-    const r = (await db.one(`select fn_micro_paid($1, $2, $3) r`, [orderId, ref, int(body.amount_pkr)])).r;
+    const r = (await db.one(`select fn_micro_paid($1, $2, $3, $4) r`, [orderId, ref, int(body.amount_pkr), payments.provider])).r;
     return { ok: true, status: r.status };
   }
   if (body.kind === 'appraisal' || body.kind === 'gift') {
     if (body.status !== 'succeeded') return { ok: true, status: 'ignored' };
-    const r = (await db.one(`select fn_service_paid($1, $2, $3, $4) r`, [body.kind, orderId, ref, int(body.amount_pkr)])).r;
+    const r = (await db.one(`select fn_service_paid($1, $2, $3, $4, $5) r`, [body.kind, orderId, ref, int(body.amount_pkr), payments.provider])).r;
     return { ok: true, status: r.status };
   }
   const r = body.status === 'succeeded'
@@ -499,13 +569,22 @@ route('GET', '/ledger', { auth: 'customer' }, async ({ db, customer, query }) =>
   const from = /^\d{4}-\d{2}-\d{2}$/.test(query.from || '') ? query.from : '2000-01-01';
   const to = /^\d{4}-\d{2}-\d{2}$/.test(query.to || '') ? query.to : '2999-12-31';
   const entries = await db.query(`select l.id, l.product_id, l.delta, l.reason, l.ref, l.unit_price_pkr, l.created_at from ledger l
-    where customer_id = $1 and created_at >= $2::date and created_at < $3::date + 1 order by created_at`, [customer.id, from, to]);
+    where customer_id = $1 and created_at >= $2::date and created_at < $3::date + 1 order by created_at limit 5000`, [customer.id, from, to]);
   const opening = await db.query(`select product_id, sum(delta)::int units from ledger where customer_id = $1 and created_at < $2::date group by 1 having sum(delta) <> 0`, [customer.id, from]);
   return { from, to, opening, entries };
 });
 
 // ---------- collection at a dealer (FR-D1–D9) ----------
+const PHONE_HOLD_MS = 24 * 3600e3;
+function phoneHold(customer) {
+  if (customer.phone_changed_at && Date.now() - new Date(customer.phone_changed_at) < PHONE_HOLD_MS)
+    fail(403, 'PHONE_RECENTLY_CHANGED', 'Your mobile number changed in the last 24 hours. For your security, selling and collecting are paused until then.');
+}
+// Value created by sandbox payments is test money: it is never paid out or handed over as real gold.
+const sandboxFunds = async (db, customerId) => !!(await db.one(`select 1 from payments p join orders o on o.id = p.order_id where o.customer_id = $1 and p.provider = 'sandbox'
+  union all select 1 from service_payments sp join micro_orders m on m.id = sp.entity_id where sp.kind = 'micro' and m.customer_id = $1 and sp.provider = 'sandbox' limit 1`, [customerId]));
 route('POST', '/redemptions', { auth: 'customer' }, async ({ db, customer, body }) => {
+  phoneHold(customer);
   const args = [customer.id, str(body.productId, 40), int(body.units), str(body.dealerId, 40)];
   if (!Number.isInteger(args[2])) fail(400, 'BAD_UNITS', MESSAGES.BAD_UNITS[1]);
   for (let i = 0; i < 6; i++) {                                // codes are random; retry on the rare clash with an active code
@@ -529,7 +608,7 @@ route('POST', '/notifications/read', { auth: 'customer' }, async ({ db, customer
   await db.query(`update notifications set read_at = now() where customer_id = $1 and read_at is null`, [customer.id]);
   return { ok: true };
 });
-route('GET', '/alerts', { auth: 'customer' }, async ({ db, customer }) => ({ alerts: await db.query(`select id, metal, dir, target_pkr, active, fired_at from price_alerts where customer_id = $1 order by created_at desc`, [customer.id]) }));
+route('GET', '/alerts', { auth: 'customer' }, async ({ db, customer }) => ({ alerts: await db.query(`select id, metal, dir, target_pkr, active, fired_at from price_alerts where customer_id = $1 order by active desc, created_at desc limit 100`, [customer.id]) }));
 route('POST', '/alerts', { auth: 'customer' }, async ({ db, customer, body }) => {
   const metal = ['gold', 'silver'].includes(body.metal) ? body.metal : fail(400, 'BAD_METAL', 'Choose gold or silver.');
   const dir = ['above', 'below'].includes(body.dir) ? body.dir : fail(400, 'BAD_DIR', 'Choose above or below.');
@@ -580,7 +659,7 @@ const cleanPhone = v => str(v).replace(/\D/g, '').replace(/^92/, '').replace(/^0
 
 route('POST', '/appraisals', { auth: 'customer' }, async ({ db, customer, body }) => {
   if (!payments.provider) fail(503, 'PAYMENTS_OFF', 'Payments aren’t available yet.');
-  const items = Array.isArray(body.items) ? body.items.slice(0, 20).map(i => ({
+  const items = Array.isArray(body.items) ? body.items.filter(i => i && typeof i === 'object').slice(0, 20).map(i => ({
     metal: i.metal === 'silver' ? 'silver' : 'gold', karat: str(i.karat, 8), approx_g: Math.max(0, Math.min(100000, Number(i.approx_g) || 0)), note: str(i.note, 80) })) : [];
   const phone = cleanPhone(body.phone);
   if (!PK_MOBILE.test(phone)) fail(400, 'BAD_PHONE', 'Enter a valid Pakistani mobile number, for example 300 1234567.');
@@ -621,8 +700,8 @@ route('POST', '/payments/sandbox/:kind/:id', { auth: 'customer' }, async ({ db, 
   if (!table) fail(404, 'NOT_FOUND', 'Not found.');
   const row = await db.one(`select * from ${table} where id = $1 and customer_id = $2`, [params.id, customer.id]);
   if (!row) fail(404, 'NOT_FOUND', 'Not found.');
-  if (params.kind === 'micro') return { status: (await db.one(`select fn_micro_paid($1, $2, $3) r`, [row.id, 'sbx-' + row.id, row.total_pkr])).r.status };
-  const r = (await db.one(`select fn_service_paid($1, $2, $3, $4) r`, [params.kind, row.id, 'sbx-' + row.id, row.fee_pkr ?? row.total_pkr])).r;
+  if (params.kind === 'micro') return { status: (await db.one(`select fn_micro_paid($1, $2, $3, 'sandbox') r`, [row.id, 'sbx-' + row.id, row.total_pkr])).r.status };
+  const r = (await db.one(`select fn_service_paid($1, $2, $3, $4, 'sandbox') r`, [params.kind, row.id, 'sbx-' + row.id, row.fee_pkr ?? row.total_pkr])).r;
   return { status: r.status };
 });
 
@@ -652,7 +731,7 @@ route('GET', '/micro', { auth: 'customer' }, async ({ db, customer }) => {
   const txns = await db.query(`select t.*, o.ref as order_ref, ${lotsOf} as lots from micro_txns t left join micro_orders o on o.id = t.order_id
     where t.customer_id = $1 and (t.side = 'sell' or t.status in ('credited', 'refund_due') or t.created_at > now() - interval '1 hour') order by t.created_at desc, t.ref limit 300`, [customer.id]);
   const orders = await db.query(`select id, ref, units, unit_pkr, total_pkr, status, note, created_at from micro_orders where customer_id = $1 order by created_at desc limit 50`, [customer.id]);
-  return { gold: { grams, value_pkr: snap ? Math.floor(grams * snap.gold_sell_tola / TOLA) : null }, transactions: txns.map(microTxnDto), orders };
+  return { gold: { grams, value_pkr: snap ? Math.floor(grams * Math.round(snap.gold_sell_tola / TOLA * 100) / 100) : null }, transactions: txns.map(microTxnDto), orders };
 });
 route('POST', '/micro/buy', { auth: 'customer' }, async ({ db, customer, body, fetchRates }) => {
   if (!payments.provider) fail(503, 'PAYMENTS_OFF', 'Payments aren’t available yet.');
@@ -670,8 +749,16 @@ route('POST', '/micro/sell', { auth: 'customer' }, async ({ db, customer, body, 
   if (!(grams > 0) || !Number.isFinite(grams)) fail(400, 'BAD_GRAMS', MESSAGES.BAD_GRAMS[1]);
   const iban = str(body.iban, 40).replace(/\s/g, '').toUpperCase();
   const key = str(body.idempotencyKey, 80); if (key.length < 8) fail(400, 'BAD_KEY', 'Missing request key.');
+  phoneHold(customer);
   await limit(db, 'micro-sell:' + customer.id, 3600, 30, 'Too many sales in an hour. Try again later.');
   await ensureRates(db, fetchRates);
+  // The customer confirmed an amount; if the price has since moved down by more than 0.2%, ask them to confirm again
+  const expected = int(body.expectedAmountPkr);
+  if (Number.isSafeInteger(expected) && expected > 0) {
+    const snap = await db.one(`select round(gold_sell_tola / 11.664, 2)::float8 g from rate_snapshots order by id desc limit 1`);
+    const now = snap ? Math.max(1, Math.floor(Math.round(grams * 1e6) / 1e6 * snap.g)) : 0;
+    if (now < expected - Math.max(1, Math.floor(expected * 0.002))) fail(409, 'PRICE_CHANGED', `The price changed. You would now receive Rs ${now.toLocaleString('en-US')}. Check and confirm again.`, { amountPkr: now });
+  }
   const t = await db.one(`select * from fn_micro_sell($1, $2, $3, $4)`, [customer.id, grams, iban, key]);
   return { transaction: microTxnDto((await db.one(`select t.*, ${lotsOf} as lots from micro_txns t where t.id = $1`, [t.id]))) };
 });
@@ -693,10 +780,14 @@ route('POST', '/account/close', { auth: 'customer' }, async ({ db, customer, res
 route('POST', '/staff/login', {}, async ({ db, body, req, res }) => {
   const email = str(body.email, 200).toLowerCase();
   await limit(db, 'staff-login-ip:' + clientIp(req), 900, 20, 'Too many sign-in attempts. Try again in 15 minutes.');
-  await limit(db, 'staff-login:' + email, 900, 8, 'Too many sign-in attempts. Try again in 15 minutes.');
+  if ((await db.one(`select rate_hits($1, 900) n`, ['staff-fail:' + email])).n >= 8) fail(429, 'RATE_LIMITED', 'Too many sign-in attempts. Try again in 15 minutes.');
   const s = await db.one(`select * from staff where email = $1 and active`, [email]);
-  const ok = s ? sec.verifyPassword(str(body.password, 200), s.password_hash) : (sec.verifyPassword('x', sec.hashPassword('y')), false);  // same work either way
-  if (!ok) { await audit(db, 'system', 'staff.login_failed', 'staff', email, { ip: clientIp(req) }); fail(401, 'BAD_LOGIN', 'Email or password is incorrect.'); }
+  const ok = s ? sec.verifyPassword(str(body.password, 200), s.password_hash) : (sec.verifyPassword('x', DUMMY_HASH), false);  // one scrypt either way
+  if (!ok) {
+    await limit(db, 'staff-fail:' + email, 900, 1000);
+    await audit(db, 'system', 'staff.login_failed', 'staff', /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '[not an email]', { ip: clientIp(req) });
+    fail(401, 'BAD_LOGIN', 'Email or password is incorrect.');
+  }
   const token = sec.newToken();
   await db.query(`insert into staff_sessions (token_hash, staff_id, expires_at) values ($1, $2, now() + interval '12 hours')`, [sec.hashToken(token), s.id]);
   if (body.cookie === false) return { token, mfaRequired: true };   // scripts and tests; the panels use the HttpOnly cookie
@@ -749,6 +840,9 @@ route('GET', '/dealer/redemptions', dealerOnly, async ({ db, staff }) => ({
 }));
 route('POST', '/dealer/redemptions/:id/ready', dealerOnly, async ({ db, staff, params }) => ({ redemption: await db.one(`select id, status from fn_dealer_ready($1, $2)`, [staff.id, params.id]) }));
 route('POST', '/dealer/redemptions/:id/handover', dealerOnly, async ({ db, staff, params, body }) => {
+  const r = await db.one(`select customer_id from redemptions where id = $1 and dealer_id = $2`, [params.id, staff.dealer_id]);
+  if (r && process.env.VERCEL_ENV === 'production' && await sandboxFunds(db, r.customer_id))
+    fail(409, 'SANDBOX_FUNDS', 'This customer’s metal came from test (sandbox) payments. Do not hand over; contact PGBX operations.');
   const serials = Array.isArray(body.serials) ? body.serials.map(s => str(s, 60).toUpperCase()) : [];
   return { redemption: await db.one(`select id, status, serials from fn_dealer_handover($1, $2, $3, $4)`, [staff.id, params.id, serials, body.cnicChecked === true]) };
 });
@@ -759,20 +853,22 @@ route('GET', '/dealer/stock', dealerOnly, async ({ db, staff }) =>
 const ops = { staff: { roles: ['admin', 'ops'] } };
 const adminOnly = { staff: { roles: ['admin'] } };
 route('GET', '/admin/overview', ops, async ({ db }) => ({
-  customers: (await db.one(`select count(*)::int n from customers where status = 'active'`)).n,
-  verified: (await db.one(`select count(*)::int n from customers where kyc_status = 'verified' and status = 'active'`)).n,
-  kyc_review: (await db.one(`select count(*)::int n from kyc_checks where status in ('review', 'submitted')`)).n,
-  flagged_orders: (await db.one(`select count(*)::int n from orders where status = 'flagged'`)).n,
-  sales_today_pkr: (await db.one(`select coalesce(sum(total_pkr), 0) v from orders where status = 'credited' and credited_at >= pk_day_start()`)).v,   // Pakistan time
-  orders_today: (await db.one(`select count(*)::int n from orders where status = 'credited' and credited_at >= pk_day_start()`)).n,
-  active_collections: (await db.one(`select count(*)::int n from redemptions where status in ('requested', 'ready') and expires_at > now()`)).n,
-  appraisals_to_assign: (await db.one(`select count(*)::int n from appraisals where status = 'booked'`)).n,
-  gifts_open: (await db.one(`select count(*)::int n from gift_orders where status in ('placed', 'in_production', 'dispatched')`)).n,
-  lots_to_settle: (await db.one(`select count(*)::int n from tola_lots where status = 'full'`)).n,
-  payouts_pending: (await db.one(`select count(*)::int n from micro_txns where status = 'pending_payout'`)).n,
-  micro_refunds: (await db.one(`select count(*)::int n from micro_orders where status = 'refund_due'`)).n,
-  support_open: (await db.one(`select count(*)::int n from support_requests where status = 'open'`)).n,
+  ...(await db.one(`select
+    (select count(*)::int from customers where status = 'active') customers,
+    (select count(*)::int from customers where kyc_status = 'verified' and status = 'active') verified,
+    (select count(*)::int from kyc_checks where status in ('review', 'submitted')) kyc_review,
+    (select count(*)::int from orders where status = 'flagged') flagged_orders,
+    (select coalesce(sum(total_pkr), 0) from orders where status = 'credited' and credited_at >= pk_day_start()) sales_today_pkr,
+    (select count(*)::int from orders where status = 'credited' and credited_at >= pk_day_start()) orders_today,
+    (select count(*)::int from redemptions where status in ('requested', 'ready') and expires_at > now()) active_collections,
+    (select count(*)::int from appraisals where status = 'booked') appraisals_to_assign,
+    (select count(*)::int from gift_orders where status in ('placed', 'in_production', 'dispatched')) gifts_open,
+    (select count(*)::int from tola_lots where status = 'full') lots_to_settle,
+    (select count(*)::int from micro_txns where status = 'pending_payout') payouts_pending,
+    (select count(*)::int from refunds where status = 'due') refunds_due,
+    (select count(*)::int from support_requests where status = 'open') support_open`)),
   rates: await db.one(`select gold_buy_tola, gold_sell_tola, silver_buy_tola, silver_sell_tola, source, fetched_at from rate_snapshots order by id desc limit 1`),
+  sandbox: payments.sandbox || kyc.sandbox,
 }));
 
 // What each setting may hold. A wrong value here would break buying or services for everyone, so every change is
@@ -801,12 +897,12 @@ route('PATCH', '/admin/settings', adminOnly, async ({ db, staff, body }) => {
   const entries = Object.entries(body || {});
   for (const [k, v] of entries) {                              // check everything first, so a bad value saves nothing
     if (!known.has(k)) fail(400, 'BAD_SETTING', `Unknown setting ${k}.`);
-    if (SETTING_RULES[k] && !SETTING_RULES[k](v)) fail(400, 'BAD_SETTING', `That value for ${k} isn’t allowed. Check the format and range.`);
+    if (!SETTING_RULES[k] || !SETTING_RULES[k](v)) fail(400, 'BAD_SETTING', `That value for ${k} isn’t allowed. Check the format and range.`);
   }
-  for (const [k, v] of entries) {
-    await db.query(`update settings set value = $2::jsonb, updated_at = now(), updated_by = $3 where key = $1`, [k, JSON.stringify(v), 'staff:' + staff.id]);
-    await audit(db, 'staff:' + staff.id, 'setting.changed', 'setting', k, { value: v });
-  }
+  if (!entries.length) return { ok: true };
+  // all keys in one statement: either every change is saved or none is
+  await db.query(`update settings s set value = j.value, updated_at = now(), updated_by = $2 from jsonb_each($1::jsonb) j where s.key = j.key`, [JSON.stringify(Object.fromEntries(entries)), 'staff:' + staff.id]);
+  for (const [k, v] of entries) await audit(db, 'staff:' + staff.id, 'setting.changed', 'setting', k, { value: v });
   return { ok: true };
 });
 
@@ -852,12 +948,12 @@ route('PUT', '/admin/dealers/:id/stock', ops, async ({ db, staff, params, body }
   return { ok: true };
 });
 
-route('GET', '/admin/customers', ops, async ({ db, query }) => {
+route('GET', '/admin/customers', ops, async ({ db, query, staff }) => {
   const q = str(query.q || '', 60);
-  const rows = await db.query(`select id, phone, name, cnic, kyc_status, status, created_at from customers
-    where $1 = '' or phone like '%' || $1 || '%' or lower(name) like '%' || lower($1) || '%' or replace(cnic, '-', '') like '%' || replace($1, '-', '') || '%'
-    order by created_at desc limit 50`, [q]);
-  return { customers: rows };
+  const where = `$1 = '' or phone like '%' || $1 || '%' or lower(name) like '%' || lower($1) || '%' or replace(cnic, '-', '') like '%' || replace($1, '-', '') || '%'`;
+  const rows = await db.query(`select id, phone, name, cnic, kyc_status, status, created_at from customers where ${where} order by created_at desc limit 50`, [q]);
+  if (q) await audit(db, 'staff:' + staff.id, 'customer.searched', 'customer', null, { q, results: rows.length });   // who searched personal data
+  return { customers: rows, total: (await db.one(`select count(*)::int n from customers where ${where}`, [q])).n };
 });
 route('GET', '/admin/customers/:id', ops, async ({ db, params, staff }) => {
   const c = await db.one(`select id, phone, closed_phone, name, cnic, dob, email, address, kyc_status, kyc_at, status, created_at, closed_at from customers where id = $1`, [params.id]);
@@ -881,14 +977,29 @@ route('POST', '/admin/customers/:id/status', adminOnly, async ({ db, staff, para
 
 route('GET', '/admin/kyc', ops, async ({ db, query }) => {
   const status = ['review', 'submitted', 'failed', 'passed'].includes(query.status) ? query.status : 'review';
-  return { checks: await db.query(`select k.id, k.customer_id, c.name, c.cnic, c.phone, k.provider, k.status, k.reason, k.created_at from kyc_checks k join customers c on c.id = k.customer_id where k.status = $1 order by k.created_at`, [status]) };
+  const open = ['review', 'submitted'].includes(status);
+  // The identity shown is the one submitted with the check (what a reviewer approves), not the current profile
+  return { checks: await db.query(`select k.id, k.customer_id, coalesce(k.data ->> 'name', c.name) as name, coalesce(k.data ->> 'cnic', c.cnic) as cnic, k.data ->> 'dob' as dob, c.phone,
+      k.provider, k.status, k.reason, k.created_at from kyc_checks k join customers c on c.id = k.customer_id where k.status = $1 order by ${open ? 'k.created_at' : 'k.decided_at desc nulls last'} limit 200`, [status]),
+    total: (await db.one(`select count(*)::int n from kyc_checks where status = $1`, [status])).n };
 });
 route('POST', '/admin/kyc/:id/decide', ops, async ({ db, staff, params, body }) => {
   const decision = ['passed', 'failed'].includes(body.decision) ? body.decision : fail(400, 'BAD_DECISION', 'Choose pass or fail.');
-  const k = await db.one(`update kyc_checks set status = $2, reason = $3, decided_at = now(), decided_by = $4 where id = $1 and status in ('review', 'submitted') returning customer_id`,
-    [params.id, decision, str(body.reason, 300) || null, 'staff:' + staff.id]);
+  const k = await db.one(`select * from kyc_checks where id = $1 and status in ('review', 'submitted')`, [params.id]);
   if (!k) fail(404, 'NOT_FOUND', 'This check is no longer waiting for review.');
-  await db.query(`update customers set kyc_status = $2, kyc_at = case when $2 = 'verified' then now() else kyc_at end where id = $1`, [k.customer_id, decision === 'passed' ? 'verified' : 'failed']);
+  const newest = (await db.one(`select id from kyc_checks where customer_id = $1 order by created_at desc, id desc limit 1`, [k.customer_id])).id === k.id;
+  if (newest) {
+    const id = k.data || {};
+    try {
+      await db.query(`update customers set kyc_status = $2, kyc_at = case when $2 = 'verified' then now() else kyc_at end,
+          name = coalesce($3, name), cnic = coalesce($4, cnic), dob = coalesce($5::date, dob) where id = $1`,
+        [k.customer_id, decision === 'passed' ? 'verified' : 'failed', id.name || null, id.cnic || null, id.dob || null]);
+    } catch (e) {
+      if (e.code === '23505') fail(409, 'CNIC_IN_USE', 'This CNIC is already verified on another open account. Close or suspend that account first.');
+      throw e;
+    }
+  }
+  await db.query(`update kyc_checks set status = $2, reason = $3, decided_at = now(), decided_by = $4 where id = $1`, [k.id, decision, str(body.reason, 300) || null, 'staff:' + staff.id]);
   await db.query(`select notify_customer($1, 'account', $2, $3, null, true)`, [k.customer_id, decision === 'passed' ? 'Identity verified' : 'We couldn’t verify your identity',
     decision === 'passed' ? 'You can now buy gold and silver.' : 'Check your CNIC details and try again, or contact PGBX support.']);
   await audit(db, 'staff:' + staff.id, 'kyc.decided', 'kyc', params.id, { decision, reason: body.reason || null });
@@ -897,7 +1008,8 @@ route('POST', '/admin/kyc/:id/decide', ops, async ({ db, staff, params, body }) 
 
 route('GET', '/admin/orders', ops, async ({ db, query }) => {
   const status = ['flagged', 'pending_payment', 'credited', 'refunded', 'failed', 'expired'].includes(query.status) ? query.status : 'flagged';
-  return { orders: await db.query(`select o.id, o.receipt_no, o.status, o.total_pkr, o.note, o.created_at, o.paid_at, c.name, c.phone from orders o join customers c on c.id = o.customer_id where o.status = $1 order by o.created_at desc limit 200`, [status]) };
+  return { orders: await db.query(`select o.id, o.receipt_no, o.status, o.total_pkr, o.note, o.created_at, o.paid_at, c.name, c.phone from orders o join customers c on c.id = o.customer_id where o.status = $1 order by o.created_at desc limit 200`, [status]),
+    total: (await db.one(`select count(*)::int n from orders where status = $1`, [status])).n };
 });
 route('POST', '/admin/orders/:id/resolve', ops, async ({ db, staff, params, body }) =>
   ({ order: orderDto(await db.one(`select * from fn_resolve_order($1, $2, $3, $4)`, [staff.id, params.id, str(body.action, 10), str(body.note, 300) || null])) }));
@@ -917,7 +1029,8 @@ route('POST', '/admin/vault', ops, async ({ db, staff, body }) => {
 route('GET', '/admin/support', ops, async ({ db, query }) => {
   const status = query.status === 'closed' ? 'closed' : 'open';
   return { requests: await db.query(`select s.id, s.topic, s.body, s.status, s.created_at, s.closed_at, s.closed_by, c.id as customer_id, c.name, c.phone
-    from support_requests s left join customers c on c.id = s.customer_id where s.status = $1 order by s.created_at desc limit 200`, [status]) };
+    from support_requests s left join customers c on c.id = s.customer_id where s.status = $1 order by s.created_at desc limit 200`, [status]),
+    total: (await db.one(`select count(*)::int n from support_requests where status = $1`, [status])).n };
 });
 route('POST', '/admin/support/:id/close', ops, async ({ db, staff, params, body }) => {
   const r = await db.one(`update support_requests set status = 'closed', closed_at = now(), closed_by = $2 where id = $1 and status = 'open' returning customer_id`, [params.id, 'staff:' + staff.id]);
@@ -931,8 +1044,10 @@ route('POST', '/admin/support/:id/close', ops, async ({ db, staff, params, body 
 // Services queues for operations
 route('GET', '/admin/appraisals', ops, async ({ db, query }) => {
   const status = ['booked', 'confirmed', 'completed', 'cancelled'].includes(query.status) ? query.status : 'booked';
-  return { appraisals: (await db.query(`select a.*, c.name as customer_name from appraisals a join customers c on c.id = a.customer_id where a.status = $1 order by a.visit_date, a.slot limit 200`, [status]))
-    .map(a => ({ ...appraisalDto(a), customer_name: a.customer_name })) };
+  const open = ['booked', 'confirmed'].includes(status);         // to do: soonest visit first; done: newest first
+  return { appraisals: (await db.query(`select a.*, c.name as customer_name from appraisals a join customers c on c.id = a.customer_id where a.status = $1
+      order by ${open ? 'a.visit_date, a.slot' : 'a.updated_at desc'} limit 200`, [status]))
+    .map(a => ({ ...appraisalDto(a), customer_name: a.customer_name })), total: (await db.one(`select count(*)::int n from appraisals where status = $1`, [status])).n };
 });
 route('POST', '/admin/appraisals/:id', ops, async ({ db, staff, params, body }) => {
   const action = ['assign', 'complete', 'cancel'].includes(body.action) ? body.action : fail(400, 'BAD_ACTION', MESSAGES.BAD_ACTION[1]);
@@ -944,8 +1059,10 @@ route('POST', '/admin/appraisals/:id', ops, async ({ db, staff, params, body }) 
 });
 route('GET', '/admin/gifts', ops, async ({ db, query }) => {
   const status = ['placed', 'in_production', 'dispatched', 'delivered', 'cancelled'].includes(query.status) ? query.status : 'placed';
+  const open = ['placed', 'in_production', 'dispatched'].includes(status);
   return { gifts: (await db.query(`select g.*, c.name as customer_name, i.label as item_label, i.metal from gift_orders g join customers c on c.id = g.customer_id join gift_items i on i.id = g.item_id
-    where g.status = $1 order by g.deliver_by limit 200`, [status])).map(g => ({ ...giftDto(g), customer_name: g.customer_name, item_label: g.item_label, metal: g.metal })) };
+    where g.status = $1 order by ${open ? 'g.deliver_by' : 'g.updated_at desc'} limit 200`, [status])).map(g => ({ ...giftDto(g), customer_name: g.customer_name, item_label: g.item_label, metal: g.metal })),
+    total: (await db.one(`select count(*)::int n from gift_orders where status = $1`, [status])).n };
 });
 route('POST', '/admin/gifts/:id', ops, async ({ db, staff, params, body }) => {
   const action = ['produce', 'dispatch', 'deliver', 'cancel'].includes(body.action) ? body.action : fail(400, 'BAD_ACTION', MESSAGES.BAD_ACTION[1]);
@@ -960,7 +1077,7 @@ route('GET', '/admin/micro/lots', ops, async ({ db, query }) => {
   const side = query.side === 'sell' ? 'sell' : 'buy';
   const status = ['filling', 'full', 'settled'].includes(query.status) ? query.status : null;
   const rows = await db.query(`select l.*, (select count(*)::int from lot_allocations a where a.lot_id = l.id) n,
-      (select coalesce(sum(round(a.grams * t.price_gram)), 0)::bigint from lot_allocations a join micro_txns t on t.id = a.txn_id where a.lot_id = l.id) amount
+      (select coalesce(round(sum(a.amount_pkr)), 0)::bigint from lot_allocations a where a.lot_id = l.id) amount
     from tola_lots l where l.side = $1 and ($2::text is null or l.status = $2) order by l.no desc limit 200`, [side, status]);
   const totals = await db.one(`select (select coalesce(sum(grams), 0)::float8 from micro_txns where side = 'buy' and status = 'credited') bought,
     (select coalesce(sum(grams), 0)::float8 from micro_txns where side = 'sell') sold`);
@@ -999,17 +1116,36 @@ route('POST', '/admin/micro/lots/:id/settle', ops, async ({ db, staff, params, b
   ({ lot: lotDto(await db.one(`select * from fn_lot_settle($1, $2, $3, $4)`, [staff.id, int(params.id), str(body.serial, 60), str(body.note, 300) || null])) }));
 route('GET', '/admin/micro/payouts', ops, async ({ db, query }) => {
   const status = query.status === 'paid_out' ? 'paid_out' : 'pending_payout';
-  return { payouts: await db.query(`select t.id, t.ref, t.amount_pkr, t.grams::float8 grams, t.payout_to, t.payout_ref, t.paid_out_at, t.created_at, c.name, c.phone, c.id as customer_id
-    from micro_txns t join customers c on c.id = t.customer_id where t.side = 'sell' and t.status = $1 order by t.created_at limit 300`, [status]) };
+  const rows = await db.query(`select t.id, t.ref, t.amount_pkr, t.grams::float8 grams, t.payout_to, t.payout_ref, t.paid_out_at, t.created_at, c.name, c.phone, c.id as customer_id,
+      exists (select 1 from service_payments sp join micro_orders m on m.id = sp.entity_id where sp.kind = 'micro' and m.customer_id = c.id and sp.provider = 'sandbox') as sandbox
+    from micro_txns t join customers c on c.id = t.customer_id where t.side = 'sell' and t.status = $1
+    order by ${status === 'pending_payout' ? 't.created_at' : 't.paid_out_at desc'} limit 300`, [status]);   // to send: oldest first; sent: newest first
+  return { payouts: rows, total: (await db.one(`select count(*)::int n from micro_txns where side = 'sell' and status = $1`, [status])).n };
 });
-route('POST', '/admin/micro/payouts/:id', ops, async ({ db, staff, params, body }) =>
-  ({ payout: microTxnDto(await db.one(`select * from fn_micro_payout($1, $2, $3)`, [staff.id, params.id, str(body.ref, 80)])) }));
-route('GET', '/admin/micro/refunds', ops, async ({ db }) =>
-  ({ refunds: await db.query(`select o.ref, o.total_pkr, o.payment_ref, o.note, o.paid_at, c.name, c.phone from micro_orders o join customers c on c.id = o.customer_id where o.status = 'refund_due' order by o.paid_at desc limit 200`) }));
+route('POST', '/admin/micro/payouts/:id', ops, async ({ db, staff, params, body }) => {
+  const t = await db.one(`select customer_id from micro_txns where id = $1`, [params.id]);
+  if (t && await sandboxFunds(db, t.customer_id) && process.env.VERCEL_ENV === 'production')
+    fail(409, 'SANDBOX_FUNDS', 'This customer’s gold came from test (sandbox) payments. Don’t send money; check with an administrator.');
+  return { payout: microTxnDto(await db.one(`select * from fn_micro_payout($1, $2, $3)`, [staff.id, params.id, str(body.ref, 80)])) };
+});
+// One queue for every refund owed: orders, $1 gold, appraisals and gifts
+route('GET', '/admin/refunds', ops, async ({ db, query }) => {
+  const status = query.status === 'refunded' ? 'refunded' : 'due';
+  const rows = await db.query(`select r.*, c.name, c.phone from refunds r left join customers c on c.id = r.customer_id where r.status = $1
+    order by ${status === 'due' ? 'r.created_at' : 'r.refunded_at desc'} limit 200`, [status]);
+  const total = (await db.one(`select count(*)::int n from refunds where status = $1`, [status])).n;
+  return { refunds: rows, total };
+});
+route('POST', '/admin/refunds/:id', ops, async ({ db, staff, params, body }) =>
+  ({ refund: await db.one(`select * from fn_mark_refunded($1, $2, $3)`, [staff.id, params.id, str(body.ref, 80)]) }));
 
 route('GET', '/admin/audit', ops, async ({ db, query }) => {
-  const entity = str(query.entity || '', 40), id = str(query.id || '', 80);
-  return { entries: await db.query(`select id, at, actor, action, entity, entity_id, data from audit_log where ($1 = '' or entity = $1) and ($2 = '' or entity_id = $2) order by id desc limit 200`, [entity, id]) };
+  const entity = str(query.entity || '', 40), id = str(query.id || '', 80), action = str(query.action || '', 60), actor = str(query.actor || '', 80);
+  const before = int(query.before);                               // paging: entries older than this id
+  const rows = await db.query(`select id, at, actor, action, entity, entity_id, data from audit_log
+    where ($1 = '' or entity = $1) and ($2 = '' or entity_id = $2) and ($3 = '' or action like $3 || '%') and ($4 = '' or actor = $4) and ($5::bigint is null or id < $5)
+    order by id desc limit 201`, [entity, id, action, actor, Number.isSafeInteger(before) ? before : null]);
+  return { entries: rows.slice(0, 200), more: rows.length > 200 };
 });
 
 route('GET', '/admin/staff', adminOnly, async ({ db }) => ({ staff: await db.query(`select id, email, name, role, dealer_id, active, must_change_password, created_at from staff order by created_at`) }));
@@ -1027,8 +1163,9 @@ route('POST', '/admin/staff', adminOnly, async ({ db, staff, body }) => {
   return { staff: { id: s.id, email, role }, setup: { password, totpSecret: secret, otpauthUrl: sec.otpauthUrl(secret, email), note: 'Shown once. Share it securely. They must choose a new password when they first sign in.' } };
 });
 // Lost password or phone: a new temporary password and a new authenticator secret; all their sessions end.
+const sameId = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 route('POST', '/admin/staff/:id/reset', adminOnly, async ({ db, staff, params }) => {
-  if (params.id === staff.id) fail(400, 'SELF', 'Use “Change password” for your own account.');
+  if (sameId(params.id, staff.id)) fail(400, 'SELF', 'Use “Change password” for your own account.');
   const password = sec.newPassword(), secret = sec.newTotpSecret();
   const s = await db.one(`update staff set password_hash = $2, totp_secret = $3, totp_last_step = 0, must_change_password = true where id = $1 returning id, email`, [params.id, sec.hashPassword(password), secret]);
   if (!s) fail(404, 'NOT_FOUND', 'Staff member not found.');
@@ -1037,7 +1174,9 @@ route('POST', '/admin/staff/:id/reset', adminOnly, async ({ db, staff, params })
   return { setup: { password, totpSecret: secret, otpauthUrl: sec.otpauthUrl(secret, s.email), note: 'Shown once. Share it securely. They must choose a new password when they sign in.' } };
 });
 route('POST', '/admin/staff/:id/active', adminOnly, async ({ db, staff, params, body }) => {
-  if (params.id === staff.id) fail(400, 'SELF', 'You can’t deactivate your own account.');
+  if (sameId(params.id, staff.id)) fail(400, 'SELF', 'You can’t deactivate your own account.');
+  if (body.active !== true && (await db.one(`select count(*)::int n from staff where role = 'admin' and active and id <> $1`, [params.id])).n === 0)
+    fail(400, 'LAST_ADMIN', 'At least one administrator must stay active.');
   if (!(await db.one(`update staff set active = $2 where id = $1 returning id`, [params.id, body.active === true]))) fail(404, 'NOT_FOUND', 'Staff member not found.');
   if (body.active !== true) await db.query(`update staff_sessions set revoked_at = now() where staff_id = $1 and revoked_at is null`, [params.id]);
   await audit(db, 'staff:' + staff.id, body.active === true ? 'staff.activated' : 'staff.deactivated', 'staff', params.id, {});
@@ -1061,19 +1200,36 @@ route('GET', '/cron/sweep', {}, async ({ db, req, fetchRates }) => {
   return r;
 });
 async function sendPendingPush(db) {
-  const pending = await db.query(`select n.id, n.customer_id, n.title, n.body, n.link from notifications n where n.push and n.pushed_at is null and n.created_at > now() - interval '2 days' limit 500`);
+  const pending = await db.query(`select n.id, n.customer_id, n.title, n.body, n.link from notifications n where n.push and n.pushed_at is null and n.created_at > now() - interval '2 days' order by n.id limit 500`);
+  if (!pending.length) return 0;
   let sent = 0;
-  for (const n of pending) {
-    if (push.enabled) {
-      for (const t of await db.query(`select token from push_tokens where customer_id = $1`, [n.customer_id])) {
-        const r = await push.send(t.token, n).catch(() => ({ ok: false }));
-        if (r.gone) await db.query(`delete from push_tokens where token = $1`, [t.token]);
-        if (r.ok) sent++;
-      }
+  if (push.enabled) {
+    const tokens = await db.query(`select token, customer_id from push_tokens where customer_id = any($1::uuid[])`, [[...new Set(pending.map(n => n.customer_id))]]);
+    const jobs = pending.flatMap(n => tokens.filter(t => t.customer_id === n.customer_id).map(t => ({ n, token: t.token })));
+    const gone = new Set();
+    for (let i = 0; i < jobs.length; i += 10) {                     // 10 at a time
+      const res = await Promise.all(jobs.slice(i, i + 10).map(j => push.send(j.token, j.n).catch(() => ({ ok: false }))));
+      res.forEach((r, k) => { if (r.gone) gone.add(jobs[i + k].token); if (r.ok) sent++; });
     }
-    await db.query(`update notifications set pushed_at = now() where id = $1`, [n.id]);
+    if (gone.size) await db.query(`delete from push_tokens where token = any($1::text[])`, [[...gone]]);
   }
+  await db.query(`update notifications set pushed_at = now() where id = any($1::uuid[])`, [pending.map(n => n.id)]);
   return sent;
+}
+
+// The production deployment refuses to run with test providers (code 123456, sandbox payments or identity checks),
+// unless ALLOW_SANDBOX=1 is set on purpose for a demo or staging project.
+const sandboxBlocked = () => process.env.VERCEL_ENV === 'production' && process.env.ALLOW_SANDBOX !== '1'
+  && (payments.sandbox || kyc.sandbox || otp.mode === 'test');
+
+// Public routes are cheap to call, so each server instance limits them per address (in memory, no database write)
+const publicHits = new Map();
+function publicLimit(req) {
+  const ip = clientIp(req), now = Date.now(), w = publicHits.get(ip) || { start: now, n: 0 };
+  if (now - w.start > 60000) { w.start = now; w.n = 0; }
+  w.n++; publicHits.set(ip, w);
+  if (publicHits.size > 10000) for (const [k, v] of publicHits) if (now - v.start > 60000) publicHits.delete(k);
+  if (w.n > 240) fail(429, 'RATE_LIMITED', 'Too many requests. Please wait a minute.', { retryIn: Math.ceil((60000 - (now - w.start)) / 1000) });
 }
 
 // ---------- entry point ----------
@@ -1109,11 +1265,13 @@ export async function handle(req, res, opts = {}) {
     }
     if (!match) fail(404, 'NOT_FOUND', 'Not found.');
     if (!db && path !== '/config') fail(503, 'NOT_CONNECTED', 'PGBX services aren’t connected yet.');
+    if (sandboxBlocked() && path !== '/config') fail(503, 'SANDBOX_IN_PRODUCTION', 'PGBX is being set up. Please try again later.');
     const hasBody = Number(req.headers['content-length'] || 0) > 0 || !!req.headers['transfer-encoding'];
     if (hasBody && !String(req.headers['content-type'] || '').includes('application/json'))
       fail(415, 'JSON_ONLY', 'Send JSON.');
     const { raw, json } = await readBody(req);
     const ctx = { req, res, db, raw, body: json && typeof json === 'object' ? json : {}, params, query, fetchRates };
+    if (!match.opts.auth && !match.opts.staff && req.method === 'GET') publicLimit(req);
     if (match.opts.auth === 'customer') ctx.customer = await customerFrom(ctx);
     if (match.opts.staff) ctx.staff = await staffFrom(ctx, match.opts.staff);
     send(200, await match.handler(ctx));
@@ -1127,7 +1285,8 @@ export async function handle(req, res, opts = {}) {
     if (e.code === '23505') return send(409, { error: 'ALREADY_EXISTS', message: 'That already exists. Use a different value.' });
     if (e.code === '23503') return send(400, { error: 'BAD_REFERENCE', message: 'Something this refers to doesn’t exist. Check the IDs and try again.' });
     if (['22003', '22007', '22008', '22001', '23514', '23502'].includes(e.code)) return send(400, { error: 'BAD_VALUE', message: 'One of the values isn’t valid. Check it and try again.' });
-    console.error('PGBX API error', req.method, path, e);
+    if (e.code === 'P0001' && code) { console.error('PGBX API unmapped code', code); return send(400, { error: code, message: 'That request couldn’t be completed. Check it and try again.' }); }
+    console.error('PGBX API error', req.method, path, e.code || '', String(e.message || e).slice(0, 300));
     send(500, { error: 'SERVER', message: 'Something went wrong on our side. Please try again.' });
   }
 }

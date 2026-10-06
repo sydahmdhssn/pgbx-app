@@ -619,6 +619,19 @@ create index on redemptions (customer_id, product_id) where status in ('requeste
 create index micro_txns_balance on micro_txns (customer_id) include (side, status, grams);
 
 -- =====================================================================
+-- 10b. Small additions used by the API
+-- =====================================================================
+-- Current count for a rate-limit key without adding to it (failed sign-ins are counted only when they fail)
+create function rate_hits(p_key text, p_window_secs int) returns int language sql stable as $$
+  select coalesce((select hits from rate_limits where key = p_key
+    and window_start = to_timestamp(floor(extract(epoch from now()) / p_window_secs) * p_window_secs)), 0)
+$$;
+-- Sales and collections pause for a day after the mobile number changes (account-takeover protection)
+alter table customers add column phone_changed_at timestamptz;
+-- Unused
+drop view if exists v_reserved;
+
+-- =====================================================================
 -- 11. Hardening: fixed search_path on every function; rs() depends on locale settings, so it is stable
 -- =====================================================================
 alter function rs(bigint) stable;

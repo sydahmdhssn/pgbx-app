@@ -49,7 +49,6 @@ export function totp(secret, at = Date.now(), step = 30) {
   return String(((h.readUInt32BE(o) & 0x7fffffff) % 1e6)).padStart(6, '0');
 }
 // Accepts the current code and one step either side (clock drift).
-export const verifyTotp = (secret, code, at = Date.now()) => totpStep(secret, code, at) !== null;
 // The time step of a valid code (or null), so the caller can refuse a code that was already used.
 export function totpStep(secret, code, at = Date.now()) {
   const c = String(code || '').replace(/\D/g, '');
