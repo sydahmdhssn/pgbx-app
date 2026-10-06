@@ -5,10 +5,10 @@ import { createMemoryDb } from '../server/memory-db.mjs';
 
 let db;
 const rejects = async (p, code) => assert.rejects(p, e => e.message.includes(code), `expected ${code}`);
-const customer = async (phone, kyc = 'verified') => (await db.one(`insert into customers (phone, name, cnic, kyc_status) values ($1, 'Test', '42101-1234567-1', $2) returning id`, [phone, kyc])).id;
+const customer = async (phone, kyc = 'verified') => (await db.one(`insert into customers (phone, name, cnic, kyc_status) values ($1, 'Test', '42101-' || right($1, 7) || '-1', $2) returning id`, [phone, kyc])).id;
 const staff = async () => (await db.one(`insert into staff (email, name, role, password_hash, totp_secret) values ($1, 'Ops', 'ops', 'x', 'x') returning id`, ['ops' + Math.random() + '@t.pk'])).id;
 const items = JSON.stringify([{ metal: 'gold', karat: '22K', approx_g: 20 }]);
-const day = n => new Date(Date.now() + n * 86400e3).toISOString().slice(0, 10);
+const day = n => new Date(Date.now() + 5 * 3600e3 + n * 86400e3).toISOString().slice(0, 10);   // Pakistan dates (UTC+5), like the server
 const book = (c, over = {}) => db.one(`select * from fn_book_appraisal($1, $2, $3, $4, $5, $6::date, $7, $8::jsonb, $9, $10)`,
   [c, over.city || 'Karachi', 'Clifton', over.address || 'House 12, Street 4, Block 5', '3001234567', over.date || day(3), over.slot || '10:00-12:00', over.items || items, '', '4821']);
 const gift = (c, over = {}) => db.one(`select * from fn_place_gift($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::date)`,
@@ -53,12 +53,15 @@ test('appraisal cancellation: refund only when paid and early enough', async () 
   const c = await customer('3100000003');
   const late = await book(c, { date: day(1), slot: '10:00-12:00' });
   await db.one(`select fn_service_paid('appraisal', $1, 'r2', 2500) r`, [late.id]);
-  await db.query(`update appraisals set visit_date = current_date + 1, slot = '10:00-12:00' where id = $1`, [late.id]);
+  await db.query(`update appraisals set visit_date = pk_today() + 1, slot = '10:00-12:00' where id = $1`, [late.id]);
   const early = await book(c, { date: day(5) });
   await db.one(`select fn_service_paid('appraisal', $1, 'r3', 2500) r`, [early.id]);
   assert.equal((await db.one(`select * from fn_cancel_appraisal($1, $2)`, [c, early.id])).refund_due, true);
   await rejects(db.one(`select * from fn_cancel_appraisal($1, $2)`, [c, early.id]), 'CANNOT_CANCEL');
-  assert.equal((await db.one(`select * from fn_cancel_appraisal($1, $2)`, [c, late.id])).refund_due, false);   // inside 24 h: no refund
+  // Tomorrow 10:00 is between 10 and 34 hours away depending on the time now, so use a 48-hour window for this check
+  await db.query(`update settings set value = '48' where key = 'appraisal_free_cancel_hours'`);
+  assert.equal((await db.one(`select * from fn_cancel_appraisal($1, $2)`, [c, late.id])).refund_due, false);   // inside the window: no refund
+  await db.query(`update settings set value = '24' where key = 'appraisal_free_cancel_hours'`);
   const other = await customer('3100000004');
   await rejects(db.one(`select * from fn_cancel_appraisal($1, $2)`, [other, early.id]), 'NOT_FOUND');  // only your own
 });
@@ -117,8 +120,11 @@ test('open services block account closure; purge removes addresses', async () =>
   assert.equal(r.closed, false); assert.equal(r.blockers[0].code, 'OPEN_SERVICES');
   await db.one(`select * from fn_cancel_appraisal($1, $2)`, [c, a.id]);
   assert.equal((await db.one(`select fn_close_account($1) r`, [c])).r.closed, true);
-  await db.query(`update customers set purge_after = now() - interval '1 day' where id = $1`, [c]);
+  await db.query(`update customers set closed_at = now() - interval '40 days' where id = $1`, [c]);
+  assert.equal((await db.one(`select fn_purge_closed() n`)).n, 0);          // no retention period set yet: nothing purged
+  await db.query(`update settings set value = '30' where key = 'retention_days'`);
   await db.one(`select fn_purge_closed() n`);
+  await db.query(`update settings set value = 'null' where key = 'retention_days'`);
   assert.equal((await db.one(`select address from appraisals where id = $1`, [a.id])).address, '[removed]');
 });
 

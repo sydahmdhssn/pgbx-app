@@ -6,7 +6,7 @@ import { createMemoryDb } from '../server/memory-db.mjs';
 let db;
 const rejects = async (p, code) => assert.rejects(p, e => e.message.includes(code), `expected ${code}`);
 const customer = async (phone, kyc = 'verified') =>
-  (await db.one(`insert into customers (phone, name, cnic, kyc_status) values ($1, 'Test Customer', '42101-1234567-1', $2) returning id`, [phone, kyc])).id;
+  (await db.one(`insert into customers (phone, name, cnic, kyc_status) values ($1, 'Test Customer', '42101-' || right($1, 7) || '-1', $2) returning id`, [phone, kyc])).id;
 const rates = (gold = 435000, silver = 6400) => db.one(`select fn_record_rates($1, $2, $3, $4, 'test') as id`, [gold, Math.round(gold * 0.988), silver, Math.round(silver * 0.975)]);
 const lock = (c, products) => db.one(`select * from fn_create_lock($1, $2)`, [c, products]);
 const order = (c, l, lines, key) => db.one(`select * from fn_place_order($1, $2, $3::jsonb, 'bank', $4)`, [c, l, JSON.stringify(lines), key]);
@@ -170,7 +170,7 @@ test('closing an account: blocked while holding metal, then closes and frees the
 });
 
 test('reconciliation matches payments, orders and metal', async () => {
-  const rec = (await db.one(`select fn_reconcile(current_date) r`)).r;
+  const rec = (await db.one(`select fn_reconcile(pk_today()) r`)).r;
   assert.ok(rec.payments_succeeded_pkr > 0 && rec.orders_credited_pkr > 0);
   assert.ok(rec.paid_not_credited.some(o => o.status === 'flagged'), 'the late payment from earlier is listed for operations');
   assert.ok(Array.isArray(rec.metal) && rec.metal.length === 11);
