@@ -9,7 +9,7 @@ Object.assign(process.env, { OTP_TEST_MODE: '1', PAYMENT_PROVIDER: 'sandbox', KY
 const { handle } = await import('../server/api.mjs');
 
 let db, server, base, ratesUp = true;
-const fakeRates = async () => (ratesUp ? { ok: true, metals: { gold: { buyTola: 466560, sellTola: 460000, source: 'test' }, silver: { buyTola: 6400, sellTola: 6240 } } } : { ok: false });
+const fakeRates = async () => { const at = new Date().toISOString(); return ratesUp ? { ok: true, metals: { gold: { buyTola: 466560, sellTola: 460000, source: 'test', sourceUpdatedAt: at }, silver: { buyTola: 6400, sellTola: 6240, sourceUpdatedAt: at } } } : { ok: false }; };
 
 // One IP per test user so per-device limits don't interfere between journeys
 async function call(method, path, { body, token, ip = '10.0.0.1', headers = {}, raw } = {}) {
@@ -30,7 +30,7 @@ async function login(phone, ip) {
 async function verified(phone, ip) {
   const token = await login(phone, ip);
   const k = ok(await call('POST', '/api/v1/kyc', { token, body: {} }));
-  assert.equal(ok(await call('POST', `/api/v1/kyc/${k.check.id}/submit`, { token, body: { cnic: '4210112345671', name: 'Ayesha Khan', dob: '1990-05-01', expiry: '2031-01-01' } })).status, 'verified');
+  assert.equal(ok(await call('POST', `/api/v1/kyc/${k.check.id}/submit`, { token, body: { cnic: '42101' + phone.slice(-7) + '1', name: 'Ayesha Khan', dob: '1990-05-01', expiry: '2031-01-01' } })).status, 'verified');
   return token;
 }
 async function buy(token, productId, units) {
@@ -44,7 +44,7 @@ async function staffAccount(role, dealer = null) {
   return { email, password, secret };
 }
 async function staffLogin(s, ip = '10.9.0.1') {
-  const { token } = ok(await call('POST', '/api/v1/staff/login', { body: { email: s.email, password: s.password }, ip }));
+  const { token } = ok(await call('POST', '/api/v1/staff/login', { body: { email: s.email, password: s.password, cookie: false }, ip }));
   ok(await call('POST', '/api/v1/staff/mfa', { token, body: { code: totp(s.secret) }, ip }));
   return token;
 }
@@ -71,7 +71,7 @@ test('login: number checks, wrong code, sessions and logout', async () => {
   ok(await call('POST', '/api/v1/auth/otp/start', { body: { phone: '0300 1110001' }, ip: '10.0.1.1' }));
   err(await call('POST', '/api/v1/auth/otp/start', { body: { phone: '3001110001' }, ip: '10.0.1.1' }), 429, 'RATE_LIMITED');   // 30 s between codes
   err(await call('POST', '/api/v1/auth/otp/verify', { body: { phone: '3001110001', code: '000000' }, ip: '10.0.1.1' }), 400, 'WRONG_CODE');
-  const v = ok(await call('POST', '/api/v1/auth/otp/verify', { body: { phone: '3001110001', code: '123456' }, ip: '10.0.1.1' }));
+  const v = ok(await call('POST', '/api/v1/auth/otp/verify', { body: { phone: '3001110001', code: '123456', cookie: false }, ip: '10.0.1.1' }));
   assert.equal(v.customer.isNew, true);
   const cookie = v.token && (await call('GET', '/api/v1/me', { token: v.token })).data;
   assert.equal(cookie.profile.phone, '3001110001');
@@ -85,6 +85,7 @@ test('login: number checks, wrong code, sessions and logout', async () => {
 test('login cookie is HttpOnly and cookie writes need the app origin', async () => {
   ok(await call('POST', '/api/v1/auth/otp/start', { body: { phone: '3001110002' }, ip: '10.0.2.1' }));
   const r = await call('POST', '/api/v1/auth/otp/verify', { body: { phone: '3001110002', code: '123456' }, ip: '10.0.2.1' });
+  assert.equal(r.data.token, undefined);                      // web sign-in: the token is only in the HttpOnly cookie
   const set = r.headers.get('set-cookie');
   assert.match(set, /pgbx_s=/); assert.match(set, /HttpOnly/); assert.match(set, /SameSite=Strict/);
   const cookie = set.split(';')[0];
@@ -216,7 +217,7 @@ test('staff sign-in needs password and authenticator code', async () => {
   const s = await staffAccount('admin');
   err(await call('POST', '/api/v1/staff/login', { body: { email: s.email, password: 'wrong' }, ip: '10.9.1.1' }), 401, 'BAD_LOGIN');
   err(await call('POST', '/api/v1/staff/login', { body: { email: 'nobody@pgbx.test', password: 'x' }, ip: '10.9.1.1' }), 401, 'BAD_LOGIN');
-  const { token } = ok(await call('POST', '/api/v1/staff/login', { body: { email: s.email, password: s.password }, ip: '10.9.1.1' }));
+  const { token } = ok(await call('POST', '/api/v1/staff/login', { body: { email: s.email, password: s.password, cookie: false }, ip: '10.9.1.1' }));
   err(await call('GET', '/api/v1/admin/overview', { token }), 401, 'MFA_REQUIRED');
   err(await call('POST', '/api/v1/staff/mfa', { token, body: { code: '000000' } }), 401, 'BAD_CODE');
   ok(await call('POST', '/api/v1/staff/mfa', { token, body: { code: totp(s.secret) } }));

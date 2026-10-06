@@ -76,8 +76,9 @@ function route(method, pattern, opts, handler) {
 
 // ---------- helpers ----------
 const clientIp = req => String(req.headers['x-real-ip'] || req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim() || 'unknown';
+const decode = v => { try { return decodeURIComponent(v); } catch { return null; } };
 function cookies(req) {
-  return Object.fromEntries(String(req.headers.cookie || '').split(';').map(c => c.trim().split('=')).filter(([k]) => k).map(([k, ...v]) => [k, decodeURIComponent(v.join('='))]));
+  return Object.fromEntries(String(req.headers.cookie || '').split(';').map(c => c.trim().split('=')).filter(([k]) => k).map(([k, ...v]) => [k, decode(v.join('=')) || '']));
 }
 function setCookie(res, name, value, maxAgeSec) {
   const parts = [`${name}=${encodeURIComponent(value)}`, 'Path=/', 'HttpOnly', 'SameSite=Strict', `Max-Age=${maxAgeSec}`];
@@ -88,14 +89,16 @@ async function readBody(req) {
   if (req.method === 'GET' || req.method === 'HEAD') return { raw: '', json: {} };
   let raw = '';
   if (typeof req.on === 'function' && !req.readableEnded) {
-    for await (const chunk of req) { raw += chunk; if (raw.length > 65536) fail(413, 'TOO_LARGE', 'Request too large.'); }
+    const parts = []; let size = 0;                            // bytes, so multi-byte characters split across chunks stay intact
+    for await (const chunk of req) { const b = Buffer.from(chunk); size += b.length; if (size > 65536) fail(413, 'TOO_LARGE', 'Request too large.'); parts.push(b); }
+    raw = Buffer.concat(parts).toString('utf8');
   }
   if (!raw && req.body) raw = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
   if (!raw) return { raw: '', json: {} };
   try { return { raw, json: JSON.parse(raw) }; } catch { fail(400, 'BAD_JSON', 'The request couldn’t be read.'); }
 }
 const str = (v, max = 200) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
-const int = v => (Number.isInteger(v) ? v : Number.isInteger(Number(v)) ? Number(v) : NaN);
+const int = v => (Number.isInteger(v) ? v : typeof v === 'string' && /^-?\d+$/.test(v.trim()) ? Number(v) : NaN);   // '' and null are not 0
 async function limit(db, key, windowSec, max, message) {
   const r = await db.one(`select fn_rate_limit($1, $2, $3) as wait`, [key, windowSec, max]);
   if (r.wait > 0) fail(429, 'RATE_LIMITED', message || 'Too many attempts. Please wait and try again.', { retryIn: r.wait });
@@ -105,7 +108,28 @@ const settingsMap = async db => Object.fromEntries((await db.query(`select key, 
 
 // FR-R4: prices whose source timestamp is older than this are not recorded, so nothing can be locked at them.
 const SOURCE_STALE_MS = 90000;
-const sourceFresh = d => ['gold', 'silver'].every(k => { const t = Date.parse(d.metals[k] && d.metals[k].sourceUpdatedAt); return !Number.isFinite(t) || Date.now() - t <= SOURCE_STALE_MS; });
+// A price without a source time is treated as stale (fail closed).
+const sourceFresh = d => ['gold', 'silver'].every(k => { const t = Date.parse(d.metals[k] && d.metals[k].sourceUpdatedAt); return Number.isFinite(t) && Date.now() - t <= SOURCE_STALE_MS; });
+
+// A jump of more than 10% from the last recorded price within an hour is almost always a bad feed, not the market:
+// such prices are not recorded (so nothing can be locked at them) until operations checks the sources.
+const MAX_JUMP = 0.10;
+const plausible = (d, last) => !last || last.age > 3600 || [['gold', last.gold_buy_tola], ['silver', last.silver_buy_tola]]
+  .every(([k, prev]) => Math.abs(d.metals[k].buyTola / Number(prev) - 1) <= MAX_JUMP);
+const validRates = d => d && d.ok && ['gold', 'silver'].every(k => d.metals?.[k] && d.metals[k].buyTola > 0 && d.metals[k].sellTola > 0 && d.metals[k].sellTola <= d.metals[k].buyTola);
+const recordRates = (db, d) => db.one(`select fn_record_rates($1, $2, $3, $4, $5) as id`, [d.metals.gold.buyTola, d.metals.gold.sellTola, d.metals.silver.buyTola, d.metals.silver.sellTola, d.metals.gold.source || 'live']);
+
+// The live sources are called at most every 5 s per server instance, however many requests arrive.
+const rateCache = new Map();
+function cachedRates(fetchRates, opts) {
+  if (fetchRates !== fetchLiveRates) return fetchRates(opts);   // tests and the dev server pass their own source
+  const key = JSON.stringify(opts), hit = rateCache.get(key);
+  if (hit && Date.now() - hit.at < 5000) return hit.p;
+  const p = fetchRates(opts); rateCache.set(key, { at: Date.now(), p });
+  p.catch(() => rateCache.delete(key));
+  if (rateCache.size > 50) rateCache.delete(rateCache.keys().next().value);
+  return p;
+}
 
 // Keep a recent rate snapshot: every price lock uses the server's own snapshot (Rule 1).
 async function ensureRates(db, fetchRates) {
@@ -113,9 +137,9 @@ async function ensureRates(db, fetchRates) {
   const stale = Number((await db.one(`select setting_int('rate_stale_seconds') as v`)).v);
   if (s && s.age < stale / 2) return s;
   const set = await settingsMap(db);
-  const d = await fetchRates({ spread: set.spread || undefined }).catch(() => null);
-  if (!d || !d.ok || !sourceFresh(d)) return s;              // the lock function refuses stale prices
-  await db.one(`select fn_record_rates($1, $2, $3, $4, $5) as id`, [d.metals.gold.buyTola, d.metals.gold.sellTola, d.metals.silver.buyTola, d.metals.silver.sellTola, d.metals.gold.source || 'live']);
+  const d = await cachedRates(fetchRates, { spread: set.spread || undefined }).catch(() => null);
+  if (!validRates(d) || !sourceFresh(d) || !plausible(d, s)) return s;   // the lock function refuses stale prices
+  await recordRates(db, d);
   return db.one(`select *, 0 as age from rate_snapshots order by id desc limit 1`);
 }
 
@@ -134,7 +158,7 @@ async function customerFrom(ctx) {
   db.query(`update sessions set last_seen_at = now() where token_hash = $1 and last_seen_at < now() - interval '5 minutes'`, [s.token_hash]).catch(() => {});
   return s;
 }
-async function staffFrom(ctx, { preMfa = false, roles } = {}) {
+async function staffFrom(ctx, { preMfa = false, roles, beforePasswordChange = false } = {}) {
   const { req, db } = ctx;
   const auth = String(req.headers.authorization || '');
   const viaCookie = !auth.startsWith('Bearer ');
@@ -145,6 +169,7 @@ async function staffFrom(ctx, { preMfa = false, roles } = {}) {
     where ss.token_hash = $1 and ss.revoked_at is null and ss.expires_at > now() and st.active`, [sec.hashToken(token)]);
   if (!s) fail(401, 'SESSION_EXPIRED', 'Your session has ended. Please sign in again.');
   if (!preMfa && !s.mfa_passed) fail(401, 'MFA_REQUIRED', 'Enter the code from your authenticator app.');
+  if (!preMfa && !beforePasswordChange && s.must_change_password) fail(403, 'PASSWORD_CHANGE_REQUIRED', 'Choose a new password before continuing.');
   if (roles && !roles.includes(s.role)) fail(403, 'FORBIDDEN', 'Your role can’t do this.');
   return s;
 }
@@ -153,7 +178,8 @@ function sameOrigin(req) {
   const origin = req.headers.origin;
   const host = req.headers['x-forwarded-host'] || req.headers.host;
   if (!origin) return;                                        // non-browser clients send no Origin
-  if (ALLOWED_ORIGIN.test(origin) || new URL(origin).host === host) return;
+  let same = false; try { same = new URL(origin).host === host; } catch { }   // "null" and other non-URLs are never same-origin
+  if (ALLOWED_ORIGIN.test(origin) || same) return;
   fail(403, 'BAD_ORIGIN', 'Request blocked.');
 }
 
@@ -181,11 +207,15 @@ route('GET', '/products', {}, async ({ db, fetchRates }) => {
 route('GET', '/rates', {}, async ({ db, res, fetchRates }) => {
   const set = await settingsMap(db);
   const premiums = Object.fromEntries((await db.query(`select id, premium_pkr from products`)).map(r => [r.id, r.premium_pkr]));
-  const d = await fetchRates({ spread: set.spread || undefined, premiums }).catch(() => null);
-  if (!d || !d.ok) fail(502, 'RATES_DOWN', 'Live rates are unavailable right now.');
+  const d = await cachedRates(fetchRates, { spread: set.spread || undefined, premiums }).catch(() => null);
+  if (!validRates(d)) fail(502, 'RATES_DOWN', 'Live rates are unavailable right now.');
   if (!sourceFresh(d)) fail(502, 'RATES_STALE_SOURCE', 'Live rates are delayed right now. Buying is paused until they update.');
-  const last = await db.one(`select extract(epoch from now() - fetched_at) as age from rate_snapshots order by id desc limit 1`);
-  if (!last || last.age >= 5) await db.one(`select fn_record_rates($1, $2, $3, $4, $5) as id`, [d.metals.gold.buyTola, d.metals.gold.sellTola, d.metals.silver.buyTola, d.metals.silver.sellTola, d.metals.gold.source || 'live']);
+  const last = await db.one(`select *, extract(epoch from now() - fetched_at) as age from rate_snapshots order by id desc limit 1`);
+  if (!plausible(d, last)) {
+    console.error('PGBX rates: implausible jump, not recorded', d.metals.gold.buyTola, last && last.gold_buy_tola);
+    fail(502, 'RATES_CHECK', 'Live rates are being checked. Buying is paused until they’re confirmed.');
+  }
+  if (!last || last.age >= 5) await recordRates(db, d);
   res.setHeader('Cache-Control', 'public, s-maxage=5, stale-while-revalidate=10');
   return d;
 });
@@ -229,12 +259,17 @@ route('POST', '/auth/otp/verify', {}, async ({ db, body, req, res }) => {
     [sec.hashToken(token), c.id, str(body.device, 120) || null, days]);
   await audit(db, 'customer:' + c.id, isNew ? 'account.created' : 'login', 'customer', c.id, { ip: clientIp(req) });
   if (!isNew) await db.query(`select notify_customer($1, 'security', 'New login', $2, null, true)`, [c.id, `Your account was opened on ${str(body.device, 60) || 'a device'}. If this wasn’t you, contact PGBX.`]);
-  if (body.cookie !== false) setCookie(res, 'pgbx_s', token, days * 86400);
-  return { token, customer: { id: c.id, isNew } };
+  // Web: the session lives only in the HttpOnly cookie, so page scripts never see it. Native apps ask for the token
+  // (cookie: false) and keep it in the phone's secure storage.
+  if (body.cookie === false) return { token, customer: { id: c.id, isNew } };
+  setCookie(res, 'pgbx_s', token, days * 86400);
+  return { customer: { id: c.id, isNew } };
 });
 
-route('POST', '/auth/logout', { auth: 'customer' }, async ({ db, customer, res }) => {
+route('POST', '/auth/logout', { auth: 'customer' }, async ({ db, customer, res, body }) => {
   await db.query(`update sessions set revoked_at = now() where token_hash = $1`, [customer.token_hash]);
+  const pushToken = str(body.pushToken, 400);                // this phone stops getting the account's notifications
+  if (pushToken) await db.query(`delete from push_tokens where token = $1 and customer_id = $2`, [pushToken, customer.id]);
   setCookie(res, 'pgbx_s', '', 0);
   return { ok: true };
 });
@@ -258,36 +293,53 @@ route('GET', '/me', { auth: 'customer' }, async ({ db, customer }) => {
   };
 });
 
+// Strict YYYY-MM-DD that is a real calendar date
+const isoDate = v => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || ''); if (!m) return null; const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])); return d.toISOString().slice(0, 10) === v ? d : null; };
+const ageOn = (d, now = new Date()) => (now - d) / (365.2425 * 864e5);
+const cnicFmt = c => `${c.slice(0, 5)}-${c.slice(5, 12)}-${c.slice(12)}`;
+
 route('PATCH', '/me', { auth: 'customer' }, async ({ db, customer, body }) => {
   const f = {};
   if ('name' in body) { f.name = str(body.name, 100); if (f.name.length < 3) fail(400, 'BAD_NAME', 'Enter your full name.'); }
   if ('cnic' in body) { f.cnic = str(body.cnic).replace(/\D/g, ''); if (f.cnic.length !== 13) fail(400, 'BAD_CNIC', 'Enter all 13 digits of your CNIC.'); f.cnic = `${f.cnic.slice(0, 5)}-${f.cnic.slice(5, 12)}-${f.cnic.slice(12)}`; }
-  if ('dob' in body) { f.dob = str(body.dob, 10); const age = (Date.now() - Date.parse(f.dob)) / (365.25 * 864e5); if (!(age >= 18 && age < 120)) fail(400, 'BAD_DOB', 'You must be 18 or older.'); }
+  if ('dob' in body) { f.dob = str(body.dob, 10); const d = isoDate(f.dob); if (!d) fail(400, 'BAD_DOB', 'Enter your date of birth as on your CNIC.'); const age = ageOn(d); if (!(age >= 18 && age < 120)) fail(400, 'BAD_DOB', 'You must be 18 or older.'); }
   if ('email' in body) { f.email = str(body.email, 200) || null; if (f.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email)) fail(400, 'BAD_EMAIL', 'Enter a valid email address, for example name@example.com.'); }
   if ('address' in body) f.address = str(body.address, 300) || null;
   const keys = Object.keys(f);
   if (!keys.length) return { ok: true };
   const idChanged = ['name', 'cnic', 'dob'].some(k => k in f && String(f[k] ?? '') !== String(customer[k] instanceof Date ? customer[k].toISOString().slice(0, 10) : customer[k] ?? ''));
+  // Identity details are what a check approves: they can't change while a check is open, and changing them after
+  // verification means verifying again (the guard in the update makes this safe against a parallel request).
+  if (idChanged && ['pending', 'review'].includes(customer.kyc_status)) fail(409, 'KYC_IN_PROGRESS', 'Your identity check is in progress. You can change your name, CNIC or date of birth once it’s finished.');
   const sets = keys.map((k, i) => `${k} = $${i + 2}`);
-  if (idChanged && customer.kyc_status === 'verified') sets.push(`kyc_status = 'reverify'`);
-  await db.query(`update customers set ${sets.join(', ')} where id = $1`, [customer.id, ...keys.map(k => f[k])]);
-  await audit(db, 'customer:' + customer.id, 'profile.updated', 'customer', customer.id, { fields: keys, reverify: idChanged && customer.kyc_status === 'verified' });
-  return { ok: true, reverify: idChanged && customer.kyc_status === 'verified' };
+  if (idChanged) sets.push(`kyc_status = case when kyc_status = 'verified' then 'reverify' else kyc_status end`);
+  const u = await db.one(`update customers set ${sets.join(', ')} where id = $1 and ($${keys.length + 2} = false or kyc_status not in ('pending', 'review')) returning kyc_status`,
+    [customer.id, ...keys.map(k => f[k]), idChanged]);
+  if (!u) fail(409, 'KYC_IN_PROGRESS', 'Your identity check is in progress. You can change your name, CNIC or date of birth once it’s finished.');
+  const reverify = idChanged && customer.kyc_status === 'verified';
+  await audit(db, 'customer:' + customer.id, 'profile.updated', 'customer', customer.id, { fields: keys, reverify });
+  return { ok: true, reverify };
 });
 
 route('POST', '/me/phone/start', { auth: 'customer' }, async ({ db, customer, body }) => {
   const phone = str(body.phone).replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '');
   if (!PK_MOBILE.test(phone)) fail(400, 'BAD_PHONE', 'Enter a valid Pakistani mobile number, for example 300 1234567.');
+  await limit(db, 'phone-change:' + customer.id, 3600, 3, 'Too many attempts. Try again later.');   // before the lookup, so numbers can't be probed
   if (await db.one(`select 1 from customers where phone = $1`, [phone])) fail(409, 'PHONE_IN_USE', 'That number is already used by another PGBX account.');
-  await limit(db, 'phone-change:' + customer.id, 3600, 3, 'Too many attempts. Try again later.');
+  await limit(db, 'otp-send-30s:' + phone, 30, 1, 'Please wait a moment before requesting another code.');
   await otp.send(phone, 'sms');
   return { ok: true };
 });
 route('POST', '/me/phone/verify', { auth: 'customer' }, async ({ db, customer, body }) => {
   const phone = str(body.phone).replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '');
+  const code = str(body.code).replace(/\D/g, '');
+  if (!PK_MOBILE.test(phone) || code.length !== 6) fail(400, 'BAD_CODE', 'Enter the 6-digit code you received.');
   await limit(db, 'phone-check:' + customer.id, 3600, 10, 'Too many wrong codes. Try again later.');
-  if (!(await otp.check(phone, str(body.code).replace(/\D/g, '')))) fail(400, 'WRONG_CODE', 'That code is incorrect. Check the SMS and try again.');
-  await db.query(`update customers set phone = $2 where id = $1`, [customer.id, phone]);
+  if (!(await otp.check(phone, code))) fail(400, 'WRONG_CODE', 'That code is incorrect. Check the SMS and try again.');
+  try { await db.query(`update customers set phone = $2 where id = $1`, [customer.id, phone]); }
+  catch (e) { if (e.code === '23505') fail(409, 'PHONE_IN_USE', 'That number is already used by another PGBX account.'); throw e; }
+  // Other devices signed in to this account are signed out; this one stays signed in.
+  await db.query(`update sessions set revoked_at = now() where customer_id = $1 and token_hash <> $2 and revoked_at is null`, [customer.id, customer.token_hash]);
   await audit(db, 'customer:' + customer.id, 'phone.changed', 'customer', customer.id, {});
   await db.query(`select notify_customer($1, 'security', 'Mobile number changed', $2, null, true)`, [customer.id, `Your account now uses +92 ${phone.slice(0, 3)} ${phone.slice(3)}. If this wasn’t you, contact PGBX.`]);
   return { ok: true };
@@ -304,6 +356,9 @@ route('POST', '/devices/push', { auth: 'customer' }, async ({ db, customer, body
 // ---------- identity verification (FR-A2) ----------
 route('POST', '/kyc', { auth: 'customer' }, async ({ db, customer }) => {
   if (!kyc.provider) fail(503, 'KYC_OFF', 'Identity verification isn’t available yet.');
+  if (customer.kyc_status === 'verified') fail(409, 'KYC_DONE', 'Your identity is already verified.');
+  if (customer.kyc_status === 'review') fail(409, 'KYC_IN_PROGRESS', 'A PGBX team member is reviewing your check, usually within one working day.');
+  await limit(db, 'kyc-start:' + customer.id, 86400, 10, 'Too many identity checks today. Contact PGBX support.');
   const k = await db.one(`insert into kyc_checks (customer_id, provider) values ($1, $2) returning id, status`, [customer.id, kyc.provider]);
   await db.query(`update customers set kyc_status = 'pending' where id = $1 and kyc_status in ('none', 'failed', 'reverify')`, [customer.id]);
   return { check: k };
@@ -312,23 +367,51 @@ route('POST', '/kyc/:id/submit', { auth: 'customer' }, async ({ db, customer, bo
   const k = await db.one(`select * from kyc_checks where id = $1 and customer_id = $2 and status = 'started'`, [params.id, customer.id]);
   if (!k) fail(404, 'KYC_NOT_FOUND', 'Start identity verification again.');
   const cnic = str(body.cnic).replace(/\D/g, ''); const name = str(body.name, 100); const dob = str(body.dob, 10); const expiry = str(body.expiry, 10);
-  if (cnic.length !== 13 || name.length < 3 || !dob || !(Date.parse(expiry) > Date.now())) fail(400, 'BAD_KYC', 'Check your CNIC details and try again.');
-  const d = await kyc.decide({ name, cnic, dob });
+  const dobD = isoDate(dob), expD = isoDate(expiry);
+  if (cnic.length !== 13 || name.length < 3 || !dobD || !expD) fail(400, 'BAD_KYC', 'Check your CNIC details and try again.');
+  if (!(expD > new Date())) fail(400, 'CNIC_EXPIRED', 'Your CNIC has expired. Renew it with NADRA, then verify again.');
+  const age = ageOn(dobD);
+  if (!(age >= 18 && age < 120)) fail(400, 'UNDER_18', 'You must be 18 or older to use PGBX.');
+  let d = await kyc.decide({ name, cnic, dob });
+  // One person, one account: a CNIC already verified on another open account always goes to a person to check.
+  if (d.status === 'passed' && await db.one(`select 1 from customers where cnic = $1 and id <> $2 and status <> 'closed' and kyc_status in ('verified', 'reverify', 'review')`, [cnicFmt(cnic), customer.id]))
+    d = { status: 'review', reason: 'CNIC already used on another account' };
   await db.query(`update kyc_checks set status = $2, reason = $3, data = $4::jsonb, decided_at = case when $2 in ('passed', 'failed') then now() end, decided_by = $5 where id = $1`,
     [k.id, d.status, d.reason || null, JSON.stringify({ expiry }), kyc.sandbox ? 'provider:sandbox' : null]);
   const status = { passed: 'verified', failed: 'failed', review: 'review', submitted: 'pending' }[d.status];
   await db.query(`update customers set name = $2, cnic = $3, dob = $4, kyc_status = $5, kyc_at = case when $5 = 'verified' then now() else kyc_at end where id = $1`,
-    [customer.id, name, `${cnic.slice(0, 5)}-${cnic.slice(5, 12)}-${cnic.slice(12)}`, dob, status]);
+    [customer.id, name, cnicFmt(cnic), dob, status]);
   await audit(db, 'customer:' + customer.id, 'kyc.submitted', 'kyc', k.id, { result: d.status });
   return { status, reason: d.status === 'failed' ? 'We couldn’t verify these details. Check them against your CNIC and try again.' : d.status === 'review' ? 'A PGBX team member will review your check, usually within one working day.' : null };
 });
 
 // ---------- buying (FR-B1–B8) ----------
+// Unpaid orders, bookings and collections expire on the scheduled sweep; buying and booking also run the expiry
+// (at most once a minute per server instance) so limits and slots never wait for the next sweep.
+let lastExpiry = 0;
+async function expireNow(db) {
+  if (Date.now() - lastExpiry < 60000) return;
+  lastExpiry = Date.now();
+  await db.query(`select fn_expire_orders(), fn_expire_services(), fn_expire_redemptions()`).catch(e => console.error('PGBX expiry', e.message));
+}
+// If the payment provider can't start a payment, the order or booking is closed at once instead of holding the
+// customer's limit or a visit slot until it expires.
+async function startPayment(db, kind, row) {
+  try { return await (kind === 'order' ? payments.createIntent(row) : payments.createIntent({ id: row.id, kind, total_pkr: row.fee_pkr ?? row.total_pkr })); }
+  catch (e) {
+    if (kind === 'order') await db.query(`update orders set status = 'failed', note = 'Payment could not be started' where id = $1 and status = 'pending_payment'`, [row.id]);
+    else await db.query(`update ${kind === 'appraisal' ? 'appraisals' : 'gift_orders'} set status = 'cancelled', note = 'Payment could not be started' where id = $1 and status = 'pending_payment'`, [row.id]);
+    throw e;
+  }
+}
+
 route('POST', '/locks', { auth: 'customer' }, async ({ db, customer, body, fetchRates }) => {
+  await limit(db, 'locks:' + customer.id, 600, 60, 'Too many price checks. Wait a few minutes.');
   const ids = Array.isArray(body.products) ? body.products.map(p => str(p, 40)).filter(Boolean).slice(0, 20) : [];
   await ensureRates(db, fetchRates);
   const l = await db.one(`select * from fn_create_lock($1, $2)`, [customer.id, ids]);
-  return { lock: { id: l.id, prices: l.prices, expires_at: l.expires_at } };
+  // expires_in lets the app time the lock with its own clock, even when the phone's clock is wrong
+  return { lock: { id: l.id, prices: l.prices, expires_at: l.expires_at, expires_in: Math.max(0, Math.round((new Date(l.expires_at) - Date.now()) / 1000)) } };
 });
 
 route('POST', '/orders', { auth: 'customer' }, async ({ db, customer, body }) => {
@@ -337,8 +420,9 @@ route('POST', '/orders', { auth: 'customer' }, async ({ db, customer, body }) =>
   const method = ['bank', 'card', 'mwallet'].includes(body.method) ? body.method : fail(400, 'BAD_METHOD', 'Choose a payment method.');
   const key = str(body.idempotencyKey, 80); if (key.length < 8) fail(400, 'BAD_KEY', 'Missing request key.');
   if (!payments.provider) fail(503, 'PAYMENTS_OFF', 'Payments aren’t available yet.');
+  await expireNow(db);
   const o = await db.one(`select * from fn_place_order($1, $2, $3::jsonb, $4, $5)`, [customer.id, str(body.lockId, 40), JSON.stringify(lines), method, key]);
-  const payment = o.status === 'pending_payment' ? await payments.createIntent(o) : null;
+  const payment = o.status === 'pending_payment' ? await startPayment(db, 'order', o) : null;
   return { order: orderDto(o), payment };
 });
 
@@ -371,6 +455,8 @@ route('POST', '/payments/webhook', {}, async ({ db, raw, body, req }) => {
   const ref = str(body.provider_ref, 120), orderId = str(body.order_id, 40);
   if (!ref || !orderId) fail(400, 'BAD_EVENT', 'Missing fields.');
   // Services (doorstep appraisal fee, gift orders): body.kind = "appraisal" | "gift"
+  // Only final results change anything; other provider events (pending, processing…) are acknowledged and ignored.
+  if (body.status !== 'succeeded' && body.status !== 'failed') return { ok: true, status: 'ignored' };
   if (body.kind === 'appraisal' || body.kind === 'gift') {
     if (body.status !== 'succeeded') return { ok: true, status: 'ignored' };
     const r = (await db.one(`select fn_service_paid($1, $2, $3, $4) r`, [body.kind, orderId, ref, int(body.amount_pkr)])).r;
@@ -455,7 +541,6 @@ route('GET', '/services/config', {}, async ({ db, fetchRates }) => {
   };
 });
 
-const serviceIntent = async (kind, row) => (payments.provider ? payments.createIntent({ id: row.id, kind, total_pkr: row.fee_pkr ?? row.total_pkr }) : null);
 const appraisalDto = a => ({ id: a.id, ref: a.ref, city: a.city, area: a.area, address: a.address, phone: a.phone, date: a.visit_date instanceof Date ? a.visit_date.toISOString().slice(0, 10) : String(a.visit_date).slice(0, 10),
   slot: a.slot, items: a.items, notes: a.notes, fee_pkr: a.fee_pkr, visit_code: a.visit_code, status: a.status, goldsmith: a.goldsmith_name ? { name: a.goldsmith_name, phone: a.goldsmith_phone } : null,
   result: a.result, refund_due: a.refund_due, created_at: a.created_at });
@@ -473,9 +558,10 @@ route('POST', '/appraisals', { auth: 'customer' }, async ({ db, customer, body }
   const phone = cleanPhone(body.phone);
   if (!PK_MOBILE.test(phone)) fail(400, 'BAD_PHONE', 'Enter a valid Pakistani mobile number, for example 300 1234567.');
   await limit(db, 'appraisal:' + customer.id, 86400, 5, 'You’ve booked several visits today. Contact PGBX support for more.');
+  await expireNow(db);
   const a = await db.one(`select * from fn_book_appraisal($1, $2, $3, $4, $5, $6::date, $7, $8::jsonb, $9, $10)`,
     [customer.id, str(body.city, 40), str(body.area, 80), str(body.address, 300), phone, str(body.date, 10), str(body.slot, 20), JSON.stringify(items), str(body.notes, 300), String(sec.newCode()).slice(0, 4)]);
-  return { appraisal: appraisalDto(a), payment: await serviceIntent('appraisal', a) };
+  return { appraisal: appraisalDto(a), payment: await startPayment(db, 'appraisal', a) };
 });
 route('GET', '/appraisals', { auth: 'customer' }, async ({ db, customer }) =>
   ({ appraisals: (await db.query(`select * from appraisals where customer_id = $1 and status <> 'pending_payment' or (customer_id = $1 and status = 'pending_payment' and created_at > now() - interval '1 hour') order by created_at desc limit 50`, [customer.id])).map(appraisalDto) }));
@@ -489,11 +575,13 @@ route('POST', '/gifts', { auth: 'customer' }, async ({ db, customer, body, fetch
   if (!payments.provider) fail(503, 'PAYMENTS_OFF', 'Payments aren’t available yet.');
   const phone = cleanPhone(body.recipientPhone);
   if (!PK_MOBILE.test(phone)) fail(400, 'BAD_RECIPIENT', MESSAGES.BAD_RECIPIENT[1]);
+  await limit(db, 'gift:' + customer.id, 86400, 10, 'You’ve placed several gift orders today. Contact PGBX support for more.');
+  await expireNow(db);
   await ensureRates(db, fetchRates);
   const g = await db.one(`select * from fn_place_gift($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::date)`,
     [customer.id, str(body.item, 20), str(body.shape, 10), str(body.design, 20), str(body.engraving, 40), str(body.message, 200), str(body.packaging, 20),
       str(body.recipientName, 100), phone, str(body.recipientCity, 40), str(body.recipientAddress, 300), str(body.deliverBy, 10)]);
-  return { gift: giftDto(g), payment: await serviceIntent('gift', g) };
+  return { gift: giftDto(g), payment: await startPayment(db, 'gift', g) };
 });
 route('GET', '/gifts', { auth: 'customer' }, async ({ db, customer }) =>
   ({ gifts: (await db.query(`select * from gift_orders where customer_id = $1 and (status <> 'pending_payment' or created_at > now() - interval '1 hour') order by created_at desc limit 50`, [customer.id])).map(giftDto) }));
@@ -527,24 +615,39 @@ route('POST', '/staff/login', {}, async ({ db, body, req, res }) => {
   if (!ok) { await audit(db, 'system', 'staff.login_failed', 'staff', email, { ip: clientIp(req) }); fail(401, 'BAD_LOGIN', 'Email or password is incorrect.'); }
   const token = sec.newToken();
   await db.query(`insert into staff_sessions (token_hash, staff_id, expires_at) values ($1, $2, now() + interval '12 hours')`, [sec.hashToken(token), s.id]);
+  if (body.cookie === false) return { token, mfaRequired: true };   // scripts and tests; the panels use the HttpOnly cookie
   setCookie(res, 'pgbx_staff', token, 12 * 3600);
-  return { token, mfaRequired: true };
+  return { mfaRequired: true };
 });
 route('POST', '/staff/mfa', { staff: { preMfa: true } }, async ({ db, staff, body, req }) => {
   await limit(db, 'staff-mfa:' + staff.id, 900, 6, 'Too many wrong codes. Sign in again in 15 minutes.');
-  if (!sec.verifyTotp(staff.totp_secret, body.code)) { await audit(db, 'staff:' + staff.id, 'staff.mfa_failed', 'staff', staff.id, { ip: clientIp(req) }); fail(401, 'BAD_CODE', 'That code is incorrect. Use the current code from your authenticator app.'); }
+  const step = sec.totpStep(staff.totp_secret, body.code);
+  // Each code works once: the update only succeeds for a time step later than the last one accepted.
+  const fresh = step !== null && await db.one(`update staff set totp_last_step = $2 where id = $1 and totp_last_step < $2 returning id`, [staff.id, step]);
+  if (!fresh) { await audit(db, 'staff:' + staff.id, 'staff.mfa_failed', 'staff', staff.id, { ip: clientIp(req), reused: step !== null }); fail(401, 'BAD_CODE', step !== null ? 'That code was already used. Wait for the next code in your authenticator app.' : 'That code is incorrect. Use the current code from your authenticator app.'); }
   await db.query(`update staff_sessions set mfa_passed = true where token_hash = $1`, [staff.token_hash]);
   await audit(db, 'staff:' + staff.id, 'staff.login', 'staff', staff.id, { ip: clientIp(req) });
-  return { ok: true, staff: { name: staff.name, role: staff.role, dealer_id: staff.dealer_id } };
+  return { ok: true, staff: { name: staff.name, role: staff.role, dealer_id: staff.dealer_id }, mustChangePassword: staff.must_change_password };
 });
-route('POST', '/staff/logout', { staff: { preMfa: true } }, async ({ db, staff, res }) => {
+route('POST', '/staff/password', { staff: { beforePasswordChange: true } }, async ({ db, staff, body, req }) => {
+  await limit(db, 'staff-pw:' + staff.id, 900, 5, 'Too many attempts. Try again in 15 minutes.');
+  const next = typeof body.next === 'string' ? body.next : '';
+  if (!sec.verifyPassword(str(body.current, 200), staff.password_hash)) fail(400, 'BAD_PASSWORD', 'Your current password is incorrect.');
+  if (next.length < 12 || next.length > 200) fail(400, 'WEAK_PASSWORD', 'Use at least 12 characters for the new password.');
+  if (next === body.current || next.toLowerCase().includes(staff.email.split('@')[0])) fail(400, 'WEAK_PASSWORD', 'Choose a new password that isn’t your old one or your email.');
+  await db.query(`update staff set password_hash = $2, must_change_password = false where id = $1`, [staff.id, sec.hashPassword(next)]);
+  await db.query(`update staff_sessions set revoked_at = now() where staff_id = $1 and token_hash <> $2 and revoked_at is null`, [staff.id, staff.token_hash]);
+  await audit(db, 'staff:' + staff.id, 'staff.password_changed', 'staff', staff.id, { ip: clientIp(req) });
+  return { ok: true };
+});
+route('POST', '/staff/logout', { staff: { preMfa: true, beforePasswordChange: true } }, async ({ db, staff, res }) => {
   await db.query(`update staff_sessions set revoked_at = now() where token_hash = $1`, [staff.token_hash]);
   setCookie(res, 'pgbx_staff', '', 0);
   return { ok: true };
 });
-route('GET', '/staff/me', { staff: {} }, async ({ db, staff }) => {
+route('GET', '/staff/me', { staff: { beforePasswordChange: true } }, async ({ db, staff }) => {
   const dealer = staff.dealer_id ? await db.one(`select id, name, area from dealers where id = $1`, [staff.dealer_id]) : null;
-  return { staff: { id: staff.id, name: staff.name, email: staff.email, role: staff.role, dealer } };
+  return { staff: { id: staff.id, name: staff.name, email: staff.email, role: staff.role, dealer, mustChangePassword: staff.must_change_password } };
 });
 
 // ---------- dealer tools (FR-DL1–DL4) ----------
@@ -576,8 +679,8 @@ route('GET', '/admin/overview', ops, async ({ db }) => ({
   verified: (await db.one(`select count(*)::int n from customers where kyc_status = 'verified' and status = 'active'`)).n,
   kyc_review: (await db.one(`select count(*)::int n from kyc_checks where status in ('review', 'submitted')`)).n,
   flagged_orders: (await db.one(`select count(*)::int n from orders where status = 'flagged'`)).n,
-  sales_today_pkr: (await db.one(`select coalesce(sum(total_pkr), 0) v from orders where status = 'credited' and credited_at >= date_trunc('day', now())`)).v,
-  orders_today: (await db.one(`select count(*)::int n from orders where status = 'credited' and credited_at >= date_trunc('day', now())`)).n,
+  sales_today_pkr: (await db.one(`select coalesce(sum(total_pkr), 0) v from orders where status = 'credited' and credited_at >= pk_day_start()`)).v,   // Pakistan time
+  orders_today: (await db.one(`select count(*)::int n from orders where status = 'credited' and credited_at >= pk_day_start()`)).n,
   active_collections: (await db.one(`select count(*)::int n from redemptions where status in ('requested', 'ready') and expires_at > now()`)).n,
   appraisals_to_assign: (await db.one(`select count(*)::int n from appraisals where status = 'booked'`)).n,
   gifts_open: (await db.one(`select count(*)::int n from gift_orders where status in ('placed', 'in_production', 'dispatched')`)).n,
@@ -585,11 +688,34 @@ route('GET', '/admin/overview', ops, async ({ db }) => ({
   rates: await db.one(`select gold_buy_tola, gold_sell_tola, silver_buy_tola, silver_sell_tola, source, fetched_at from rate_snapshots order by id desc limit 1`),
 }));
 
+// What each setting may hold. A wrong value here would break buying or services for everyone, so every change is
+// checked against its type and a sensible range before it is saved.
+const isInt = (min, max) => v => Number.isInteger(v) && v >= min && v <= max;
+const orNull = f => v => v === null || f(v);
+const objOf = (keys, f) => v => v && typeof v === 'object' && !Array.isArray(v) && keys.every(k => f(v[k])) && Object.keys(v).every(k => keys.includes(k));
+const listOf = (f, max = 30) => v => Array.isArray(v) && v.length >= 1 && v.length <= max && v.every(f) && new Set(v).size === v.length;
+const isName = v => typeof v === 'string' && /^[A-Za-z][A-Za-z .'-]{1,39}$/.test(v);
+const isSlot = v => typeof v === 'string' && /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/.test(v) && v.slice(0, 5) < v.slice(6);
+const frac = (min, max) => v => typeof v === 'number' && v >= min && v <= max;
+const SETTING_RULES = {
+  max_units_per_order: isInt(1, 1000), daily_limit_pkr: isInt(1000, 1e9), price_lock_seconds: isInt(15, 600), rate_stale_seconds: isInt(10, 600),
+  redemption_valid_hours: isInt(1, 720), order_payment_minutes: isInt(5, 1440), session_days: isInt(1, 365),
+  spread: objOf(['gold', 'silver'], frac(0, 0.2)), retention_days: orNull(isInt(30, 36500)), redemption_fee_pkr: orNull(isInt(0, 1e6)), min_purchase_pkr: orNull(isInt(0, 1e8)),
+  purity: v => objOf(['gold', 'silver'], m => m && typeof m === 'object' && !Array.isArray(m) && Object.keys(m).length >= 1 && Object.entries(m).every(([k, x]) => /^[0-9A-Za-z]{2,4}$/.test(k) && frac(0.3, 1)(x)))(v),
+  buyback_deduction_pct: objOf(['gold', 'silver'], frac(0, 50)), appraisal_fee_pkr: isInt(0, 1e6), appraisal_cities: listOf(isName), appraisal_slots: listOf(isSlot, 12),
+  appraisal_free_cancel_hours: isInt(0, 720), gift_making_pkr: objOf(['plain', 'themed', 'engraving'], isInt(0, 1e7)), gift_packaging_pkr: objOf(['standard', 'premium'], isInt(0, 1e7)),
+  gift_delivery_pkr: isInt(0, 1e6), gift_lead_days: isInt(1, 60), gift_cities: listOf(isName, 60),
+};
+
 route('GET', '/admin/settings', ops, async ({ db }) => ({ settings: await db.query(`select key, value, updated_at, updated_by from settings order by key`) }));
 route('PATCH', '/admin/settings', adminOnly, async ({ db, staff, body }) => {
   const known = new Set((await db.query(`select key from settings`)).map(r => r.key));
-  for (const [k, v] of Object.entries(body || {})) {
+  const entries = Object.entries(body || {});
+  for (const [k, v] of entries) {                              // check everything first, so a bad value saves nothing
     if (!known.has(k)) fail(400, 'BAD_SETTING', `Unknown setting ${k}.`);
+    if (SETTING_RULES[k] && !SETTING_RULES[k](v)) fail(400, 'BAD_SETTING', `That value for ${k} isn’t allowed. Check the format and range.`);
+  }
+  for (const [k, v] of entries) {
     await db.query(`update settings set value = $2::jsonb, updated_at = now(), updated_by = $3 where key = $1`, [k, JSON.stringify(v), 'staff:' + staff.id]);
     await audit(db, 'staff:' + staff.id, 'setting.changed', 'setting', k, { value: v });
   }
@@ -613,6 +739,9 @@ route('GET', '/admin/dealers', ops, async ({ db }) => ({
 route('POST', '/admin/dealers', adminOnly, async ({ db, staff, body }) => {
   const id = str(body.id, 40).toLowerCase().replace(/[^a-z0-9-]/g, ''); const name = str(body.name, 120); const area = str(body.area, 120);
   if (!id || !name || !area) fail(400, 'BAD_DEALER', 'Enter an ID, name and area.');
+  if (await db.one(`select 1 from dealers where id = $1`, [id])) fail(409, 'DEALER_EXISTS', 'A dealer with that ID already exists. Choose another ID.');
+  const lat = Number(body.lat), lng = Number(body.lng);
+  if ((body.lat != null && body.lat !== '' && !(lat >= 23 && lat <= 37.5)) || (body.lng != null && body.lng !== '' && !(lng >= 60 && lng <= 78))) fail(400, 'BAD_DEALER', 'The map position must be in Pakistan.');
   const d = await db.one(`insert into dealers (id, name, area, address, phone, lat, lng, hours) values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`,
     [id, name, area, str(body.address, 300) || null, str(body.phone, 40) || null, Number(body.lat) || null, Number(body.lng) || null, str(body.hours, 60) || null]);
   await db.query(`insert into dealer_stock (dealer_id, product_id, units) select $1, id, 0 from products`, [id]);
@@ -686,11 +815,12 @@ route('POST', '/admin/orders/:id/resolve', ops, async ({ db, staff, params, body
   ({ order: orderDto(await db.one(`select * from fn_resolve_order($1, $2, $3, $4)`, [staff.id, params.id, str(body.action, 10), str(body.note, 300) || null])) }));
 
 route('GET', '/admin/reconciliation', ops, async ({ db, query }) => {
-  const day = /^\d{4}-\d{2}-\d{2}$/.test(query.day || '') ? query.day : new Date().toISOString().slice(0, 10);
+  const day = isoDate(query.day) ? query.day : new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 10);   // today in Pakistan (UTC+5, no DST)
   return { reconciliation: (await db.one(`select fn_reconcile($1::date) as r`, [day])).r };
 });
 route('POST', '/admin/vault', ops, async ({ db, staff, body }) => {
-  const units = int(body.units); if (!(units >= 0)) fail(400, 'BAD_UNITS', 'Enter 0 or more units.');
+  const units = int(body.units); if (!(units >= 0 && units <= 1e6)) fail(400, 'BAD_UNITS', 'Enter 0 or more units.');
+  if (!(await db.one(`select 1 from products where id = $1`, [str(body.product_id, 40)]))) fail(400, 'UNKNOWN_PRODUCT', MESSAGES.UNKNOWN_PRODUCT[1]);
   await db.query(`insert into vault_counts (product_id, units, counted_by, note) values ($1, $2, $3, $4)`, [str(body.product_id, 40), units, 'staff:' + staff.id, str(body.note, 200) || null]);
   await audit(db, 'staff:' + staff.id, 'vault.counted', 'product', body.product_id, { units });
   return { ok: true };
@@ -740,21 +870,33 @@ route('GET', '/admin/audit', ops, async ({ db, query }) => {
   return { entries: await db.query(`select id, at, actor, action, entity, entity_id, data from audit_log where ($1 = '' or entity = $1) and ($2 = '' or entity_id = $2) order by id desc limit 200`, [entity, id]) };
 });
 
-route('GET', '/admin/staff', adminOnly, async ({ db }) => ({ staff: await db.query(`select id, email, name, role, dealer_id, active, created_at from staff order by created_at`) }));
+route('GET', '/admin/staff', adminOnly, async ({ db }) => ({ staff: await db.query(`select id, email, name, role, dealer_id, active, must_change_password, created_at from staff order by created_at`) }));
 route('POST', '/admin/staff', adminOnly, async ({ db, staff, body }) => {
   const email = str(body.email, 200).toLowerCase(); const name = str(body.name, 120);
   const role = ['admin', 'ops', 'dealer'].includes(body.role) ? body.role : fail(400, 'BAD_ROLE', 'Choose a role.');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !name) fail(400, 'BAD_STAFF', 'Enter a name and a valid email.');
   if (role === 'dealer' && !body.dealer_id) fail(400, 'BAD_STAFF', 'Choose the dealer this person works for.');
+  if (await db.one(`select 1 from staff where email = $1`, [email])) fail(409, 'STAFF_EXISTS', 'A staff account with that email already exists.');
+  if (role === 'dealer' && !(await db.one(`select 1 from dealers where id = $1`, [str(body.dealer_id, 40)]))) fail(400, 'BAD_STAFF', 'That dealer doesn’t exist.');
   const password = sec.newPassword(), secret = sec.newTotpSecret();
-  const s = await db.one(`insert into staff (email, name, role, dealer_id, password_hash, totp_secret) values ($1, $2, $3, $4, $5, $6) returning id`,
+  const s = await db.one(`insert into staff (email, name, role, dealer_id, password_hash, totp_secret, must_change_password) values ($1, $2, $3, $4, $5, $6, true) returning id`,
     [email, name, role, role === 'dealer' ? str(body.dealer_id, 40) : null, sec.hashPassword(password), secret]);
   await audit(db, 'staff:' + staff.id, 'staff.created', 'staff', s.id, { email, role });
-  return { staff: { id: s.id, email, role }, setup: { password, totpSecret: secret, otpauthUrl: sec.otpauthUrl(secret, email), note: 'Shown once. Share securely and ask them to change the password.' } };
+  return { staff: { id: s.id, email, role }, setup: { password, totpSecret: secret, otpauthUrl: sec.otpauthUrl(secret, email), note: 'Shown once. Share it securely. They must choose a new password when they first sign in.' } };
+});
+// Lost password or phone: a new temporary password and a new authenticator secret; all their sessions end.
+route('POST', '/admin/staff/:id/reset', adminOnly, async ({ db, staff, params }) => {
+  if (params.id === staff.id) fail(400, 'SELF', 'Use “Change password” for your own account.');
+  const password = sec.newPassword(), secret = sec.newTotpSecret();
+  const s = await db.one(`update staff set password_hash = $2, totp_secret = $3, totp_last_step = 0, must_change_password = true where id = $1 returning id, email`, [params.id, sec.hashPassword(password), secret]);
+  if (!s) fail(404, 'NOT_FOUND', 'Staff member not found.');
+  await db.query(`update staff_sessions set revoked_at = now() where staff_id = $1 and revoked_at is null`, [params.id]);
+  await audit(db, 'staff:' + staff.id, 'staff.reset', 'staff', params.id, {});
+  return { setup: { password, totpSecret: secret, otpauthUrl: sec.otpauthUrl(secret, s.email), note: 'Shown once. Share it securely. They must choose a new password when they sign in.' } };
 });
 route('POST', '/admin/staff/:id/active', adminOnly, async ({ db, staff, params, body }) => {
   if (params.id === staff.id) fail(400, 'SELF', 'You can’t deactivate your own account.');
-  await db.query(`update staff set active = $2 where id = $1`, [params.id, body.active === true]);
+  if (!(await db.one(`update staff set active = $2 where id = $1 returning id`, [params.id, body.active === true]))) fail(404, 'NOT_FOUND', 'Staff member not found.');
   if (body.active !== true) await db.query(`update staff_sessions set revoked_at = now() where staff_id = $1 and revoked_at is null`, [params.id]);
   await audit(db, 'staff:' + staff.id, body.active === true ? 'staff.activated' : 'staff.deactivated', 'staff', params.id, {});
   return { ok: true };
@@ -769,13 +911,14 @@ route('GET', '/cron/sweep', {}, async ({ db, req, fetchRates }) => {
     expired_redemptions: (await db.one(`select fn_expire_redemptions() n`)).n,
     expired_services: (await db.one(`select fn_expire_services() n`)).n,
     purged_customers: (await db.one(`select fn_purge_closed() n`)).n,
+    housekeeping: (await db.one(`select fn_housekeeping() r`)).r,
   };
   await ensureRates(db, fetchRates).catch(() => {});
   r.pushed = await sendPendingPush(db);
   return r;
 });
 async function sendPendingPush(db) {
-  const pending = await db.query(`select n.id, n.customer_id, n.title, n.body, n.link from notifications n where n.push and n.pushed_at is null and n.created_at > now() - interval '1 day' limit 500`);
+  const pending = await db.query(`select n.id, n.customer_id, n.title, n.body, n.link from notifications n where n.push and n.pushed_at is null and n.created_at > now() - interval '2 days' limit 500`);
   let sent = 0;
   for (const n of pending) {
     if (push.enabled) {
@@ -798,24 +941,28 @@ export async function handle(req, res, opts = {}) {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   const origin = req.headers.origin;
+  res.setHeader('Vary', 'Origin');                            // answers differ by Origin, so caches must keep them apart
   if (origin && ALLOWED_ORIGIN.test(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    res.setHeader('Vary', 'Origin');
   }
   const send = (status, obj) => { res.statusCode = status; res.end(JSON.stringify(obj)); };
   if (req.method === 'OPTIONS') { res.statusCode = 204; res.end(); return; }
   const url = new URL(req.url, 'http://x');
-  const path = (url.searchParams.get('path') ? '/' + url.searchParams.get('path') : url.pathname.replace(/^\/api\/v1/, '')) || '/';
+  // On Vercel the rewrite in vercel.json passes the route as ?path=; locally it is the URL path. A second "path"
+  // parameter means someone is trying to make one route look like another, so it is refused.
+  const paths = url.searchParams.getAll('path');
+  const path = (paths.length ? '/' + paths[0] : url.pathname.replace(/^\/api\/v1/, '')) || '/';
   const query = Object.fromEntries(url.searchParams);
   try {
+    if (paths.length > 1) fail(400, 'BAD_PATH', 'Bad request.');
     let match = null, params = {};
     for (const r of routes) {
       if (r.method !== req.method) continue;
       const m = r.re.exec(path);
-      if (m) { match = r; r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); }); break; }
+      if (m) { match = r; r.keys.forEach((k, i) => { params[k] = decode(m[i + 1]) ?? fail(400, 'BAD_PATH', 'Bad request.'); }); break; }
     }
     if (!match) fail(404, 'NOT_FOUND', 'Not found.');
     if (!db && path !== '/config') fail(503, 'NOT_CONNECTED', 'PGBX services aren’t connected yet.');
@@ -833,6 +980,10 @@ export async function handle(req, res, opts = {}) {
     if (code && MESSAGES[code]) return send(MESSAGES[code][0], { error: code, message: MESSAGES[code][1] });
     if (e.expose) return send(e.status || 400, { error: 'PROVIDER', message: e.message });
     if (e.code === '22P02') return send(400, { error: 'BAD_ID', message: 'That ID isn’t valid.' });
+    // Database constraint errors are the request's fault, not the server's: answer 409/400 instead of 500.
+    if (e.code === '23505') return send(409, { error: 'ALREADY_EXISTS', message: 'That already exists. Use a different value.' });
+    if (e.code === '23503') return send(400, { error: 'BAD_REFERENCE', message: 'Something this refers to doesn’t exist. Check the IDs and try again.' });
+    if (['22003', '22007', '22008', '22001', '23514', '23502'].includes(e.code)) return send(400, { error: 'BAD_VALUE', message: 'One of the values isn’t valid. Check it and try again.' });
     console.error('PGBX API error', req.method, path, e);
     send(500, { error: 'SERVER', message: 'Something went wrong on our side. Please try again.' });
   }

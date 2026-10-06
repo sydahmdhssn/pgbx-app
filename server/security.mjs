@@ -49,10 +49,16 @@ export function totp(secret, at = Date.now(), step = 30) {
   return String(((h.readUInt32BE(o) & 0x7fffffff) % 1e6)).padStart(6, '0');
 }
 // Accepts the current code and one step either side (clock drift).
-export function verifyTotp(secret, code, at = Date.now()) {
+export const verifyTotp = (secret, code, at = Date.now()) => totpStep(secret, code, at) !== null;
+// The time step of a valid code (or null), so the caller can refuse a code that was already used.
+export function totpStep(secret, code, at = Date.now()) {
   const c = String(code || '').replace(/\D/g, '');
-  if (c.length !== 6) return false;
-  return [-1, 0, 1].some(w => crypto.timingSafeEqual(Buffer.from(totp(secret, at + w * 30000)), Buffer.from(c)));
+  if (c.length !== 6) return null;
+  for (const w of [-1, 0, 1]) {
+    const t = at + w * 30000;
+    if (crypto.timingSafeEqual(Buffer.from(totp(secret, t)), Buffer.from(c))) return Math.floor(t / 30000);
+  }
+  return null;
 }
 export const otpauthUrl = (secret, email) => `otpauth://totp/PGBX:${encodeURIComponent(email)}?secret=${secret}&issuer=PGBX&algorithm=SHA1&digits=6&period=30`;
 
@@ -60,7 +66,7 @@ export const otpauthUrl = (secret, email) => `otpauth://totp/PGBX:${encodeURICom
 export function verifySignature(raw, signature, secret) {
   if (!secret || !signature) return false;
   const want = crypto.createHmac('sha256', secret).update(raw).digest('hex');
-  const got = String(signature).replace(/^sha256=/, '');
-  return want.length === got.length && crypto.timingSafeEqual(Buffer.from(want), Buffer.from(got));
+  const w = Buffer.from(want), g = Buffer.from(String(signature).replace(/^sha256=/, ''));
+  return w.length === g.length && crypto.timingSafeEqual(w, g);   // byte lengths: a multi-byte header can't throw
 }
 export const sign = (raw, secret) => crypto.createHmac('sha256', secret).update(raw).digest('hex');

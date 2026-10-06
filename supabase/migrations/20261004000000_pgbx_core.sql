@@ -94,6 +94,8 @@ create table staff (
   dealer_id text references dealers(id),
   password_hash text not null,                               -- scrypt, set by the API
   totp_secret text not null,                                 -- second factor (RFC 6238)
+  totp_last_step bigint not null default 0,                  -- last accepted code's time step: a code works once
+  must_change_password boolean not null default false,       -- set for new and reset accounts
   active boolean not null default true,
   created_at timestamptz not null default now(),
   check (role <> 'dealer' or dealer_id is not null)

@@ -13,7 +13,10 @@ import { ALLOWED_ORIGIN, allowOrigin } from './_origin.mjs';
 // `phone` is the 10-digit national mobile number without the leading 0 (e.g. 3001234567).
 
 const { TWILIO_ACCOUNT_SID: SID, TWILIO_AUTH_TOKEN: TOKEN, TWILIO_VERIFY_SERVICE_SID: SERVICE } = process.env;
-const CONFIGURED = Boolean(SID && TOKEN && SERVICE);
+// This endpoint only serves the demo app. Its limits live in one server instance's memory, so a determined script
+// could still run up SMS costs ("SMS pumping"). It therefore stays off unless OTP_DEMO_SMS=1 is also set. The
+// production app uses /api/v1/auth/otp/*, which has the human check and database-backed limits.
+const CONFIGURED = Boolean(SID && TOKEN && SERVICE && process.env.OTP_DEMO_SMS === '1');
 const CHANNELS = ['sms', ...(process.env.OTP_WHATSAPP === '1' ? ['whatsapp'] : [])];
 
 // Pakistani mobile numbers: Jazz 300–309 and 320–329, Zong 310–319, Ufone 330–339, Telenor 340–349, SCOM 355

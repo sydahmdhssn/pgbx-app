@@ -26,7 +26,7 @@ const fetchRates = async opts => {
   if (live && live.ok) return live;
   if (!warned) { console.log('Live rate sources unreachable: using SAMPLE prices for development.'); warned = true; }
   const j = n => Math.round(n * (1 + (Math.random() - 0.5) * 0.002));
-  return { ok: true, metals: { gold: { buyTola: j(466560), sellTola: j(460000), source: 'sample (dev)' }, silver: { buyTola: j(6400), sellTola: j(6240) } } };
+  return { ok: true, metals: { gold: { buyTola: j(466560), sellTola: j(460000), source: 'sample (dev)', sourceUpdatedAt: new Date().toISOString() }, silver: { buyTola: j(6400), sellTola: j(6240), sourceUpdatedAt: new Date().toISOString() } } };
 };
 // Sample staff for trying the admin panel and dealer app. Passwords and authenticator secrets are printed below.
 const staff = [
@@ -42,22 +42,23 @@ for (const s of staff) {
 
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
-const BLOCKED = /^\/(server|dev|tests|supabase|node_modules|mobile|\.git)(\/|$)|^\/package/;
+const BLOCKED = /^\/(server|dev|tests|supabase|node_modules|mobile|scripts|api|\.git|\.[^/]*)(\/|$)|^\/package|\.(md|mjs|sql|sh)$/i;
 
 http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname.startsWith('/api/v1')) return handle(req, res, { db, fetchRates });
   if (url.pathname === '/api/rates') return ratesHandler(req, res);
-  if (BLOCKED.test(url.pathname)) { res.statusCode = 404; return res.end('Not found'); }
-  let file = path.join(ROOT, decodeURIComponent(url.pathname));
-  if (!file.startsWith(ROOT)) { res.statusCode = 400; return res.end(); }
+  let decoded; try { decoded = decodeURIComponent(url.pathname); } catch { res.statusCode = 400; return res.end(); }
+  if (BLOCKED.test(decoded) || decoded.includes('\0')) { res.statusCode = 404; return res.end('Not found'); }   // checked after decoding
+  let file = path.join(ROOT, decoded);
+  if (file !== ROOT && !file.startsWith(ROOT + path.sep)) { res.statusCode = 400; return res.end(); }
   if (fs.existsSync(file) && fs.statSync(file).isDirectory()) file = path.join(file, 'index.html');
   else if (!path.extname(file) && fs.existsSync(file + '.html')) file += '.html';
   if (!fs.existsSync(file)) { res.statusCode = 404; return res.end('Not found'); }
   res.setHeader('Content-Type', TYPES[path.extname(file)] || 'application/octet-stream');
   res.setHeader('Cache-Control', 'no-store');
   fs.createReadStream(file).pipe(res);
-}).listen(PORT, () => {
+}).listen(PORT, process.env.HOST || '127.0.0.1', () => {   // this machine only, unless HOST is set
   console.log(`PGBX dev server  http://localhost:${PORT}   admin: /admin   dealer: /dealer`);
   console.log('Customer login code: 123456 (test mode). Payments and identity checks: sandbox.');
   console.log('Sample staff (authenticator code changes every 30 s; current code shown, or add the secret to an authenticator app):');

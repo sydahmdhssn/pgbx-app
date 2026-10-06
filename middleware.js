@@ -92,7 +92,8 @@ export default async function middleware(request) {
     return new Response(JSON.stringify({ ok: true }), { headers: { ...SECURITY, 'Content-Type': 'application/json',
       'Set-Cookie': `${COOKIE}=${want}; Path=/; Max-Age=${DAYS * 86400}; HttpOnly; Secure; SameSite=Lax` } });
   }
-  if (OPEN.some(re => re.test(path))) return next();
+  // A "path" parameter could make an open URL reach a different API route through the rewrite, so it isn't open then.
+  if (OPEN.some(re => re.test(path)) && !url.searchParams.has('path')) return next();
 
   const have = cookieOf(request, COOKIE);
   if (have && same(have, await token(password))) return next();
