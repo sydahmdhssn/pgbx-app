@@ -43,5 +43,7 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- Needed by @capacitor/push-notifications on Android 13+. Declaring it asks nothing of the customer: the app requests
+         it only when push is switched on in the build (PGBX_PUSH=android) and the customer signs in. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>

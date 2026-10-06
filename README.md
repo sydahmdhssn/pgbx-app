@@ -265,8 +265,10 @@ The **Services** tab replaces the old Redeem tab: collecting bars now sits insid
 ## Staff tools
 
 - **Admin panel** (`/admin`): overview, identity checks to review, orders waiting for operations (credit or refund with a
-  note), customers (search, details, suspend), support requests (reply to the customer's inbox), dealers and stock,
-  products and premiums, reconciliation (money and metal, with vault counts), settings, audit log, staff accounts.
+  note), **refunds** (every payment to give back, from any service, marked refunded with the provider's reference),
+  customers (search, details, suspend), support requests (reply to the customer's inbox), dealers and stock,
+  products and premiums, reconciliation (money and metal for bars, $1 gold and services, with vault counts), settings,
+  audit log (filter by item, action, person or ID; pages back in time), staff accounts (setup by QR code).
   Also: **Doorstep appraisals** (assign goldsmith, record result, cancel) and **Gift orders** (production, dispatch
   with tracking, delivery, cancel).
   Operations staff can't change settings, premiums, dealers' details or staff, or suspend customers.
@@ -280,13 +282,17 @@ Both are `noindex`, use the same password + authenticator sign-in, and end the s
 `npm run build:app` writes the production build: `live/index.html` (web, at `/live`) and `dist/` (bundled into the
 phone apps, with its own Content-Security-Policy). In the production build there is no demo mode: no demo PIN, demo
 panels, sample customer, simulated payments or camera, URL shortcuts or simulated rates (if live prices are down, buying
-pauses). Limits and premiums come from PGBX's settings. The PIN is stored only as a salted, stretched hash; no account
-records are stored on the phone. In identity verification the app collects the CNIC details and the chosen provider's
+pauses). Limits and premiums come from PGBX's settings. The app PIN is checked by the server, per login session: it is
+never stored on the phone, a session is locked after a few minutes without use (or when the app goes to the background)
+and only the PIN or the phone's biometric key unlocks it; 3 wrong PINs pause entry for 30 s and 5 end the session. No
+account records are stored on the phone. In identity verification the app collects the CNIC details and the chosen provider's
 own capture screens (CNIC photos and selfie) are added when PGBX picks a provider.
 
 `mobile/` holds the Capacitor 8 projects (`ios/`, `android/`) and `bridge.js`, which connects the app to the session
-token in the iOS Keychain / Android Keystore, Face ID / fingerprint unlock, push notifications and the in-app browser for
-payment pages. Android backups and cleartext traffic are off.
+token in the iOS Keychain / Android Keystore, Face ID / fingerprint unlock (opt-in), push notifications, the in-app
+browser for payment pages and the share sheet for statements. Android backups and cleartext traffic are off, screenshots
+and the recent-apps preview are blocked (`FLAG_SECURE`), and iOS covers the app in the app switcher. Release builds are
+shrunk (`minifyEnabled`); give each store upload a higher version: `./gradlew bundleRelease -PversionCode=2 -PversionName=1.1.0`.
 
 ```bash
 cd mobile && npm install
@@ -296,10 +302,20 @@ npm run open:android    # Android Studio: add google-services.json for push, cre
 ```
 
 Push notifications are **off** in the phone apps until their setup is complete, because registering without Firebase
-crashes the Android app. When `google-services.json` is in `mobile/android/app/` (Android) and the Push Notifications
-capability is added in Xcode (iOS, which creates `App.entitlements` with `aps-environment`), build with the platforms
-listed: `PGBX_PUSH=android,ios npm run sync`. The apps are portrait-only on phones; icons and splash screens are
-generated from `favicon.svg`.
+crashes the Android app. The server sends through Firebase Cloud Messaging for both platforms:
+
+- **Android:** put `google-services.json` from PGBX's Firebase project in `mobile/android/app/`.
+- **iOS:** in Xcode add the Push Notifications capability (this creates `App.entitlements` with `aps-environment`),
+  upload the APNs key to Firebase, add the `FirebaseMessaging` Swift package and `GoogleService-Info.plist`.
+  `AppDelegate.swift` then exchanges the APNs token for an FCM token by itself (it compiles without Firebase too).
+
+Then build with the platforms listed: `PGBX_PUSH=android,ios npm run sync`. The apps are portrait-only on phones (large
+Android screens may rotate; the layout fits any size); icons and splash screens are generated from `favicon.svg`.
+
+If PGBX switches on the Cloudflare human check (`TURNSTILE_*`), add `localhost` to the widget's hostnames in
+Cloudflare, because the apps run from `capacitor://localhost` (iOS) and `https://localhost` (Android). When a real
+identity provider with in-app camera capture is added: `NSCameraUsageDescription` in `Info.plist`, `CAMERA` in the
+Android manifest, and `camera=()` in the `Permissions-Policy` header must change.
 
 Before a store release PGBX needs: Apple and Google developer accounts in PGBX's name, the final bundle ID
 (`pk.com.pgbx.app` is a placeholder), a Firebase project for push, store screenshots, and the privacy answers (plus an app-level `PrivacyInfo.xcprivacy` if PGBX
