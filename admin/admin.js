@@ -9,7 +9,7 @@ const pkToday = () => new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 1
 const byProduct = (a, b) => ORDER.indexOf(a.product_id) - ORDER.indexOf(b.product_id);
 
 const SECTIONS = [
-  ['overview', 'Overview'], ['kyc', 'Identity checks'], ['orders', 'Orders'], ['appraisals', 'Doorstep appraisals'], ['gifts', 'Gift orders'], ['customers', 'Customers'], ['support', 'Support'], ['dealers', 'Dealers & stock'],
+  ['overview', 'Overview'], ['kyc', 'Identity checks'], ['orders', 'Orders'], ['appraisals', 'Doorstep appraisals'], ['gifts', 'Gift orders'], ['micro', '$1 gold & tola lots'], ['customers', 'Customers'], ['support', 'Support'], ['dealers', 'Dealers & stock'],
   ['products', 'Products & premiums'], ['reconciliation', 'Reconciliation'], ['settings', 'Settings'], ['audit', 'Audit log'], ['staff', 'Staff', 'admin'],
 ];
 const go = (s, id) => { location.hash = id ? `${s}/${id}` : s; };
@@ -37,6 +37,8 @@ function Overview() {
         <a class=${'card stat' + (d.flagged_orders ? ' attn' : '')} href="#orders" style="text-decoration:none;color:inherit"><div class="k">Orders needing operations</div><div class="v">${d.flagged_orders}</div></a>
         <a class=${'card stat' + (d.appraisals_to_assign ? ' attn' : '')} href="#appraisals" style="text-decoration:none;color:inherit"><div class="k">Appraisals to assign</div><div class="v">${d.appraisals_to_assign ?? 0}</div></a>
         <a class="card stat" href="#gifts" style="text-decoration:none;color:inherit"><div class="k">Gift orders in progress</div><div class="v">${d.gifts_open ?? 0}</div></a>
+        <a class=${'card stat' + (d.lots_to_settle ? ' attn' : '')} href="#micro" style="text-decoration:none;color:inherit"><div class="k">Full tola lots to settle</div><div class="v">${d.lots_to_settle ?? 0}</div></a>
+        <a class=${'card stat' + (d.payouts_pending ? ' attn' : '')} href="#micro" style="text-decoration:none;color:inherit"><div class="k">$1 gold payouts to send</div><div class="v">${d.payouts_pending ?? 0}</div></a>
         <div class="card stat"><div class="k">Sales today</div><div class="v">${pkr(d.sales_today_pkr)}</div><div class="muted small">${d.orders_today} orders</div></div>
         <div class="card stat"><div class="k">Active collections</div><div class="v">${d.active_collections}</div></div>
         <div class="card stat"><div class="k">Customers</div><div class="v">${d.customers}</div><div class="muted small">${d.verified} verified</div></div>
@@ -226,6 +228,110 @@ function Gifts({ toast }) {
     </${Modal}>`}`;
 }
 
+// ---------- $1 gold: tola lots, any transaction ID, payouts ----------
+const grams = g => (g === null || g === undefined ? '—' : Number(g).toFixed(4) + ' g');
+function Micro({ id, toast }) {
+  const [tab, setTab] = useState('buy');
+  const [q, setQ] = useState('');
+  const [found, setFound] = useState(null);
+  const find = async e => { e && e.preventDefault(); if (!q.trim()) return; setFound(null);
+    try { setFound(await api('/admin/micro/find?ref=' + encodeURIComponent(q.trim()))); } catch (x) { setFound({ error: x.message }); } };
+  if (id) return html`<${MicroLot} ref_=${id} toast=${toast} />`;
+  return html`<${Head} title="$1 gold & tola lots" sub="Customers buy $1 of gold at a time. Paid transactions from everyone fill 1-tola lots in order; each lot keeps every transaction ID in it." />
+    <${Card}><form class="row" onSubmit=${find}><label class="f" style="flex:1;margin:0"><span class="sr">Transaction, order or lot ID</span>
+      <input class="in mono" placeholder="Find a transaction, order or lot ID, e.g. PGBX-M-261006-1A2B3C4D" value=${q} onInput=${e => setQ(e.target.value)} /></label>
+      <button class="btn">Find</button></form>
+      ${found && html`<div style="margin-top:14px">${found.error ? html`<div class="note err" role="alert">${found.error}</div>`
+        : found.lot ? html`<div class="spread"><span>Lot <b class="mono">${found.lot.ref}</b> · ${grams(found.lot.grams_filled)} · <${Tag} s=${found.lot.status} /></span><a class="btn sm" href=${'#micro/' + found.lot.ref}>Open lot</a></div>`
+        : found.order ? html`<dl class="kv"><dt>Order</dt><dd class="mono">${found.order.ref}</dd><dt>Customer</dt><dd><a href=${'#customers/' + found.order.customer.id}>${found.order.customer.name || '—'}</a></dd>
+            <dt>Paid</dt><dd>${found.order.units} × $1 · ${pkr(found.order.total_pkr)} · <${Tag} s=${found.order.status} /></dd>${found.order.note && html`<dt>Note</dt><dd>${found.order.note}</dd>`}
+            <dt>Transactions</dt><dd class="mono small" style="overflow-wrap:anywhere">${found.order.transactions.join(', ')}</dd></dl>`
+        : html`<dl class="kv"><dt>Transaction</dt><dd class="mono">${found.transaction.ref} (${found.transaction.side === 'buy' ? 'buy' : 'sell'})</dd>
+            <dt>Customer</dt><dd><a href=${'#customers/' + found.transaction.customer.id}>${found.transaction.customer.name || '—'}</a> · +92 ${found.transaction.customer.phone || '—'}</dd>
+            <dt>Amount</dt><dd>${grams(found.transaction.grams)} for ${pkr(found.transaction.amount_pkr)} at ${pkr(found.transaction.price_gram)}/g</dd>
+            <dt>Status</dt><dd><${Tag} s=${found.transaction.status} /> ${when(found.transaction.created_at)}</dd>
+            ${found.transaction.order_ref && html`<dt>Order</dt><dd class="mono">${found.transaction.order_ref}</dd>`}
+            ${found.transaction.payout_to && found.transaction.side === 'sell' && html`<dt>Pay to</dt><dd class="mono">${found.transaction.payout_to}</dd>`}
+            <dt>In lot</dt><dd>${found.transaction.lots.length ? found.transaction.lots.map(l => html`<a class="mono" style="margin-right:10px" href=${'#micro/' + l.ref}>${l.ref}</a><span class="small muted" style="margin-right:12px">${grams(l.grams)}</span>`) : 'Not in a lot yet (unpaid)'}</dd></dl>`}</div>`}
+    </${Card}>
+    <div style="margin:16px 0"><${Seg} label="View" value=${tab} onChange=${setTab} options=${[['buy', 'Buy lots'], ['sell', 'Sell lots'], ['payouts', 'Payouts to send'], ['paid', 'Payouts sent'], ['refunds', 'Refunds due']]} /></div>
+    ${(tab === 'buy' || tab === 'sell') && html`<${MicroLots} side=${tab} toast=${toast} />`}
+    ${(tab === 'payouts' || tab === 'paid') && html`<${MicroPayouts} done=${tab === 'paid'} toast=${toast} />`}
+    ${tab === 'refunds' && html`<${MicroRefunds} />`}`;
+}
+function MicroLots({ side, toast }) {
+  const load = useLoad('/admin/micro/lots?side=' + side);
+  const [settling, setSettling] = useState(null);
+  const [f, setF] = useState({ serial: '', note: '' });
+  const settle = async () => {
+    await api(`/admin/micro/lots/${settling.id}/settle`, { method: 'POST', body: f });
+    toast(side === 'buy' ? 'Recorded: tola bar bought for this lot.' : 'Recorded: tola sold for this lot.'); setSettling(null); load.reload();
+  };
+  return html`<${Screen} load=${load}>${d => html`<div class="stack">
+    <div class="grid g4">
+      <div class="card stat"><div class="k">Gold customers hold</div><div class="v">${grams(d.totals.held)}</div><div class="muted small">bought ${grams(d.totals.bought)} · sold ${grams(d.totals.sold)}</div></div>
+      <div class=${'card stat' + (d.lots.some(l => l.status === 'full') ? ' attn' : '')}><div class="k">${side === 'buy' ? 'Full lots: buy a tola bar' : 'Full lots: sell a tola'}</div><div class="v">${d.lots.filter(l => l.status === 'full').length}</div></div>
+    </div>
+    <${Card} title=${side === 'buy' ? 'Buy lots (1 tola each)' : 'Sell lots (1 tola each)'}><${Table} head=${['Lot', 'Filled', '#Transactions', '#Value at trade', 'Status', '']} empty="No lots yet. The first paid transaction starts lot 1." rows=${d.lots.map(l => html`<tr>
+      <td><a class="mono" href=${'#micro/' + l.ref}>${l.ref}</a></td>
+      <td style="min-width:160px"><div class="small">${grams(l.grams_filled)} of 1 tola (${Math.floor(l.grams_filled / l.grams_target * 100)}%)</div><div class="bar" role="img" aria-label=${Math.floor(l.grams_filled / l.grams_target * 100) + '% full'}><i style=${`width:${Math.min(100, l.grams_filled / l.grams_target * 100)}%`}></i></div></td>
+      <td class="r num">${l.transactions}</td><td class="r num">${pkr(l.amount_pkr)}</td>
+      <td><${Tag} s=${l.status} />${l.bar_serial && html`<div class="small mono">${l.bar_serial}</div>`}</td>
+      <td class="r">${l.status === 'full' && html`<button class="btn sm" onClick=${() => { setF({ serial: '', note: '' }); setSettling(l); }}>${side === 'buy' ? 'Bar bought' : 'Tola sold'}</button>`}</td></tr>`)} /></${Card}>
+    ${settling && html`<${Modal} title=${side === 'buy' ? 'Record the tola bar bought' : 'Record the tola sold'} onClose=${() => setSettling(null)}>
+      <p class="small muted">${settling.ref} · ${settling.transactions} transactions · exactly 1 tola (11.664 g)</p>
+      <label class="f"><span>${side === 'buy' ? 'Bar serial number' : 'Buyer’s reference (optional)'}</span><input class="in mono" value=${f.serial} onInput=${e => setF({ ...f, serial: e.target.value })} /></label>
+      <label class="f"><span>Note (kept in the audit log)</span><input class="in" value=${f.note} onInput=${e => setF({ ...f, note: e.target.value })} placeholder="e.g. Bought from Saddar Sarafa, invoice 1182" /></label>
+      <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setSettling(null)}>Cancel</button>
+        <${Act} disabled=${side === 'buy' && f.serial.trim().length < 3} run=${settle}>Save</${Act}></div>
+    </${Modal}>`}
+  </div>`}</${Screen}>`;
+}
+function MicroLot({ ref_ }) {
+  const [page, setPage] = useState(0);
+  const load = useLoad(`/admin/micro/lots/${encodeURIComponent(ref_)}?page=${page}`);
+  const download = async () => {
+    const d = await api(`/admin/micro/lots/${encodeURIComponent(ref_)}/ids`);
+    const text = [`${d.lot} · ${d.status}${d.bar_serial ? ' · bar ' + d.bar_serial : ''} · ${d.grams.toFixed(6)} g · ${d.ids.length} transactions`, 'transaction_id\tgrams_in_this_lot', ...d.ids].join('\n');
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' })); a.download = d.lot + '-transactions.txt'; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  return html`<${Screen} load=${load}>${d => html`
+    <${Head} title=${'Lot ' + d.lot.ref} sub=${`${d.lot.side === 'buy' ? 'Buy' : 'Sell'} lot · ${grams(d.lot.grams_filled)} of 11.664 g · ${d.lot.transactions} transactions`}>
+      <a class="btn sm sec" href="#micro">All lots</a><${Act} cls="btn sm" run=${download}>Download all IDs</${Act}></${Head}>
+    <div class="grid g2">
+      <${Card} title="Lot"><dl class="kv"><dt>Status</dt><dd><${Tag} s=${d.lot.status} /></dd><dt>Started</dt><dd>${when(d.lot.created_at)}</dd>
+        <dt>Full</dt><dd>${d.lot.filled_at ? when(d.lot.filled_at) : 'Still filling'}</dd>
+        ${d.lot.settled_at && html`<dt>${d.lot.side === 'buy' ? 'Bar bought' : 'Sold'}</dt><dd>${when(d.lot.settled_at)} · ${d.lot.settled_by}</dd>`}
+        ${d.lot.bar_serial && html`<dt>${d.lot.side === 'buy' ? 'Bar serial' : 'Reference'}</dt><dd class="mono">${d.lot.bar_serial}</dd>`}
+        ${d.lot.settle_note && html`<dt>Note</dt><dd>${d.lot.settle_note}</dd>`}</dl></${Card}>
+    </div>
+    <${Card} title="Transactions in this lot" action=${d.pages > 1 && html`<div class="row"><button class="btn sm sec" disabled=${page === 0} onClick=${() => setPage(page - 1)}>Previous</button><span class="small">Page ${page + 1} of ${d.pages}</span><button class="btn sm sec" disabled=${page + 1 >= d.pages} onClick=${() => setPage(page + 1)}>Next</button></div>`}>
+      <${Table} head=${['Transaction ID', 'Customer', '#Grams in lot', '#Amount', 'When']} empty="No transactions yet." rows=${d.transactions.map(t => html`<tr>
+        <td class="mono small">${t.ref}${t.grams < t.txn_grams && html` <span class="tag" title="Split between two lots">split</span>`}</td><td>${t.name || '—'}<div class="muted small">+92 ${t.phone || '—'}</div></td>
+        <td class="r num">${Number(t.grams).toFixed(6)}</td><td class="r num">${pkr(t.amount_pkr)}</td><td class="small">${when(t.created_at)}</td></tr>`)} /></${Card}>`}</${Screen}>`;
+}
+function MicroPayouts({ done, toast }) {
+  const load = useLoad('/admin/micro/payouts?status=' + (done ? 'paid_out' : 'pending_payout'));
+  const [paying, setPaying] = useState(null);
+  const [ref, setRef] = useState('');
+  const pay = async () => { await api(`/admin/micro/payouts/${paying.id}`, { method: 'POST', body: { ref } }); toast('Payout recorded. The customer has been told.'); setPaying(null); load.reload(); };
+  return html`<${Screen} load=${load}>${d => html`<${Card} title=${done ? 'Payouts sent' : 'Sales to pay out'}><${Table} head=${['Sale', 'Customer', '#Grams', '#Amount', 'Pay to (IBAN)', '']} empty=${done ? 'Nothing paid yet.' : 'No payouts waiting.'} rows=${d.payouts.map(p => html`<tr>
+    <td class="mono small">${p.ref}<div class="muted">${when(p.created_at)}</div></td><td><a href=${'#customers/' + p.customer_id}>${p.name || '—'}</a><div class="muted small">+92 ${p.phone || '—'}</div></td>
+    <td class="r num">${Number(p.grams).toFixed(4)}</td><td class="r num">${pkr(p.amount_pkr)}</td><td class="mono small">${p.payout_to}</td>
+    <td class="r">${done ? html`<span class="small mono">${p.payout_ref}</span><div class="muted small">${when(p.paid_out_at)}</div>` : html`<button class="btn sm" onClick=${() => { setRef(''); setPaying(p); }}>Mark paid</button>`}</td></tr>`)} /></${Card}>
+    ${paying && html`<${Modal} title="Record the bank transfer" onClose=${() => setPaying(null)}>
+      <p>Send <b>${pkr(paying.amount_pkr)}</b> to <span class="mono">${paying.payout_to}</span> (${paying.name || 'customer'}), then enter the transfer reference.</p>
+      <label class="f"><span>Bank transfer reference</span><input class="in mono" value=${ref} onInput=${e => setRef(e.target.value)} /></label>
+      <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setPaying(null)}>Cancel</button><${Act} disabled=${ref.trim().length < 4} run=${pay}>Mark paid</${Act}></div>
+    </${Modal}>`}`}</${Screen}>`;
+}
+function MicroRefunds() {
+  const load = useLoad('/admin/micro/refunds');
+  return html`<${Screen} load=${load}>${d => html`<${Card} title="Payments to refund" action=${html`<span class="muted small">Refund through the payment provider</span>`}><${Table} head=${['Order', 'Customer', '#Amount', 'Why', 'Paid']} empty="No refunds due." rows=${d.refunds.map(r => html`<tr>
+    <td class="mono small">${r.ref}<div class="muted">${r.payment_ref}</div></td><td>${r.name || '—'}<div class="muted small">+92 ${r.phone || '—'}</div></td><td class="r num">${pkr(r.total_pkr)}</td><td class="small">${r.note}</td><td class="small">${when(r.paid_at)}</td></tr>`)} /></${Card}>`}</${Screen}>`;
+}
+
 // ---------- support ----------
 function Support({ toast }) {
   const [status, setStatus] = useState('open');
@@ -351,6 +457,8 @@ const SETTING_HELP = {
   appraisal_free_cancel_hours: ['Free appraisal cancellation until', 'hours before the visit'], gift_making_pkr: ['Gift making charges', 'PKR, JSON: plain, themed, engraving'],
   gift_packaging_pkr: ['Gift packaging', 'PKR, JSON: standard, premium'], gift_delivery_pkr: ['Gift insured delivery', 'PKR'], gift_lead_days: ['Gift earliest delivery', 'days after ordering'],
   gift_cities: ['Gift delivery cities', 'JSON list'],
+  micro_usd: ['$1 gold: dollars per transaction', 'US$, converted at the live USD/PKR rate'], micro_max_units: ['$1 gold: most transactions per payment', 'count'],
+  micro_min_sell_g: ['$1 gold: smallest sale', 'grams'],
 };
 function Settings({ me, toast }) {
   const load = useLoad('/admin/settings');
@@ -376,7 +484,7 @@ function Audit() {
   const load = useLoad('/admin/audit?entity=' + entity);
   return html`<${Head} title="Audit log" sub="Every important action, by whom and when. Entries can’t be edited or deleted.">
       <select class="in" style="width:auto" value=${entity} onChange=${e => setEntity(e.target.value)} aria-label="Filter">
-        ${[['', 'Everything'], ['customer', 'Customers'], ['order', 'Orders'], ['redemption', 'Collections'], ['kyc', 'Identity checks'], ['appraisal', 'Appraisals'], ['gift', 'Gift orders'], ['support', 'Support'], ['staff', 'Staff'], ['setting', 'Settings'], ['dealer', 'Dealers'], ['product', 'Products'], ['paid', 'Payment mismatches'], ['error', 'Errors']].map(([v, l]) => html`<option value=${v}>${l}</option>`)}
+        ${[['', 'Everything'], ['customer', 'Customers'], ['order', 'Orders'], ['redemption', 'Collections'], ['kyc', 'Identity checks'], ['appraisal', 'Appraisals'], ['gift', 'Gift orders'], ['micro', '$1 gold'], ['lot', 'Tola lots'], ['support', 'Support'], ['staff', 'Staff'], ['setting', 'Settings'], ['dealer', 'Dealers'], ['product', 'Products'], ['paid', 'Payment mismatches'], ['error', 'Errors']].map(([v, l]) => html`<option value=${v}>${l}</option>`)}
       </select></${Head}>
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['When', 'Who', 'Action', 'Item', 'Details']} empty="No entries." rows=${d.entries.map(a => html`<tr>
       <td class="small" style="white-space:nowrap">${when(a.at)}</td><td class="small mono">${a.actor}</td><td><span class="tag">${a.action}</span></td>
@@ -434,9 +542,10 @@ function Admin() {
   if (me.mustChangePassword) return html`<${ChangePassword} forced=${true} onDone=${passwordChanged} onSignOut=${signOut} />`;
   // Every confirmation also refreshes the counts in the menu, so a handled item stops showing as waiting.
   const show = (text, err) => { showToast(text, err); if (!err) counts.reload(); };
-  const badge = { kyc: counts.data?.kyc_review, orders: counts.data?.flagged_orders, support: counts.data?.support_open, appraisals: counts.data?.appraisals_to_assign };
+  const badge = { kyc: counts.data?.kyc_review, orders: counts.data?.flagged_orders, support: counts.data?.support_open, appraisals: counts.data?.appraisals_to_assign,
+    micro: (counts.data?.lots_to_settle || 0) + (counts.data?.payouts_pending || 0) + (counts.data?.micro_refunds || 0) };
   const props = { me, toast: show };
-  const views = { overview: Overview, kyc: Kyc, orders: Orders, appraisals: Appraisals, gifts: Gifts, customers: Customers, support: Support, dealers: Dealers, products: Products, reconciliation: Reconciliation, settings: Settings, audit: Audit, staff: Staff };
+  const views = { overview: Overview, kyc: Kyc, orders: Orders, appraisals: Appraisals, gifts: Gifts, micro: Micro, customers: Customers, support: Support, dealers: Dealers, products: Products, reconciliation: Reconciliation, settings: Settings, audit: Audit, staff: Staff };
   const allowed = k => { const s = SECTIONS.find(x => x[0] === k); return s && (!s[2] || s[2] === me.role); };
   const View = section === 'customers' && id ? null : allowed(section) ? views[section] : Overview;   // ops can't open admin-only sections by URL
   const hidden = narrow && !menu;                              // the closed drawer can't be reached with Tab or a screen reader
@@ -452,7 +561,7 @@ function Admin() {
     ${pw && html`<${ChangePassword} onDone=${() => { setPw(false); show('Password changed. Other devices were signed out.'); }} onCancel=${() => setPw(false)} />`}
     <main class="main">
       <button class="btn sm sec menu" style="margin-bottom:12px" onClick=${() => setMenu(true)} aria-label="Open menu" aria-expanded=${menu} aria-controls="side">☰ Menu</button>
-      ${View ? html`<${View} ...${props} />` : html`<${Customer} id=${id} ...${props} />`}
+      ${View ? html`<${View} ...${props} id=${id} />` : html`<${Customer} id=${id} ...${props} />`}
     </main>
     <${Toast} toast=${toast} />
   </div>`;

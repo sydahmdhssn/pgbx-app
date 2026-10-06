@@ -889,6 +889,10 @@ function BuyList({ S, A }) {
     <div class="pad small muted" style="margin-top:12px;display:flex;align-items:center;gap:8px"><span class=${dotClass(S.rates, S.stale)}></span>${metalName(metal)} ${fmt(r.buyTola)} per tola · ${fmt(r.buyGram)} per gram</div>
     ${S.stale && html`<${StaleBanner}/>`}
     <${KycCta} S=${S} A=${A} />
+    ${metal === 'gold' && (q => html`<button class="card micro-cta" onClick=${() => A.openMicro()}>
+      <span class="ri gold"><${Icon} n="gem" c="sm"/></span>
+      <div class="rt"><b>Buy gold one dollar at a time</b><span>${q.unitPkr ? `$1 = ${fmt(q.unitPkr)} · ${fmtG(q.gramsPerUnit)} of gold today` : 'Start with $1. Sell any amount, any time.'}</span></div>
+      <${Icon} n="chev" c="sm chev"/></button>`)(microQuote(S))}
     <div class="group inset-thumb" style="margin-top:16px" key=${metal}>
       ${list.map((p, i) => html`<button class="row" onClick=${() => A.openProduct(p.id)}>
         <${Thumb} p=${p} shine=${0.9 + i * 0.22} />
@@ -897,6 +901,135 @@ function BuyList({ S, A }) {
       </button>`)}
     </div>
     <p class="foot">Prices include the PGBX premium${LIVE ? '' : ' (sample values)'}. You can mix gold and silver in one order. Larger bars are sold at PGBX offline only.</p>
+  </div>`;
+}
+
+/* ============================================================
+   $1 gold: buy one dollar at a time, sell any amount held. Every transaction has its own ID; PGBX clubs everyone's
+   transactions into 1-tola lots and keeps the list of IDs in each lot.
+   ============================================================ */
+const fmtG = g => (Number(g) || 0).toFixed(4) + ' g';
+const MICRO_STATUS = { credited: ['success', 'In your gold'], pending_payment: ['warning', 'Awaiting payment'], expired: ['', 'Not paid'], refund_due: ['danger', 'Refund due'],
+  pending_payout: ['warning', 'Payment on its way'], paid_out: ['success', 'Paid to your bank'] };
+// Today's $1 price: from the server in production; from the live rates (or a sample dollar rate) in the demo
+function microQuote(S) {
+  if (LIVE) return S.microQuote || {};
+  const usdPkr = (S.rates.usdPkr && S.rates.usdPkr.rate) || 280;
+  const r = rateOf(S.rates, 'gold'), unitPkr = Math.round(usdPkr);
+  return { usd: 1, usdPkr, unitPkr, buyGram: r.buyGram, sellGram: r.sellGram, gramsPerUnit: Math.round(unitPkr / r.buyGram * 1e6) / 1e6,
+    unitsPerTola: Math.ceil(TOLA / (unitPkr / r.buyGram)), maxUnits: 100, minSellGrams: 0.001, fresh: !S.stale };
+}
+function MicroScreen({ S, A }) {
+  const q = microQuote(S);
+  const [units, setUnits] = useState(1);
+  const m = S.micro || { grams: 0, txns: [] };
+  const max = q.maxUnits || 100;
+  const value = Math.floor(m.grams * (q.sellGram || 0));
+  const total = (q.unitPkr || 0) * units;
+  const ready = q.unitPkr && q.fresh && !S.stale && !S.offline;
+  const left = Math.max(0, DAY_LIMIT - S.spentToday);
+  const over = total > left;
+  return html`<div class="page has-actions">
+    <${TopBar} title="$1 gold" onBack=${A.back} />
+    <div class="scroll">
+      <div class="brand-card on-dark" style="margin-top:8px">
+        <div class="bc-label">Your $1 gold</div>
+        <div class="bc-value">${fmtG(m.grams)}</div>
+        <div class="bc-split"><div><span class="bc-label">Worth at today’s sell price</span><b>${fmt(value)}</b></div>
+          <div><span class="bc-label">Transactions</span><b>${m.txns.filter(t => t.side === 'buy' && t.status === 'credited').length} bought · ${m.txns.filter(t => t.side === 'sell').length} sold</b></div></div>
+      </div>
+      ${S.stale && html`<${StaleBanner}/>`}
+      <section class="sec"><div class="sec-h"><h3>Buy</h3>${q.usdPkr && html`<span class="aside">$1 = ${fmt(q.unitPkr)} · USD/PKR ${Number(q.usdPkr).toFixed(2)}</span>`}</div>
+        <div class="card">
+          <div class="small muted">Each dollar is a separate transaction with its own ID. ${q.gramsPerUnit ? `$1 buys ${fmtG(q.gramsPerUnit)} of 24K gold now; about ${q.unitsPerTola.toLocaleString('en-US')} make a tola.` : ''}</div>
+          <div class="between" style="margin-top:14px">
+            <div class="stepper" role="group" aria-label="Dollars of gold">
+              <button aria-label="One dollar less" disabled=${units <= 1} onClick=${() => setUnits(Math.max(1, units - 1))}><${Icon} n="minus" c="sm"/></button>
+              <output aria-live="polite">$${units}</output>
+              <button aria-label="One dollar more" disabled=${units >= max} onClick=${() => setUnits(Math.min(max, units + 1))}><${Icon} n="plus" c="sm"/></button>
+            </div>
+            <div style="text-align:right"><b>${fmt(total)}</b><div class="small muted">${fmtG((q.gramsPerUnit || 0) * units)}</div></div>
+          </div>
+          <div class="chips" style="margin-top:12px">${[1, 5, 10, 25, 50].filter(n => n <= max).map(n => html`<button class=${'chipb' + (units === n ? ' on' : '')} onClick=${() => setUnits(n)}>$${n}</button>`)}</div>
+          ${over && !S.guest && html`<div class="hint err">You can buy up to ${fmt(left)} more today.</div>`}
+        </div>
+      </section>
+      <${KycCta} S=${S} A=${A} />
+      ${m.grams > 0 && html`<div class="pad" style="margin-top:12px"><button class="btn btn-secondary" style="width:100%" onClick=${() => A.push({ name: 'micro-sell' })}><${Icon} n="scale" c="sm"/> Sell gold</button></div>`}
+      <section class="sec"><div class="sec-h"><h3>Transactions</h3>${m.txns.length > 0 && html`<span class="aside">Tap one to see its tola lot</span>`}</div>
+        ${m.txns.length === 0 ? html`<${Empty} icon="gem" title="No transactions yet" body="Every $1 you buy and every sale appears here with its transaction ID." />`
+          : html`<div class="group">${m.txns.slice(0, 100).map(t => html`<button class="row" onClick=${() => A.push({ name: 'micro-txn', ref: t.ref })}>
+            <span class=${'ri' + (t.side === 'buy' ? ' gold' : '')}><${Icon} n=${t.side === 'buy' ? 'plus' : 'minus'} c="sm"/></span>
+            <div class="rt"><b class="mono" style="font-size:13px">${t.ref}</b><span>${t.side === 'buy' ? 'Bought' : 'Sold'} ${fmtG(t.grams)} · ${fmt(t.amount)} · ${rel(t.ts, S.now)}</span></div>
+            <span class=${'tag ' + (MICRO_STATUS[t.status] || ['', ''])[0]}>${(MICRO_STATUS[t.status] || ['', t.status])[1]}</span></button>`)}</div>`}
+        ${m.txns.length > 100 && html`<p class="foot">Showing your latest 100 transactions. The full list is in your statement from PGBX.</p>`}
+      </section>
+      <p class="foot">Your gold is pooled with other customers’ in whole 1-tola bars PGBX buys and holds; each bar’s record lists every transaction ID in it. ${LIVE ? '' : 'Demo: transactions are simulated on this phone.'}</p>
+    </div>
+    <div class="actionbar"><button class="btn btn-primary" disabled=${!S.guest && (!ready || over || S.paying)} onClick=${() => A.microBuy(units)}>${S.guest ? 'Log in to buy' : `Buy $${units} of gold · ${fmt(total)}`}</button></div>
+  </div>`;
+}
+function MicroSell({ S, A }) {
+  const q = microQuote(S); const m = S.micro || { grams: 0 };
+  const [g, setG] = useState('');
+  const [iban, setIban] = useState(S.lastIban || '');
+  const grams = Number(g) || 0;
+  const amount = Math.floor(grams * (q.sellGram || 0));
+  const cleanIban = iban.replace(/\s/g, '').toUpperCase();
+  const ibanOk = /^PK\d{2}[A-Z]{4}[0-9A-Z]{16}$/.test(cleanIban);
+  const tooMuch = grams > m.grams + 1e-9, tooSmall = g !== '' && grams < (q.minSellGrams || 0.001);
+  const ok = grams > 0 && !tooMuch && !tooSmall && ibanOk && amount >= 1 && q.fresh && !S.stale && !S.offline && !S.paying;
+  const go = () => A.confirm({ title: `Sell ${fmtG(grams)} for ${fmt(amount)}?`, body: `PGBX pays ${fmt(amount)} to the account ending ${cleanIban.slice(-4)}. The price is today’s sell price of ${fmt(q.sellGram)} per gram.`,
+    confirm: 'Sell', onConfirm: () => A.microSell(Math.round(grams * 1e6) / 1e6, cleanIban) });
+  return html`<div class="page has-actions">
+    <${TopBar} title="Sell gold" onBack=${A.back} />
+    <div class="scroll"><div class="pad">
+      <p class="muted">You have <b>${fmtG(m.grams)}</b>. Sell any amount; the sale gets its own transaction ID.</p>
+      <label class="field"><span class="lbl">Grams to sell</span>
+        <input class=${'inp' + (tooMuch || tooSmall ? ' bad' : '')} inputmode="decimal" placeholder="0.0000" value=${g}
+          onInput=${e => setG(e.target.value.replace(/,/g, '.').replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1').slice(0, 10))} /></label>
+      <div class="chips" style="margin-top:8px">${[[0.25, '¼'], [0.5, '½'], [1, 'All']].map(([f, l]) => html`<button class="chipb" onClick=${() => setG(String(Math.floor(m.grams * f * 1e6) / 1e6))}>${l}</button>`)}</div>
+      ${tooMuch && html`<div class="hint err">That’s more than you have.</div>`}
+      ${tooSmall && html`<div class="hint err">The smallest sale is ${q.minSellGrams || 0.001} g.</div>`}
+      <div class="card" style="margin-top:16px"><div class="between"><span class="muted">You receive</span><b style="font-size:20px">${fmt(amount)}</b></div>
+        <div class="small muted" style="margin-top:4px">At ${q.sellGram ? fmt(q.sellGram) : '—'} per gram, today’s PGBX sell price</div></div>
+      <label class="field"><span class="lbl">Pay to (your bank IBAN)</span>
+        <input class=${'inp mono' + (iban && !ibanOk ? ' bad' : '')} autocapitalize="characters" placeholder="PK36 SCBL 0000 0011 2345 6702" value=${iban} onInput=${e => setIban(e.target.value.slice(0, 34))} /></label>
+      ${iban && !ibanOk && html`<div class="hint err">An IBAN is 24 characters and starts with PK.</div>`}
+      <p class="foot" style="padding:0">The account must be in your name. PGBX sends the payment by bank transfer, usually the same working day.</p>
+    </div></div>
+    <div class="actionbar"><button class="btn btn-primary" disabled=${!ok} onClick=${go}>${S.paying ? 'Selling…' : amount ? `Sell for ${fmt(amount)}` : 'Sell'}</button></div>
+  </div>`;
+}
+function MicroTxn({ S, A, ref_ }) {
+  const t = ((S.micro && S.micro.txns) || []).find(x => x.ref === ref_);
+  if (!t) return html`<div class="page"><${TopBar} title="Transaction" onBack=${A.back} /><div class="scroll"><${Empty} icon="gem" title="Transaction not found" body="It may still be loading. Try again in a moment." /></div></div>`;
+  const [tone, label] = MICRO_STATUS[t.status] || ['', t.status];
+  const copy = () => { try { navigator.clipboard.writeText(t.ref).then(() => A.toast('Transaction ID copied')); } catch (e) { } };
+  return html`<div class="page">
+    <${TopBar} title=${t.side === 'buy' ? 'Gold bought' : 'Gold sold'} onBack=${A.back} />
+    <div class="scroll"><div class="pad">
+      <div class="card" style="text-align:center;padding:20px 16px">
+        <span class=${'tag ' + tone}>${label}</span>
+        <div class="small muted" style="margin-top:12px">Transaction ID</div>
+        <div class="mono" style="font-size:18px;font-weight:600;margin-top:4px;overflow-wrap:anywhere">${t.ref}</div>
+        <button class="btn btn-tertiary btn-sm" style="margin-top:8px" onClick=${copy}><${Icon} n="share" c="sm"/> Copy ID</button>
+      </div>
+      <div class="card" style="margin-top:12px">
+        <div class="kv"><span>${t.side === 'buy' ? 'Gold bought' : 'Gold sold'}</span><b>${fmtG(t.grams)}</b></div>
+        <div class="kv"><span>${t.side === 'buy' ? 'Paid' : 'You receive'}</span><b>${fmt(t.amount)}${t.usd ? ` ($${t.usd})` : ''}</b></div>
+        <div class="kv"><span>Price per gram</span><b>${fmt(t.price)}</b></div>
+        <div class="kv"><span>When</span><b>${dt(t.ts)}</b></div>
+        ${t.orderRef && html`<div class="kv"><span>Payment</span><b class="mono" style="font-size:12px">${t.orderRef}</b></div>`}
+        ${t.payoutTo && html`<div class="kv"><span>Paid to</span><b>${t.payoutTo}</b></div>`}
+      </div>
+      <section class="sec" style="padding:0"><div class="sec-h" style="padding:0"><h3>Tola lot</h3></div>
+        ${t.lots && t.lots.length ? html`<div class="group">${t.lots.map(l => html`<div class="row"><span class="ri gold"><${Icon} n="box" c="sm"/></span>
+            <div class="rt"><b class="mono" style="font-size:13px">${l.ref}</b><span>${fmtG(l.grams)} of this transaction · ${l.status === 'filling' ? 'lot still filling' : l.status === 'full' ? 'lot complete: 1 tola' : 'tola bar ' + (t.side === 'buy' ? 'bought' : 'sold')}</span></div></div>`)}</div>
+          <p class="foot" style="padding:0">${t.side === 'buy' ? 'PGBX clubs paid $1 transactions from all customers into 1-tola lots and buys a tola bar for each full lot.' : 'Sales are clubbed into 1-tola lots the same way.'}${t.lots.length > 1 ? ' This one crossed the end of a lot, so it is split between two.' : ''}</p>`
+          : html`<p class="small muted">${t.status === 'pending_payment' ? 'Added to a lot once your payment is confirmed.' : 'Not part of a lot (not paid).'}</p>`}
+      </section>
+    </div></div>
   </div>`;
 }
 
@@ -1029,6 +1162,7 @@ function PayScreen({ S, A }) {
 function Processing({ fail, kind }) {
   const steps = kind === 'appraisal' ? [['ok', 'Payment confirmed'], ['ok', 'Booking your visit'], ['ok', 'Sending your confirmation']]
     : kind === 'gift' ? [['ok', 'Payment confirmed'], ['ok', 'Sending your design to the refinery'], ['ok', 'Issuing your receipt']]
+    : kind === 'micro' ? [['ok', 'Payment confirmed'], ['ok', 'Adding gold to your account'], ['ok', 'Placing it in a tola lot']]
     : fail
     ? [['ok', 'Payment received'], ['bad', 'Couldn’t add the metal to your wallet'], ['ok', 'Retrying (1 of 3)'], ['ok', 'Retrying (2 of 3)'], ['ok', 'Retrying (3 of 3)'], ['flag', 'Passed to PGBX operations']]
     : [['ok', 'Payment confirmed'], ['ok', 'Adding metal to your wallet'], ['ok', 'Issuing your receipt']];
@@ -1269,6 +1403,10 @@ function WalletScreen({ S, A }) {
       </${Demo}>
     </section>`}
 
+    ${(S.micro.grams > 0 || S.micro.txns.length > 0) && html`<section class="sec"><div class="group"><button class="row" onClick=${() => A.openMicro()}>
+      <span class="ri gold"><${Icon} n="gem" c="sm"/></span>
+      <div class="rt"><b>$1 gold</b><span>${fmtG(S.micro.grams)} · in pooled 1-tola bars</span></div>
+      <div class="rv"><b>${fmt(wv.micro)}</b><${Icon} n="chev" c="sm chev"/></div></button></div></section>`}
     <section class="sec">
       <div class="sec-h"><h3>Holdings</h3>${held.length > 0 && (n => html`<span class="aside">${n} bar${n === 1 ? '' : 's'}</span>`)(held.reduce((a, p) => a + holdings[p.id], 0))}</div>
       ${held.length === 0 ? html`<${Empty} icon="wallet" title="No holdings yet" body="Bars you buy appear here, backed by metal PGBX holds for you." action="Buy your first bar" onAction=${() => A.tab('buy')} />` :
@@ -1662,6 +1800,8 @@ function CloseAccount({ S, A }) {
     active > 0 && { t: `${active} collection${active > 1 ? ' is' : 's are'} still open`, d: 'Collect or cancel them first.', act: 'View collections', go: () => A.push({ name: 'collect' }) },
     services > 0 && { t: `${services} service booking${services > 1 ? 's are' : ' is'} still open`, d: 'Wait until your appraisal visit or gift delivery is done, or cancel it.', act: 'View services', go: () => A.tab('services') },
     pending > 0 && { t: `${pending} order${pending > 1 ? ' is' : 's are'} still being completed`, d: 'Wait until PGBX operations completes it.', act: 'View wallet', go: () => A.tab('wallet') },
+    S.micro.grams > 0 && { t: `You still have ${fmtG(S.micro.grams)} of $1 gold`, d: 'Sell it first; PGBX pays it to your bank.', act: 'Sell gold', go: () => A.push({ name: 'micro-sell' }) },
+    S.micro.txns.some(t => t.status === 'pending_payout') && { t: 'A payment for gold you sold is still on its way', d: 'Wait until PGBX has paid it to your bank.', act: 'View $1 gold', go: () => A.openMicro() },
   ].filter(Boolean);
   const close = () => A.confirm({ title: 'Close your PGBX account?', body: 'You won’t be able to log in or buy with this account again. Your personal details are removed from this phone. This can’t be undone.', confirm: 'Close account', cancel: 'Keep my account', danger: true, onConfirm: A.closeAccount });
   return html`<div class="page">
@@ -1827,7 +1967,7 @@ const SVC_SAMPLE = {
   },
 };
 // Screens a notification link may open
-const LINK_NAMES = ['receipt', 'code', 'appraisal', 'gift', 'history', 'product', 'wallet', 'statement'];
+const LINK_NAMES = ['receipt', 'code', 'appraisal', 'gift', 'history', 'product', 'wallet', 'statement', 'micro'];
 const KARATS_ALL = { gold: ['24K', '22K', '21K', '20K', '18K', '14K'], silver: ['999', '925', '900', '800'] };
 const KARAT_NAME = { '999': '999 fine', '925': '925 sterling', '900': '900', '800': '800' };
 const DESIGNS = [['plain', 'Plain', ''], ['eid', 'Eid Mubarak', 'EID MUBARAK'], ['wedding', 'Wedding', 'SHAADI MUBARAK'], ['birthday', 'Birthday', 'HAPPY BIRTHDAY'],
@@ -1898,6 +2038,7 @@ function ServicesScreen({ S, A }) {
     <section class="sec">
       <div class="sec-h"><h3>PGBX services</h3></div>
       <div class="group">
+        ${Svc({ icon: 'gem', title: '$1 gold', sub: (q => (q.unitPkr ? `Buy gold one dollar at a time · $1 = ${fmt(q.unitPkr)}` : 'Buy gold one dollar at a time'))(microQuote(S)), onClick: () => A.openMicro(), badge: S.micro.grams > 0 ? fmtG(S.micro.grams) : '' })}
         ${Svc({ icon: 'calc', title: 'Jewellery worth', sub: 'Buy-back estimate by karat and weight', onClick: () => A.push({ name: 'worth' }) })}
         ${Svc({ icon: 'home', title: 'Doorstep appraisal', sub: `A PGBX goldsmith tests your pieces at home · ${svc ? fmt(svc.appraisal.feePkr) : '…'}`, onClick: () => A.startAppraisal(), badge: activeA.length ? `${activeA.length} booked` : '' })}
         ${Svc({ icon: 'gift', title: 'Gift gold and silver', sub: 'Bars and coins made to order, delivered to loved ones', onClick: () => A.startGift(), badge: activeG.length ? `${activeG.length} on the way` : '' })}
@@ -2195,13 +2336,13 @@ function GiftDetail({ S, A, id }) {
    ============================================================ */
 const TABS = [['rates', 'Rates'], ['buy', 'Buy'], ['services', 'Services'], ['wallet', 'Wallet'], ['account', 'Account']];
 const OPEN_TABS = ['rates', 'services'];          // guests can use these (the jewellery worth calculator is free for everyone)
-const GUEST_PUSH = ['worth'];
+const GUEST_PUSH = ['worth', 'micro'];
 const GUEST_REASON = { buy: 'Log in to buy gold and silver.', wallet: 'Log in to see your wallet.', account: 'Log in to manage your account.' };
 
 // Prototype data is kept in this browser so a refresh does not wipe the demo. Sample data only; nothing leaves the device.
 const STORE_KEY = LIVE ? 'pgbx-device-v1' : 'pgbx-demo-v1';
 const KEEP = LIVE ? ['worth', 'cart', 'pin', 'pinFails', 'pinLockUntil', 'phone', 'biometric', 'notifPrefs', 'tips', 'pinSet', 'loggedIn'] : ['ledger', 'orders', 'redemptions', 'dealerStock', 'cart', 'profile', 'kyc', 'pin', 'pinFails', 'pinLockUntil', 'phone',
-  'notifications', 'notifPrefs', 'alerts', 'biometric', 'tab', 'buyMetal', 'loggedIn', 'pinSet', 'tips', 'appraisals', 'giftOrders', 'worth'];
+  'notifications', 'notifPrefs', 'alerts', 'biometric', 'tab', 'buyMetal', 'loggedIn', 'pinSet', 'tips', 'appraisals', 'giftOrders', 'worth', 'micro'];
 function loadSaved() { try { const d = JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); return d && d.v === 1 && d.s && typeof d.s === 'object' ? sanitizeSaved(d.s) : null; } catch (e) { return null; } }
 
 // Saved data is untrusted (it may be damaged or from an older app version): keep only well-formed values,
@@ -2243,6 +2384,8 @@ function sanitizeSaved(s) {
   const metalOk = m => m === 'gold' || m === 'silver';
   set('appraisals', list(s.appraisals, a => str(a.id) && str(a.ref) && /^\d{4}-\d{2}-\d{2}$/.test(a.date) && str(a.slot) && Array.isArray(a.items) && a.items.every(i => isObj(i) && metalOk(i.metal)) && str(a.status) && str(a.visitCode) && str(a.city) && str(a.area)));
   set('giftOrders', list(s.giftOrders, g => str(g.id) && str(g.ref) && str(g.item) && isObj(g.recipient) && str(g.recipient.name) && str(g.recipient.city) && str(g.status) && num(g.total) && str(g.deliverBy)));
+  if (isObj(s.micro) && num(s.micro.grams) && s.micro.grams >= 0 && Array.isArray(s.micro.txns) && isObj(s.micro.lots) && isObj(s.micro.lots.buy) && isObj(s.micro.lots.sell))
+    out.micro = { grams: s.micro.grams, lots: s.micro.lots, txns: s.micro.txns.filter(t => isObj(t) && str(t.ref) && (t.side === 'buy' || t.side === 'sell') && num(t.grams) && num(t.amount) && num(t.ts) && str(t.status) && Array.isArray(t.lots)) };
   set('worth', list(s.worth, w => str(w.id) && metalOk(w.metal) && str(w.karat) && KARATS_ALL[w.metal].includes(w.karat)));
   if (s.tab === 'redeem') out.tab = 'services';                       // the Redeem tab moved into Services
   else if (TABS.some(t => t[0] === s.tab)) out.tab = s.tab;
@@ -2258,9 +2401,9 @@ const SAVED = loadSaved();
 const CARRY_NOTE = (() => { try { const n = sessionStorage.getItem('pgbx-note'); sessionStorage.removeItem('pgbx-note'); return n || ''; } catch (e) { return ''; } })();
 
 // Account data. Cleared on logout and session end; hidden while browsing as a guest.
-const ACCOUNT_BLANK = LIVE ? { ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], banner: null, apprDraft: null, giftDraft: null,
+const ACCOUNT_BLANK = LIVE ? { ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], banner: null, apprDraft: null, giftDraft: null, micro: { grams: 0, txns: [], lots: null },
   profile: { name: '', cnic: '', dob: '', email: '', address: '' }, kyc: { status: 'none', at: null }, checkout: [], lock: null } : {};
-const GUEST_VIEW = { ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], banner: null };
+const GUEST_VIEW = { ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], banner: null, micro: { grams: 0, txns: [], lots: { buy: { no: 1, filled: 0 }, sell: { no: 1, filled: 0 } } } };
 const apprDefaults = s => ({ items: [{ metal: 'gold', karat: '', approx_g: 0, note: '' }], date: '', slot: '', city: (s.svc && s.svc.appraisal.cities[0]) || 'Karachi', area: '', address: (s.profile && s.profile.address) || '', phone: s.phone || '', notes: '' });
 const giftDefaults = s => ({ metal: 'gold', item: 'gg-1g', shape: 'coin', design: 'eid', engraving: '', message: '', packaging: 'premium', name: '', phone: '', city: 'Karachi', address: '',
   deliverBy: ymd(Date.now() + (((s.svc && s.svc.gift.leadDays) || 5) + 2) * 86400e3) });
@@ -2281,6 +2424,8 @@ function App() {
     pin: LIVE ? null : PIN_DEFAULT, pinFails: 0, pinLockUntil: 0,
     cart: [], checkout: [], checkoutFrom: 'now', simCreditFail: false,
     appraisals: [], giftOrders: [], worth: [], apprDraft: null, giftDraft: null, svc: LIVE ? null : SVC_SAMPLE,
+    // $1 gold. Demo: the pool already holds other customers' gold, so the open lot isn't empty.
+    micro: { grams: 0, txns: [], lots: { buy: { no: 3, filled: 7.912 }, sell: { no: 1, filled: 2.406 } } }, microQuote: null,
     notifications: [], banner: null, notifPrefs: { push: true, sms: true, email: false, alerts: true },
     alerts: [], history: {}, dialog: null, offline: typeof navigator !== 'undefined' && navigator.onLine === false,
     otpCfg: { checked: false, configured: false, channels: ['sms'] },
@@ -2438,6 +2583,14 @@ function App() {
     else set(s => ({ lock: lockFor(s, needPids) }));
   }, [needKey, top && top.name, st.lock && Object.keys(st.lock.prices).join(',')]);
 
+  // $1 gold: refresh the server's quote every 20 s while its screens are open
+  const microOpen = !!top && ['micro', 'micro-sell'].includes(top.name);
+  useEffect(() => {
+    if (!LIVE || !microOpen) return;
+    const get = () => Live.microQuote().then(q => set({ microQuote: q }), () => {});
+    get(); const t = setInterval(get, 20000); return () => clearInterval(t);
+  }, [microOpen]);
+
   // FR-A4: auto-lock after 2 minutes of inactivity
   useEffect(() => {
     if (phase === 'app' && !st.guest && !(top && ['processing', 'kyc'].includes(top.name)) && now - lastActive.current > AUTOLOCK_MS) {
@@ -2471,10 +2624,13 @@ function App() {
     return Math.max(0, stock - held);
   };
   const walletValue = (() => { let gold = 0, silver = 0, goldG = 0, silverG = 0; PRODUCTS.forEach(p => { const n = holdings[p.id] || 0; if (!n) return; const v = n * p.grams * rateOf(st.rates, p.metal).sellGram;
-    if (p.metal === 'gold') { gold += v; goldG += n * p.grams; } else { silver += v; silverG += n * p.grams; } }); return { gold, silver, goldG, silverG, total: gold + silver }; })();
+    if (p.metal === 'gold') { gold += v; goldG += n * p.grams; } else { silver += v; silverG += n * p.grams; } });
+    const mg = st.guest ? 0 : st.micro.grams, mv = Math.floor(mg * rateOf(st.rates, 'gold').sellGram);   // $1 gold counts as gold
+    return { gold: gold + mv, silver, goldG: goldG + mg, silverG, total: gold + silver + mv, microG: mg, micro: mv }; })();
   // Same rule as the server: today's orders that are paid or still payable, plus gift orders (failed, expired and refunded ones don't count)
   const spentToday = st.orders.filter(o => sameDay(o.ts, now) && (!LIVE || ['pending_payment', 'credited', 'flagged'].includes(o.status))).reduce((a, o) => a + (Number(o.total) || 0), 0)
-    + st.giftOrders.filter(g => sameDay(g.createdAt, now) && !['cancelled', 'expired'].includes(g.status)).reduce((a, g) => a + (Number(g.total) || 0), 0);
+    + st.giftOrders.filter(g => sameDay(g.createdAt, now) && !['cancelled', 'expired'].includes(g.status)).reduce((a, g) => a + (Number(g.total) || 0), 0)
+    + st.micro.txns.filter(t => t.side === 'buy' && sameDay(t.ts, now) && ['credited', 'pending_payment'].includes(t.status)).reduce((a, t) => a + (Number(t.amount) || 0), 0);
   const unread = st.notifications.filter(n => !n.read).length;
 
   const tabIndex = t => TABS.findIndex(x => x[0] === t);
@@ -2539,6 +2695,67 @@ function App() {
       if (st.sending) return;                                    // one report per tap
       set({ sending: true });
       Live.report(ref.startsWith('o:') ? 'order' : ref.startsWith('r:') ? 'collection' : 'general', `${about}\n\n${text.trim()}`).then(() => { set({ sending: false }); done(); }, e => { set({ sending: false }); liveFail(e); });
+    },
+    // ---------- $1 gold ----------
+    openMicro: () => { A.push({ name: 'micro' }); if (LIVE) Live.microQuote().then(q => set({ microQuote: q }), () => {}); },
+    microBuy: units => {
+      if (st.guest) { A.login('Log in to buy $1 gold.', { push: { name: 'micro' } }); return; }
+      if (st.kyc.status !== 'verified') { A.push({ name: 'kyc' }); return; }
+      const q = microQuote(st); const total = (q.unitPkr || 0) * units;
+      if (st.paying || st.offline || !q.unitPkr) return;
+      if (spentToday + total > DAY_LIMIT) { toast(`You can buy up to ${fmt(Math.max(0, DAY_LIMIT - spentToday))} more today.`); return; }
+      const done = g => toast(`Gold added: $${units} · ${fmtG(g)}`);
+      set(s => ({ paying: true, navDir: 'fade', stack: [...s.stack, { name: 'processing', kind: 'micro' }] }));
+      const back = s => ({ paying: false, navDir: 'fade', stack: s.stack.filter(r => r.name !== 'processing') });
+      if (LIVE) {
+        Live.microBuy(units, 'K' + uid() + uid()).then(async () => { await sync(); set(back); done(q.gramsPerUnit * units); Live.microQuote().then(x => set({ microQuote: x }), () => {}); },
+          e => { set(back); liveFail(e); });
+        return;
+      }
+      setTimeout(() => set(s => {
+        const ts = Date.now(), d = ymd(ts).slice(2).replace(/-/g, ''), orderRef = `PGBX-MO-${d}-${uid()}${uid().slice(0, 2)}`;
+        const lots = { ...s.micro.lots, buy: { ...s.micro.lots.buy } }; const txns = [];
+        for (let i = 0; i < units; i++) {
+          let left = q.gramsPerUnit; const parts = [];
+          while (left > 1e-9) {                                   // fill the open lot; the transaction that completes it is split
+            const take = Math.min(left, TOLA - lots.buy.filled);
+            lots.buy.filled = Math.round((lots.buy.filled + take) * 1e6) / 1e6; left = Math.round((left - take) * 1e6) / 1e6;
+            parts.push({ ref: 'PGBX-T-' + String(lots.buy.no).padStart(6, '0'), grams: Math.round(take * 1e6) / 1e6, status: lots.buy.filled >= TOLA ? 'full' : 'filling' });
+            if (lots.buy.filled >= TOLA) lots.buy = { no: lots.buy.no + 1, filled: 0 };
+          }
+          txns.push({ ref: `PGBX-M-${d}-${uid()}${uid().slice(0, 2)}`, side: 'buy', grams: q.gramsPerUnit, amount: q.unitPkr, price: q.buyGram, usd: 1, status: 'credited', ts: ts + i, orderRef, lots: parts });
+        }
+        return { ...back(s), micro: { grams: Math.round((s.micro.grams + q.gramsPerUnit * units) * 1e6) / 1e6, lots, txns: [...txns.reverse(), ...s.micro.txns].slice(0, 500) } };
+      }), 1500);
+      setTimeout(() => { done(q.gramsPerUnit * units); notify('purchase', 'Gold added', `$${units} of gold (${fmtG(q.gramsPerUnit * units)}) for ${fmt(total)}`, true, { name: 'micro' }); }, 1550);
+    },
+    microSell: (grams, iban) => {
+      if (st.paying || st.offline) return;
+      const q = microQuote(st);
+      if (LIVE) {
+        set({ paying: true });
+        Live.microSell(grams, iban, 'S' + uid() + uid()).then(async t => {
+          await sync(); set(s => ({ paying: false, lastIban: iban, navDir: 'fwd', stack: [...s.stack.filter(r => r.name !== 'micro-sell'), { name: 'micro-txn', ref: t.ref }] }));
+          toast(`Sold ${fmtG(grams)} · ${fmt(t.amount)} on its way to your bank`);
+        }, e => { set({ paying: false }); liveFail(e); });
+        return;
+      }
+      if (grams > st.micro.grams + 1e-9) { toast('That’s more than you have.'); return; }
+      const amount = Math.floor(grams * q.sellGram), ts = Date.now(), ref = `PGBX-MS-${ymd(ts).slice(2).replace(/-/g, '')}-${uid()}${uid().slice(0, 2)}`;
+      set(s => {
+        const lots = { ...s.micro.lots, sell: { ...s.micro.lots.sell } }; const parts = []; let left = grams;
+        while (left > 1e-9) {
+          const take = Math.min(left, TOLA - lots.sell.filled);
+          lots.sell.filled = Math.round((lots.sell.filled + take) * 1e6) / 1e6; left = Math.round((left - take) * 1e6) / 1e6;
+          parts.push({ ref: 'PGBX-TS-' + String(lots.sell.no).padStart(6, '0'), grams: Math.round(take * 1e6) / 1e6, status: lots.sell.filled >= TOLA ? 'full' : 'filling' });
+          if (lots.sell.filled >= TOLA) lots.sell = { no: lots.sell.no + 1, filled: 0 };
+        }
+        const t = { ref, side: 'sell', grams, amount, price: q.sellGram, status: 'pending_payout', ts, payoutTo: '•••• ' + iban.slice(-4), lots: parts };
+        return { lastIban: iban, micro: { grams: Math.max(0, Math.round((s.micro.grams - grams) * 1e6) / 1e6), lots, txns: [t, ...s.micro.txns].slice(0, 500) },
+          navDir: 'fwd', stack: [...s.stack.filter(r => r.name !== 'micro-sell'), { name: 'micro-txn', ref }] };
+      });
+      notify('purchase', 'Gold sold', `${fmtG(grams)} for ${fmt(amount)} · ${ref}. PGBX will pay it to your bank account ending ${iban.slice(-4)}.`, true, { name: 'micro' });
+      toast(`Sold ${fmtG(grams)} · ${fmt(amount)} on its way to your bank`);
     },
     // ---------- services ----------
     startAppraisal: items => {
@@ -2821,6 +3038,9 @@ function App() {
     else if (n === 'code') content = html`<${CodeScreen} S=${S} A=${A} rid=${top.rid}/>`;
     else if (n === 'collect') content = html`<${RedeemScreen} S=${S} A=${A} pushed=${true}/>`;
     else if (n === 'worth') content = html`<${WorthScreen} S=${S} A=${A}/>`;
+    else if (n === 'micro') content = html`<${MicroScreen} S=${S} A=${A}/>`;
+    else if (n === 'micro-sell') content = html`<${MicroSell} S=${S} A=${A}/>`;
+    else if (n === 'micro-txn') content = html`<${MicroTxn} S=${S} A=${A} ref_=${top.ref}/>`;
     else if (n === 'appraisal-book') content = html`<${AppraisalBook} S=${S} A=${A}/>`;
     else if (n === 'appraisal') content = html`<${AppraisalDetail} S=${S} A=${A} id=${top.id}/>`;
     else if (n === 'gift-new') content = html`<${GiftNew} S=${S} A=${A}/>`;
@@ -2848,7 +3068,7 @@ function App() {
     const m = document.querySelector('meta[name="theme-color"]'); if (m) m.setAttribute('content', c);
   }, [darkTop]);
   // Checkout and verification are focused tasks: the tab bar steps aside for their sticky actions.
-  const hideTabs = top && ['product', 'cart', 'pay', 'processing', 'receipt', 'kyc', 'changepin', 'worth', 'appraisal-book', 'gift-new'].includes(top.name);
+  const hideTabs = top && ['product', 'cart', 'pay', 'processing', 'receipt', 'kyc', 'changepin', 'worth', 'appraisal-book', 'gift-new', 'micro', 'micro-sell', 'micro-txn'].includes(top.name);
   const enterCls = st.navDir === 'fwd' ? 'enter-fwd' : st.navDir === 'back' ? 'enter-back' : 'enter';
 
   // System back (Android back button, iOS edge swipe, browser back) walks back through the app's screens.

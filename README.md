@@ -218,6 +218,30 @@ so they hold across server instances. Every staff action and every look at a cus
    once. An administrator can reset someone's password and authenticator in Staff → Reset sign-in.
 5. In the admin panel: enter dealers and their stock, the real premiums, limits and spread (Settings), and record a vault count.
 
+## $1 gold (buy one dollar at a time, sell any amount)
+
+- **Buying:** each purchase is US$1 converted at the live USD/PKR rate (about Rs 280), buying gold in grams at PGBX's
+  buy price at that moment. A customer can buy as many as they like in one payment (up to `micro_max_units`, default
+  100), within the daily limit. Every dollar is its own transaction with its own ID, e.g. `PGBX-M-261006-1A2B3C4D`.
+  The payment groups them under an order ID (`PGBX-MO-…`). Identity verification is required.
+- **Tola lots:** paid transactions from all customers are clubbed, in order, into 1-tola lots (`PGBX-T-000001`,
+  `-000002`, …). A transaction that crosses the end of a lot is split between that lot and the next, so every full lot
+  is exactly 11.664 g. Each lot keeps the list of transaction IDs in it and the grams each contributed. At today's
+  prices a tola takes about 1,550 transactions.
+- **Selling:** any amount the customer holds (from 0.001 g) at PGBX's sell price, paid to the customer's IBAN. Each
+  sale gets its own ID (`PGBX-MS-…`) and is clubbed into 1-tola sell lots (`PGBX-TS-…`) the same way.
+- **Operations (admin panel → $1 gold & tola lots):**
+  - Search any transaction, order or lot ID.
+  - Open a lot to see every transaction ID in it, or download the full list.
+  - Record the tola bar bought for each full buy lot (with its serial) and each tola sold for a full sell lot.
+  - Send payouts for sales, and see payments to refund.
+- **Rules in the database** (`supabase/migrations/20261007000000_dollar_gold.sql`):
+  - Late, wrong or repeated payments are never credited twice. They are marked for refund instead.
+  - A customer can't sell more than they hold.
+  - Purchases count toward the daily limit.
+  - Accounts with $1 gold, or a payout still owed, can't be closed.
+  - Prices pause (`RATES_STALE`) if the dollar rate is missing or jumps by more than 10%.
+
 ## Services (jewellery worth, doorstep appraisal, gift bullion)
 
 The **Services** tab replaces the old Redeem tab: collecting bars now sits inside it and in Wallet.

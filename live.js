@@ -99,8 +99,8 @@ const KYC = { none: 'none', pending: 'pending', review: 'pending', verified: 've
 
 // Everything the signed-in screens show, in one round of requests
 export async function loadAll() {
-  const [me, orders, ledger, reds, notes, alerts, apprs, gifts] = await Promise.all([
-    api('/me'), api('/orders'), api('/ledger'), api('/redemptions'), api('/notifications'), api('/alerts'), api('/appraisals'), api('/gifts'),
+  const [me, orders, ledger, reds, notes, alerts, apprs, gifts, micro] = await Promise.all([
+    api('/me'), api('/orders'), api('/ledger'), api('/redemptions'), api('/notifications'), api('/alerts'), api('/appraisals'), api('/gifts'), api('/micro'),
   ]);
   const redemptions = reds.redemptions.map(redemption);
   return {
@@ -114,8 +114,20 @@ export async function loadAll() {
     alerts: alerts.alerts.map(alert),
     appraisals: apprs.appraisals.map(appraisal),
     giftOrders: gifts.gifts.map(gift),
+    micro: { grams: Number(micro.gold.grams) || 0, txns: micro.transactions.map(microTxn) },
   };
 }
+
+// ---------- $1 gold ----------
+const microTxn = t => ({ ref: t.ref, side: t.side, grams: Number(t.grams), amount: t.amount_pkr, price: t.price_gram, usd: t.usd, status: t.status, ts: ts(t.created_at),
+  orderRef: t.order_ref || null, payoutTo: t.payout_to || null, lots: (t.lots || []).map(l => ({ ref: l.ref, grams: Number(l.grams), status: l.status })) });
+export const microQuote = () => api('/micro/quote').then(d => ({ ...d.quote, at: ts(d.quote.at) }));
+export async function microBuy(units, key) {
+  const r = await api('/micro/buy', { method: 'POST', body: { units, idempotencyKey: key } });
+  await payService('micro', r.order, r.payment);
+  return r.order;
+}
+export const microSell = (grams, iban, key) => api('/micro/sell', { method: 'POST', body: { grams, iban, idempotencyKey: key } }).then(d => microTxn(d.transaction));
 
 // ---------- services ----------
 const appraisal = a => ({ id: a.id, ref: a.ref, createdAt: ts(a.created_at), date: a.date, slot: a.slot, city: a.city, area: a.area, address: a.address, phone: a.phone,

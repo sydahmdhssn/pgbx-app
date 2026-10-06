@@ -59,6 +59,12 @@ const MESSAGES = {
   BAD_RECIPIENT: [400, 'Enter the recipient’s name, mobile number and full address.'],
   TRACKING_REQUIRED: [400, 'Enter the courier tracking number.'],
   AMOUNT_MISMATCH: [409, 'The amount paid doesn’t match. PGBX operations will check it.'],
+  // $1 gold
+  BAD_GRAMS: [400, 'Enter how many grams to sell (at least 0.001 g).'],
+  INSUFFICIENT_GOLD: [409, 'You don’t have that much gold. Check your balance and try again.'],
+  BAD_IBAN: [400, 'Enter your bank IBAN: 24 characters starting with PK, for example PK36SCBL0000001123456702.'],
+  LOT_NOT_FULL: [409, 'This lot isn’t a full tola yet.'],
+  BAD_REF: [400, 'Enter the bank transfer reference.'],
 };
 
 class HttpError extends Error {
@@ -117,7 +123,17 @@ const MAX_JUMP = 0.10;
 const plausible = (d, last) => !last || last.age > 3600 || [['gold', last.gold_buy_tola], ['silver', last.silver_buy_tola]]
   .every(([k, prev]) => Math.abs(d.metals[k].buyTola / Number(prev) - 1) <= MAX_JUMP);
 const validRates = d => d && d.ok && ['gold', 'silver'].every(k => d.metals?.[k] && d.metals[k].buyTola > 0 && d.metals[k].sellTola > 0 && d.metals[k].sellTola <= d.metals[k].buyTola);
-const recordRates = (db, d) => db.one(`select fn_record_rates($1, $2, $3, $4, $5) as id`, [d.metals.gold.buyTola, d.metals.gold.sellTola, d.metals.silver.buyTola, d.metals.silver.sellTola, d.metals.gold.source || 'live']);
+// Each snapshot also keeps the USD/PKR rate, which prices $1 gold. A missing or implausible dollar rate is left out,
+// so $1 purchases pause (RATES_STALE) instead of using a wrong rate.
+async function recordRates(db, d) {
+  const r = await db.one(`select fn_record_rates($1, $2, $3, $4, $5) as id`, [d.metals.gold.buyTola, d.metals.gold.sellTola, d.metals.silver.buyTola, d.metals.silver.sellTola, d.metals.gold.source || 'live']);
+  const usd = Number(d.usdPkr && d.usdPkr.rate);
+  if (usd > 100 && usd < 1000) {
+    const prev = await db.one(`select usd_pkr from rate_snapshots where usd_pkr is not null and fetched_at > now() - interval '1 day' order by id desc limit 1`);
+    if (!prev || Math.abs(usd / Number(prev.usd_pkr) - 1) <= MAX_JUMP) await db.query(`update rate_snapshots set usd_pkr = $2 where id = $1`, [r.id, usd]);
+  }
+  return r;
+}
 
 // The live sources are called at most every 5 s per server instance, however many requests arrive.
 const rateCache = new Map();
@@ -184,7 +200,7 @@ function sameOrigin(req) {
 }
 
 // ---------- public ----------
-const PUBLIC_SETTINGS = ['max_units_per_order', 'daily_limit_pkr', 'min_purchase_pkr', 'price_lock_seconds', 'rate_stale_seconds', 'redemption_valid_hours', 'redemption_fee_pkr', 'order_payment_minutes'];
+const PUBLIC_SETTINGS = ['max_units_per_order', 'daily_limit_pkr', 'min_purchase_pkr', 'price_lock_seconds', 'rate_stale_seconds', 'redemption_valid_hours', 'redemption_fee_pkr', 'order_payment_minutes', 'micro_usd', 'micro_max_units', 'micro_min_sell_g'];
 route('GET', '/config', {}, async ({ db }) => ({
   live: !!db,
   otp: { mode: otp.mode, channels: otp.channels() },
@@ -281,7 +297,9 @@ async function walletOf(db, customerId) {
     from v_holdings h join products p on p.id = h.product_id where h.customer_id = $1 order by p.sort`, [customerId]);
   const sell = m => (snap ? (m === 'gold' ? snap.gold_sell_tola : snap.silver_sell_tola) / TOLA : 0);
   const holdings = rows.map(r => ({ ...r, value_pkr: Math.round(r.units * r.grams * sell(r.metal)) }));
-  return { holdings, total_value_pkr: holdings.reduce((a, h) => a + h.value_pkr, 0), priced_at: snap?.fetched_at || null };
+  const g = Number((await db.one(`select micro_grams($1) g`, [customerId])).g);
+  const gold_savings = { grams: g, value_pkr: Math.floor(g * sell('gold')) };     // $1 gold, valued at the sell price
+  return { holdings, gold_savings, total_value_pkr: holdings.reduce((a, h) => a + h.value_pkr, 0) + gold_savings.value_pkr, priced_at: snap?.fetched_at || null };
 }
 route('GET', '/me', { auth: 'customer' }, async ({ db, customer }) => {
   const c = customer;
@@ -392,7 +410,7 @@ let lastExpiry = 0;
 async function expireNow(db) {
   if (Date.now() - lastExpiry < 60000) return;
   lastExpiry = Date.now();
-  await db.query(`select fn_expire_orders(), fn_expire_services(), fn_expire_redemptions()`).catch(e => console.error('PGBX expiry', e.message));
+  await db.query(`select fn_expire_orders(), fn_expire_services(), fn_expire_redemptions(), fn_expire_micro()`).catch(e => console.error('PGBX expiry', e.message));
 }
 // If the payment provider can't start a payment, the order or booking is closed at once instead of holding the
 // customer's limit or a visit slot until it expires.
@@ -400,6 +418,10 @@ async function startPayment(db, kind, row) {
   try { return await (kind === 'order' ? payments.createIntent(row) : payments.createIntent({ id: row.id, kind, total_pkr: row.fee_pkr ?? row.total_pkr })); }
   catch (e) {
     if (kind === 'order') await db.query(`update orders set status = 'failed', note = 'Payment could not be started' where id = $1 and status = 'pending_payment'`, [row.id]);
+    else if (kind === 'micro') {
+      await db.query(`update micro_orders set status = 'expired', note = 'Payment could not be started' where id = $1 and status = 'pending_payment'`, [row.id]);
+      await db.query(`update micro_txns set status = 'expired' where order_id = $1 and status = 'pending_payment'`, [row.id]);
+    }
     else await db.query(`update ${kind === 'appraisal' ? 'appraisals' : 'gift_orders'} set status = 'cancelled', note = 'Payment could not be started' where id = $1 and status = 'pending_payment'`, [row.id]);
     throw e;
   }
@@ -457,6 +479,11 @@ route('POST', '/payments/webhook', {}, async ({ db, raw, body, req }) => {
   // Services (doorstep appraisal fee, gift orders): body.kind = "appraisal" | "gift"
   // Only final results change anything; other provider events (pending, processing…) are acknowledged and ignored.
   if (body.status !== 'succeeded' && body.status !== 'failed') return { ok: true, status: 'ignored' };
+  if (body.kind === 'micro') {                                 // $1 gold: order_id is the micro order
+    if (body.status !== 'succeeded') return { ok: true, status: 'ignored' };   // it lapses on its own if never paid
+    const r = (await db.one(`select fn_micro_paid($1, $2, $3) r`, [orderId, ref, int(body.amount_pkr)])).r;
+    return { ok: true, status: r.status };
+  }
   if (body.kind === 'appraisal' || body.kind === 'gift') {
     if (body.status !== 'succeeded') return { ok: true, status: 'ignored' };
     const r = (await db.one(`select fn_service_paid($1, $2, $3, $4) r`, [body.kind, orderId, ref, int(body.amount_pkr)])).r;
@@ -590,12 +617,69 @@ route('POST', '/gifts/:id/cancel', { auth: 'customer' }, async ({ db, customer, 
 // Sandbox only: pays a booking or gift order the way a provider webhook would
 route('POST', '/payments/sandbox/:kind/:id', { auth: 'customer' }, async ({ db, customer, params }) => {
   if (!payments.sandbox) fail(404, 'NOT_FOUND', 'Not found.');
-  const table = { appraisal: 'appraisals', gift: 'gift_orders' }[params.kind];
+  const table = { appraisal: 'appraisals', gift: 'gift_orders', micro: 'micro_orders' }[params.kind];
   if (!table) fail(404, 'NOT_FOUND', 'Not found.');
   const row = await db.one(`select * from ${table} where id = $1 and customer_id = $2`, [params.id, customer.id]);
   if (!row) fail(404, 'NOT_FOUND', 'Not found.');
+  if (params.kind === 'micro') return { status: (await db.one(`select fn_micro_paid($1, $2, $3) r`, [row.id, 'sbx-' + row.id, row.total_pkr])).r.status };
   const r = (await db.one(`select fn_service_paid($1, $2, $3, $4) r`, [params.kind, row.id, 'sbx-' + row.id, row.fee_pkr ?? row.total_pkr])).r;
   return { status: r.status };
+});
+
+// ---------- $1 gold: buy a dollar at a time, sell any amount held ----------
+const microTxnDto = t => ({ ref: t.ref, side: t.side, amount_pkr: t.amount_pkr, grams: Number(t.grams), price_gram: Number(t.price_gram), usd: t.usd === null ? null : Number(t.usd),
+  status: t.status, created_at: t.created_at, credited_at: t.credited_at, paid_out_at: t.paid_out_at, payout_to: t.payout_to ? '•••• ' + t.payout_to.slice(-4) : null,
+  order_ref: t.order_ref || null, lots: t.lots || [] });
+const lotsOf = `(select coalesce(json_agg(json_build_object('ref', l.ref, 'grams', a.grams::float8, 'status', l.status) order by l.no), '[]')
+  from lot_allocations a join tola_lots l on l.id = a.lot_id where a.txn_id = t.id)`;
+
+// Today's price of $1 of gold (public, so guests can see it)
+route('GET', '/micro/quote', {}, async ({ db, fetchRates }) => {
+  await ensureRates(db, fetchRates).catch(() => {});
+  const set = await settingsMap(db);
+  const s = await db.one(`select *, extract(epoch from now() - fetched_at) as age from rate_snapshots order by id desc limit 1`);
+  const fresh = !!s && s.usd_pkr !== null && s.age < Number(set.rate_stale_seconds);
+  const usd = Number(set.micro_usd), usdPkr = s && s.usd_pkr !== null ? Number(s.usd_pkr) : null;
+  const buyGram = s ? Math.round(s.gold_buy_tola / TOLA * 100) / 100 : null, sellGram = s ? Math.round(s.gold_sell_tola / TOLA * 100) / 100 : null;
+  const unitPkr = usdPkr ? Math.round(usd * usdPkr) : null;
+  return { quote: { usd, usdPkr, unitPkr, buyGram, sellGram, gramsPerUnit: unitPkr && buyGram ? Math.round(unitPkr / buyGram * 1e6) / 1e6 : null,
+    unitsPerTola: unitPkr && buyGram ? Math.ceil(TOLA / (unitPkr / buyGram)) : null, maxUnits: Number(set.micro_max_units), minSellGrams: Number(set.micro_min_sell_g),
+    fresh, at: s ? s.fetched_at : null } };
+});
+route('GET', '/micro', { auth: 'customer' }, async ({ db, customer }) => {
+  const snap = await db.one(`select gold_sell_tola from rate_snapshots order by id desc limit 1`);
+  const grams = Number((await db.one(`select micro_grams($1) g`, [customer.id])).g);
+  const txns = await db.query(`select t.*, o.ref as order_ref, ${lotsOf} as lots from micro_txns t left join micro_orders o on o.id = t.order_id
+    where t.customer_id = $1 and (t.side = 'sell' or t.status in ('credited', 'refund_due') or t.created_at > now() - interval '1 hour') order by t.created_at desc, t.ref limit 300`, [customer.id]);
+  const orders = await db.query(`select id, ref, units, unit_pkr, total_pkr, status, note, created_at from micro_orders where customer_id = $1 order by created_at desc limit 50`, [customer.id]);
+  return { gold: { grams, value_pkr: snap ? Math.floor(grams * snap.gold_sell_tola / TOLA) : null }, transactions: txns.map(microTxnDto), orders };
+});
+route('POST', '/micro/buy', { auth: 'customer' }, async ({ db, customer, body, fetchRates }) => {
+  if (!payments.provider) fail(503, 'PAYMENTS_OFF', 'Payments aren’t available yet.');
+  const units = int(body.units); if (!Number.isInteger(units)) fail(400, 'BAD_UNITS', 'Choose how many dollars of gold to buy.');
+  const key = str(body.idempotencyKey, 80); if (key.length < 8) fail(400, 'BAD_KEY', 'Missing request key.');
+  await limit(db, 'micro-buy:' + customer.id, 600, 60, 'Too many purchases in a few minutes. Wait a moment and try again.');
+  await expireNow(db);
+  await ensureRates(db, fetchRates);
+  const o = await db.one(`select * from fn_micro_buy($1, $2, $3)`, [customer.id, units, key]);
+  const payment = o.status === 'pending_payment' ? await startPayment(db, 'micro', o) : null;
+  return { order: { id: o.id, ref: o.ref, units: o.units, unit_pkr: o.unit_pkr, total_pkr: o.total_pkr, usd_pkr: Number(o.usd_pkr), status: o.status }, payment };
+});
+route('POST', '/micro/sell', { auth: 'customer' }, async ({ db, customer, body, fetchRates }) => {
+  const grams = typeof body.grams === 'number' ? body.grams : Number(str(String(body.grams ?? ''), 20));
+  if (!(grams > 0) || !Number.isFinite(grams)) fail(400, 'BAD_GRAMS', MESSAGES.BAD_GRAMS[1]);
+  const iban = str(body.iban, 40).replace(/\s/g, '').toUpperCase();
+  const key = str(body.idempotencyKey, 80); if (key.length < 8) fail(400, 'BAD_KEY', 'Missing request key.');
+  await limit(db, 'micro-sell:' + customer.id, 3600, 30, 'Too many sales in an hour. Try again later.');
+  await ensureRates(db, fetchRates);
+  const t = await db.one(`select * from fn_micro_sell($1, $2, $3, $4)`, [customer.id, grams, iban, key]);
+  return { transaction: microTxnDto((await db.one(`select t.*, ${lotsOf} as lots from micro_txns t where t.id = $1`, [t.id]))) };
+});
+// One transaction by its ID, with the tola lot(s) it is part of
+route('GET', '/micro/txns/:ref', { auth: 'customer' }, async ({ db, customer, params }) => {
+  const t = await db.one(`select t.*, o.ref as order_ref, ${lotsOf} as lots from micro_txns t left join micro_orders o on o.id = t.order_id where t.ref = $1 and t.customer_id = $2`, [params.ref.toUpperCase(), customer.id]);
+  if (!t) fail(404, 'NOT_FOUND', 'No transaction with that ID on your account.');
+  return { transaction: microTxnDto(t) };
 });
 
 // ---------- closing the account ----------
@@ -684,6 +768,9 @@ route('GET', '/admin/overview', ops, async ({ db }) => ({
   active_collections: (await db.one(`select count(*)::int n from redemptions where status in ('requested', 'ready') and expires_at > now()`)).n,
   appraisals_to_assign: (await db.one(`select count(*)::int n from appraisals where status = 'booked'`)).n,
   gifts_open: (await db.one(`select count(*)::int n from gift_orders where status in ('placed', 'in_production', 'dispatched')`)).n,
+  lots_to_settle: (await db.one(`select count(*)::int n from tola_lots where status = 'full'`)).n,
+  payouts_pending: (await db.one(`select count(*)::int n from micro_txns where status = 'pending_payout'`)).n,
+  micro_refunds: (await db.one(`select count(*)::int n from micro_orders where status = 'refund_due'`)).n,
   support_open: (await db.one(`select count(*)::int n from support_requests where status = 'open'`)).n,
   rates: await db.one(`select gold_buy_tola, gold_sell_tola, silver_buy_tola, silver_sell_tola, source, fetched_at from rate_snapshots order by id desc limit 1`),
 }));
@@ -705,6 +792,7 @@ const SETTING_RULES = {
   buyback_deduction_pct: objOf(['gold', 'silver'], frac(0, 50)), appraisal_fee_pkr: isInt(0, 1e6), appraisal_cities: listOf(isName), appraisal_slots: listOf(isSlot, 12),
   appraisal_free_cancel_hours: isInt(0, 720), gift_making_pkr: objOf(['plain', 'themed', 'engraving'], isInt(0, 1e7)), gift_packaging_pkr: objOf(['standard', 'premium'], isInt(0, 1e7)),
   gift_delivery_pkr: isInt(0, 1e6), gift_lead_days: isInt(1, 60), gift_cities: listOf(isName, 60),
+  micro_usd: frac(0.5, 100), micro_max_units: isInt(1, 1000), micro_min_sell_g: frac(0.0001, 11.664),
 };
 
 route('GET', '/admin/settings', ops, async ({ db }) => ({ settings: await db.query(`select key, value, updated_at, updated_by from settings order by key`) }));
@@ -865,6 +953,60 @@ route('POST', '/admin/gifts/:id', ops, async ({ db, staff, params, body }) => {
   return { gift: giftDto(await db.one(`select * from fn_gift_update($1, $2, $3, $4::jsonb)`, [staff.id, params.id, action, JSON.stringify(data)])) };
 });
 
+// $1 gold: tola lots, finding any transaction ID, and payouts for sales
+const lotDto = l => ({ id: l.id, ref: l.ref, side: l.side, no: l.no, grams_target: Number(l.grams_target), grams_filled: Number(l.grams_filled), status: l.status,
+  created_at: l.created_at, filled_at: l.filled_at, settled_at: l.settled_at, settled_by: l.settled_by, bar_serial: l.bar_serial, settle_note: l.settle_note, transactions: l.n ?? undefined, amount_pkr: l.amount ?? undefined });
+route('GET', '/admin/micro/lots', ops, async ({ db, query }) => {
+  const side = query.side === 'sell' ? 'sell' : 'buy';
+  const status = ['filling', 'full', 'settled'].includes(query.status) ? query.status : null;
+  const rows = await db.query(`select l.*, (select count(*)::int from lot_allocations a where a.lot_id = l.id) n,
+      (select coalesce(sum(round(a.grams * t.price_gram)), 0)::bigint from lot_allocations a join micro_txns t on t.id = a.txn_id where a.lot_id = l.id) amount
+    from tola_lots l where l.side = $1 and ($2::text is null or l.status = $2) order by l.no desc limit 200`, [side, status]);
+  const totals = await db.one(`select (select coalesce(sum(grams), 0)::float8 from micro_txns where side = 'buy' and status = 'credited') bought,
+    (select coalesce(sum(grams), 0)::float8 from micro_txns where side = 'sell') sold`);
+  return { lots: rows.map(lotDto), totals: { ...totals, held: Math.round((totals.bought - totals.sold) * 1e6) / 1e6 } };
+});
+route('GET', '/admin/micro/lots/:ref', ops, async ({ db, params, query }) => {
+  const l = await db.one(`select * from tola_lots where ref = $1`, [params.ref.toUpperCase()]);
+  if (!l) fail(404, 'NOT_FOUND', 'No lot with that ID.');
+  const page = Math.max(0, int(query.page) || 0);
+  const rows = await db.query(`select t.ref, t.side, t.amount_pkr, t.price_gram::float8 price_gram, t.created_at, a.grams::float8 grams, t.grams::float8 txn_grams, c.name, c.phone
+    from lot_allocations a join micro_txns t on t.id = a.txn_id join customers c on c.id = t.customer_id where a.lot_id = $1 order by t.credited_at nulls last, t.created_at, t.ref limit 500 offset $2`, [l.id, page * 500]);
+  const n = (await db.one(`select count(*)::int n from lot_allocations where lot_id = $1`, [l.id])).n;
+  return { lot: { ...lotDto(l), transactions: n }, transactions: rows, page, pages: Math.ceil(n / 500) };
+});
+// Plain-text list of every transaction ID in a lot, for the records
+route('GET', '/admin/micro/lots/:ref/ids', ops, async ({ db, params, staff }) => {
+  const l = await db.one(`select * from tola_lots where ref = $1`, [params.ref.toUpperCase()]);
+  if (!l) fail(404, 'NOT_FOUND', 'No lot with that ID.');
+  const rows = await db.query(`select t.ref, a.grams::float8 grams from lot_allocations a join micro_txns t on t.id = a.txn_id where a.lot_id = $1 order by t.credited_at nulls last, t.created_at, t.ref`, [l.id]);
+  await audit(db, 'staff:' + staff.id, 'lot.exported', 'lot', l.ref, { count: rows.length });
+  return { lot: l.ref, status: l.status, bar_serial: l.bar_serial, grams: Number(l.grams_filled), ids: rows.map(r => `${r.ref}\t${r.grams.toFixed(6)}`) };
+});
+route('GET', '/admin/micro/find', ops, async ({ db, query }) => {
+  const ref = str(query.ref || '', 40).toUpperCase();
+  if (ref.length < 6) fail(400, 'BAD_REF', 'Enter a transaction or lot ID.');
+  const lot = await db.one(`select * from tola_lots where ref = $1`, [ref]);
+  if (lot) return { lot: lotDto(lot) };
+  const t = await db.one(`select t.*, o.ref as order_ref, c.name, c.phone, c.id as cid, ${lotsOf} as lots from micro_txns t left join micro_orders o on o.id = t.order_id join customers c on c.id = t.customer_id where t.ref = $1`, [ref]);
+  if (t) return { transaction: { ...microTxnDto(t), payout_to: t.payout_to, customer: { id: t.cid, name: t.name, phone: t.phone } } };
+  const o = await db.one(`select o.*, c.name, c.phone from micro_orders o join customers c on c.id = o.customer_id where o.ref = $1`, [ref]);
+  if (o) return { order: { ref: o.ref, units: o.units, total_pkr: o.total_pkr, status: o.status, note: o.note, payment_ref: o.payment_ref, created_at: o.created_at, customer: { id: o.customer_id, name: o.name, phone: o.phone },
+    transactions: (await db.query(`select t.ref from micro_txns t where order_id = $1 order by t.ref`, [o.id])).map(r => r.ref) } };
+  fail(404, 'NOT_FOUND', 'No transaction, order or lot with that ID.');
+});
+route('POST', '/admin/micro/lots/:id/settle', ops, async ({ db, staff, params, body }) =>
+  ({ lot: lotDto(await db.one(`select * from fn_lot_settle($1, $2, $3, $4)`, [staff.id, int(params.id), str(body.serial, 60), str(body.note, 300) || null])) }));
+route('GET', '/admin/micro/payouts', ops, async ({ db, query }) => {
+  const status = query.status === 'paid_out' ? 'paid_out' : 'pending_payout';
+  return { payouts: await db.query(`select t.id, t.ref, t.amount_pkr, t.grams::float8 grams, t.payout_to, t.payout_ref, t.paid_out_at, t.created_at, c.name, c.phone, c.id as customer_id
+    from micro_txns t join customers c on c.id = t.customer_id where t.side = 'sell' and t.status = $1 order by t.created_at limit 300`, [status]) };
+});
+route('POST', '/admin/micro/payouts/:id', ops, async ({ db, staff, params, body }) =>
+  ({ payout: microTxnDto(await db.one(`select * from fn_micro_payout($1, $2, $3)`, [staff.id, params.id, str(body.ref, 80)])) }));
+route('GET', '/admin/micro/refunds', ops, async ({ db }) =>
+  ({ refunds: await db.query(`select o.ref, o.total_pkr, o.payment_ref, o.note, o.paid_at, c.name, c.phone from micro_orders o join customers c on c.id = o.customer_id where o.status = 'refund_due' order by o.paid_at desc limit 200`) }));
+
 route('GET', '/admin/audit', ops, async ({ db, query }) => {
   const entity = str(query.entity || '', 40), id = str(query.id || '', 80);
   return { entries: await db.query(`select id, at, actor, action, entity, entity_id, data from audit_log where ($1 = '' or entity = $1) and ($2 = '' or entity_id = $2) order by id desc limit 200`, [entity, id]) };
@@ -910,6 +1052,7 @@ route('GET', '/cron/sweep', {}, async ({ db, req, fetchRates }) => {
     expired_orders: (await db.one(`select fn_expire_orders() n`)).n,
     expired_redemptions: (await db.one(`select fn_expire_redemptions() n`)).n,
     expired_services: (await db.one(`select fn_expire_services() n`)).n,
+    expired_micro: (await db.one(`select fn_expire_micro() n`)).n,
     purged_customers: (await db.one(`select fn_purge_closed() n`)).n,
     housekeeping: (await db.one(`select fn_housekeeping() r`)).r,
   };

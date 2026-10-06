@@ -71,8 +71,9 @@ const TONE = {
   verified: 'ok', passed: 'ok', credited: 'ok', completed: 'ok', active: 'ok', ready: 'ok',
   pending: 'warn', review: 'warn', submitted: 'warn', requested: 'warn', pending_payment: 'warn', reverify: 'warn', started: 'warn',
   flagged: 'gold', failed: 'bad', suspended: 'bad', closed: 'bad', expired: '', cancelled: '', refunded: '', none: '',
+  filling: 'warn', full: 'gold', settled: 'ok', pending_payout: 'warn', paid_out: 'ok', refund_due: 'bad',
 };
-const LABEL = { pending_payment: 'awaiting payment', none: 'not started', reverify: 're-verify' };
+const LABEL = { pending_payment: 'awaiting payment', none: 'not started', reverify: 're-verify', pending_payout: 'to pay out', paid_out: 'paid out', refund_due: 'refund due', settled: 'settled', full: 'full: settle' };
 export const Tag = ({ s }) => html`<span class=${'tag ' + (TONE[s] ?? '')}>${LABEL[s] || s}</span>`;
 
 // ---------- small UI ----------

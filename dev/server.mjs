@@ -26,7 +26,7 @@ const fetchRates = async opts => {
   if (live && live.ok) return live;
   if (!warned) { console.log('Live rate sources unreachable: using SAMPLE prices for development.'); warned = true; }
   const j = n => Math.round(n * (1 + (Math.random() - 0.5) * 0.002));
-  return { ok: true, metals: { gold: { buyTola: j(466560), sellTola: j(460000), source: 'sample (dev)', sourceUpdatedAt: new Date().toISOString() }, silver: { buyTola: j(6400), sellTola: j(6240), sourceUpdatedAt: new Date().toISOString() } } };
+  return { ok: true, usdPkr: { rate: 280, updatedAt: new Date().toISOString(), source: 'sample (dev)' }, metals: { gold: { buyTola: j(466560), sellTola: j(460000), source: 'sample (dev)', sourceUpdatedAt: new Date().toISOString() }, silver: { buyTola: j(6400), sellTola: j(6240), sourceUpdatedAt: new Date().toISOString() } } };
 };
 // Sample staff for trying the admin panel and dealer app. Passwords and authenticator secrets are printed below.
 const staff = [
