@@ -325,7 +325,7 @@ async function wrongPin(db, customer) {
   fail(400, 'WRONG_PIN', `Wrong PIN. ${5 - r.pin_fails} attempt${5 - r.pin_fails === 1 ? '' : 's'} left before you need to log in again.`, { fails: r.pin_fails, waitSeconds: r.pin_fails === 3 ? 30 : 0 });
 }
 route('POST', '/auth/unlock', { auth: 'customer', allowLocked: true }, async ({ db, customer, body }) => {
-  if (!customer.pin_hash) return { ok: true };
+  if (!customer.pin_hash) return { ok: true, noPin: true };     // a session from before server PINs: the app asks for one
   if (customer.pin_wait_until && new Date(customer.pin_wait_until) > new Date())
     fail(429, 'PIN_WAIT', 'Too many wrong PINs. Try again in a few seconds.', { retryIn: Math.ceil((new Date(customer.pin_wait_until) - Date.now()) / 1000) });
   const bio = str(body.bioKey, 100);
@@ -370,9 +370,18 @@ route('GET', '/me', { auth: 'customer' }, async ({ db, customer }) => {
   return {
     profile: { id: c.id, phone: c.phone, name: c.name, cnic: c.cnic, dob: c.dob, email: c.email, address: c.address },
     kyc: { status: c.kyc_status, at: c.kyc_at },
+    notifPrefs: { push: c.notif_prefs?.push !== false, alerts: c.notif_prefs?.alerts !== false },
     wallet: await walletOf(db, c.id),
     unread: (await db.one(`select count(*)::int n from notifications where customer_id = $1 and read_at is null`, [c.id])).n,
   };
+});
+
+// Which notifications reach the phone (they always appear in the app's inbox)
+route('PATCH', '/me/notifications', { auth: 'customer' }, async ({ db, customer, body }) => {
+  const prefs = {};
+  for (const k of ['push', 'alerts']) if (typeof body[k] === 'boolean') prefs[k] = body[k];
+  const r = await db.one(`update customers set notif_prefs = notif_prefs || $2::jsonb where id = $1 returning notif_prefs`, [customer.id, JSON.stringify(prefs)]);
+  return { notifPrefs: { push: r.notif_prefs.push !== false, alerts: r.notif_prefs.alerts !== false } };
 });
 
 // Strict YYYY-MM-DD that is a real calendar date
@@ -470,7 +479,7 @@ route('POST', '/kyc/:id/submit', { auth: 'customer' }, async ({ db, customer, bo
     and id = (select id from kyc_checks where customer_id = $2 order by created_at desc, id desc limit 1)`, [params.id, customer.id]);
   if (!k) fail(404, 'KYC_NOT_FOUND', 'Start identity verification again.');
   const cnic = str(body.cnic).replace(/\D/g, ''); const name = str(body.name, 100); const dob = str(body.dob, 10); const expiry = str(body.expiry, 10);
-  const dobD = isoDate(dob), expD = isoDate(expiry);
+  const dobD = isoDate(dob), expD = expiry === 'lifetime' ? new Date('9999-12-31') : isoDate(expiry);   // NADRA issues lifetime CNICs to some
   if (cnic.length !== 13 || name.length < 3 || !dobD || !expD) fail(400, 'BAD_KYC', 'Check your CNIC details and try again.');
   if (!(expD > new Date())) fail(400, 'CNIC_EXPIRED', 'Your CNIC has expired. Renew it with NADRA, then verify again.');
   const age = ageOn(dobD);
@@ -914,7 +923,7 @@ route('GET', '/admin/overview', ops, async ({ db }) => ({
   ...(await db.one(`select
     (select count(*)::int from customers where status = 'active') customers,
     (select count(*)::int from customers where kyc_status = 'verified' and status = 'active') verified,
-    (select count(*)::int from kyc_checks where status in ('review', 'submitted')) kyc_review,
+    (select count(*)::int from kyc_checks where status = 'review') kyc_review,
     (select count(*)::int from orders where status = 'flagged') flagged_orders,
     (select coalesce(sum(total_pkr), 0) from orders where status = 'credited' and credited_at >= pk_day_start()) sales_today_pkr,
     (select count(*)::int from orders where status = 'credited' and credited_at >= pk_day_start()) orders_today,
@@ -1020,7 +1029,7 @@ route('GET', '/admin/customers/:id', ops, async ({ db, params, staff }) => {
   return {
     customer: c, wallet: await walletOf(db, c.id),
     orders: await db.query(`select id, receipt_no, status, total_pkr, created_at from orders where customer_id = $1 order by created_at desc limit 50`, [c.id]),
-    redemptions: await db.query(`select id, product_id, units, dealer_id, status, created_at from redemptions where customer_id = $1 order by created_at desc limit 50`, [c.id]),
+    redemptions: await db.query(`select r.id, r.product_id, r.units, r.dealer_id, d.name as dealer_name, r.status, r.created_at from redemptions r left join dealers d on d.id = r.dealer_id where r.customer_id = $1 order by r.created_at desc limit 50`, [c.id]),
     kyc: await db.query(`select id, provider, status, reason, created_at, decided_at, decided_by from kyc_checks where customer_id = $1 order by created_at desc`, [c.id]),
   };
 });
@@ -1258,12 +1267,16 @@ route('GET', '/cron/sweep', {}, async ({ db, req, fetchRates }) => {
   return r;
 });
 async function sendPendingPush(db) {
-  const pending = await db.query(`select n.id, n.customer_id, n.title, n.body, n.link from notifications n where n.push and n.pushed_at is null and n.created_at > now() - interval '2 days' order by n.id limit 500`);
+  // The customer's choices: no phone notifications at all, or none for price alerts (security notices always go)
+  const pending = await db.query(`select n.id, n.customer_id, n.title, n.body, n.link,
+      n.kind = 'security' or (coalesce((c.notif_prefs->>'push')::boolean, true) and (n.kind <> 'alert' or coalesce((c.notif_prefs->>'alerts')::boolean, true))) as wanted
+    from notifications n join customers c on c.id = n.customer_id
+    where n.push and n.pushed_at is null and n.created_at > now() - interval '2 days' order by n.id limit 500`);
   if (!pending.length) return 0;
   let sent = 0;
   if (push.enabled) {
     const tokens = await db.query(`select token, customer_id from push_tokens where customer_id = any($1::uuid[])`, [[...new Set(pending.map(n => n.customer_id))]]);
-    const jobs = pending.flatMap(n => tokens.filter(t => t.customer_id === n.customer_id).map(t => ({ n, token: t.token })));
+    const jobs = pending.filter(n => n.wanted).flatMap(n => tokens.filter(t => t.customer_id === n.customer_id).map(t => ({ n, token: t.token })));
     const gone = new Set();
     for (let i = 0; i < jobs.length; i += 10) {                     // 10 at a time
       const res = await Promise.all(jobs.slice(i, i + 10).map(j => push.send(j.token, j.n).catch(() => ({ ok: false }))));

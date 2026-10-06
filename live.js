@@ -37,10 +37,14 @@ export async function api(path, { method = 'GET', body, timeout = 15000 } = {}) 
     throw new LiveError(0, 'NETWORK', e.name === 'AbortError' ? 'PGBX is taking too long to answer. Check your connection and try again.' : 'Can’t reach PGBX. Check your connection and try again.');
   } finally { clearTimeout(t); }
   const d = await r.json().catch(() => ({}));
+  if (r.status === 423) window.dispatchEvent(new Event('pgbx-locked'));    // the app shows the lock screen
   if (!r.ok) throw new LiveError(r.status, d.error || 'ERROR', d.message || 'Something went wrong. Please try again.', d);
   return d;
 }
-export const signedOut = e => e instanceof LiveError && e.status === 401;
+// The session is over (logged out elsewhere, expired, account suspended or closed, too many wrong PINs)
+export const signedOut = e => e instanceof LiveError && (e.status === 401 || e.code === 'ACCOUNT_INACTIVE');
+// The session needs the PIN again (the server locks it after a few minutes without use)
+export const isLocked = e => e instanceof LiveError && e.status === 423;
 
 // ---------- login ----------
 let siteKey = null;
@@ -52,15 +56,19 @@ function humanCheck() {
   if (!siteKey) return Promise.resolve(undefined);
   tsScript = tsScript || new Promise((ok, bad) => {
     const s = document.createElement('script');
-    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'; s.async = true; s.onload = ok; s.onerror = bad;
+    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'; s.async = true; s.onload = ok;
+    s.onerror = () => { tsScript = null; s.remove(); bad(); };          // a failed load is tried again next time
     document.head.appendChild(s);
   });
   return tsScript.then(() => new Promise(done => {
     const el = document.createElement('div');
     el.style.cssText = 'position:fixed;left:50%;bottom:96px;transform:translateX(-50%);z-index:99';
     document.body.appendChild(el);
-    const end = t => { done(t); setTimeout(() => el.remove(), 300); };
-    window.turnstile.render(el, { sitekey: siteKey, appearance: 'interaction-only', callback: end, 'error-callback': () => end(undefined), 'timeout-callback': () => end(undefined) });
+    let over = false;
+    const end = t => { if (over) return; over = true; clearTimeout(cap); done(t); setTimeout(() => el.remove(), 300); };
+    const cap = setTimeout(() => end(undefined), 60000);              // never wait forever; the server decides without it
+    try { window.turnstile.render(el, { sitekey: siteKey, appearance: 'interaction-only', callback: end, 'error-callback': () => end(undefined), 'timeout-callback': () => end(undefined) }); }
+    catch (e) { end(undefined); }
   }), () => undefined);
 }
 export async function sendCode(phone, channel) {
@@ -72,8 +80,35 @@ export async function verifyCode(phone, code) {
   await keepToken(NATIVE ? d.token : null);
   return d;
 }
-export async function logout() { await api('/auth/logout', { method: 'POST', body: {} }).catch(() => {}); await keepToken(null); }
-export async function forget() { await keepToken(null); }
+const pushToken = () => (window.PGBXNative && window.PGBXNative.push && window.PGBXNative.push.token) || undefined;
+// Ends the session on the server and stops this phone getting the account's notifications
+export async function logout() {
+  await api('/auth/logout', { method: 'POST', body: { pushToken: pushToken() } }).catch(() => {});
+  await forget();
+}
+export async function forget() { await keepToken(null); if (NATIVE && secure()) await secure().remove('bio'); }
+
+// ---------- the app PIN (checked by the server, per login session) ----------
+export const setPin = (pin, current) => api('/auth/pin', { method: 'POST', body: { pin, ...(current ? { current } : {}) } });
+export const unlock = pin => api('/auth/unlock', { method: 'POST', body: { pin } });
+export const lockNow = () => api('/auth/lock', { method: 'POST', body: {} }).catch(() => {});
+// Face ID / fingerprint: the server gives a random key, kept in secure storage; the biometric check releases it
+export async function enableBio() {
+  if (!(NATIVE && secure())) return false;
+  const d = await api('/auth/biokey', { method: 'POST', body: {} });
+  await secure().set('bio', d.bioKey);
+  return true;
+}
+export async function disableBio() {
+  if (NATIVE && secure()) await secure().remove('bio');
+  await api('/auth/biokey', { method: 'POST', body: { off: true } }).catch(() => {});
+}
+export async function bioUnlock() {
+  const key = NATIVE && secure() ? await secure().get('bio') : null;
+  if (!key) return false;
+  await api('/auth/unlock', { method: 'POST', body: { bioKey: key } });
+  return true;
+}
 function deviceName() {
   const ua = navigator.userAgent;
   return /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android phone' : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows PC' : 'a device';
@@ -98,24 +133,36 @@ const alert = a => ({ id: a.id, metal: a.metal, dir: a.dir, target: a.target_pkr
 const KYC = { none: 'none', pending: 'pending', review: 'pending', verified: 'verified', failed: 'failed', reverify: 'reverify' };
 
 // Everything the signed-in screens show, in one round of requests
+// One failed part doesn't hide the rest: missing parts are left out and named in `missing`. The account itself
+// (/me) must load; if it fails, so does the whole sync.
 export async function loadAll() {
-  const [me, orders, ledger, reds, notes, alerts, apprs, gifts, micro] = await Promise.all([
+  const got = await Promise.allSettled([
     api('/me'), api('/orders'), api('/ledger'), api('/redemptions'), api('/notifications'), api('/alerts'), api('/appraisals'), api('/gifts'), api('/micro'),
   ]);
-  const redemptions = reds.redemptions.map(redemption);
-  return {
+  const bad = got.find(g => g.status === 'rejected' && (signedOut(g.reason) || isLocked(g.reason)));
+  if (bad) throw bad.reason;
+  if (got[0].status === 'rejected') throw got[0].reason;
+  const names = ['me', 'orders', 'ledger', 'redemptions', 'notifications', 'alerts', 'appraisals', 'giftOrders', 'micro'];
+  const missing = names.filter((n, i) => got[i].status === 'rejected');
+  const [me, orders, ledger, reds, notes, alerts, apprs, gifts, micro] = got.map(g => (g.status === 'fulfilled' ? g.value : null));
+  const redemptions = reds ? reds.redemptions.map(redemption) : null;
+  const out = {
     phone: me.profile.phone || '',
     profile: { name: me.profile.name || '', cnic: me.profile.cnic || '', dob: me.profile.dob ? String(me.profile.dob).slice(0, 10) : '', email: me.profile.email || '', address: me.profile.address || '' },
     kyc: { status: KYC[me.kyc.status] || 'none', serverStatus: me.kyc.status, at: ts(me.kyc.at) },
-    orders: orders.orders.map(order).reverse(),
-    ledger: ledger.entries.map(e => ledgerEntry(e, redemptions)),
-    redemptions: redemptions.reverse(),
-    notifications: notes.notifications.map(notification),
-    alerts: alerts.alerts.map(alert),
-    appraisals: apprs.appraisals.map(appraisal),
-    giftOrders: gifts.gifts.map(gift),
-    micro: { grams: Number(micro.gold.grams) || 0, txns: micro.transactions.map(microTxn) },
+    notifPrefs: me.notifPrefs ? { push: me.notifPrefs.push, alerts: me.notifPrefs.alerts, sms: false, email: false } : undefined,
+    orders: orders && orders.orders.map(order).reverse(),
+    ledger: ledger && redemptions && ledger.entries.map(e => ledgerEntry(e, redemptions)),
+    redemptions: redemptions && [...redemptions].reverse(),
+    notifications: notes && notes.notifications.map(notification),
+    alerts: alerts && alerts.alerts.map(alert),
+    appraisals: apprs && apprs.appraisals.map(appraisal),
+    giftOrders: gifts && gifts.gifts.map(gift),
+    micro: micro && { grams: Number(micro.gold.grams) || 0, txns: micro.transactions.map(microTxn) },
   };
+  for (const k of Object.keys(out)) if (out[k] == null) delete out[k];
+  if (!ledger || !redemptions) { delete out.ledger; delete out.redemptions; if (!missing.includes('ledger')) missing.push('ledger'); }
+  return { ...out, missing };
 }
 
 // ---------- $1 gold ----------
@@ -127,7 +174,8 @@ export async function microBuy(units, key) {
   await payService('micro', r.order, r.payment);
   return r.order;
 }
-export const microSell = (grams, iban, key) => api('/micro/sell', { method: 'POST', body: { grams, iban, idempotencyKey: key } }).then(d => microTxn(d.transaction));
+// expected: the amount the customer agreed to; if the price has moved since, the server answers PRICE_CHANGED with the new one
+export const microSell = (grams, iban, key, expected) => api('/micro/sell', { method: 'POST', body: { grams, iban, idempotencyKey: key, expectedAmountPkr: expected } }).then(d => microTxn(d.transaction));
 
 // ---------- services ----------
 const appraisal = a => ({ id: a.id, ref: a.ref, createdAt: ts(a.created_at), date: a.date, slot: a.slot, city: a.city, area: a.area, address: a.address, phone: a.phone,
@@ -144,14 +192,14 @@ async function payService(kind, row, payment) {
   }
 }
 export async function bookAppraisal(d) {
-  const r = await api('/appraisals', { method: 'POST', body: { city: d.city, area: d.area, address: d.address, phone: d.phone, date: d.date, slot: d.slot, items: d.items, notes: d.notes } });
+  const r = await api('/appraisals', { method: 'POST', body: { city: d.city, area: d.area, address: d.address, phone: d.phone, date: d.date, slot: d.slot, items: d.items, notes: d.notes, idempotencyKey: d.key } });
   await payService('appraisal', r.appraisal, r.payment);
   return appraisal(r.appraisal);
 }
 export const cancelAppraisal = id => api(`/appraisals/${id}/cancel`, { method: 'POST', body: {} });
 export async function placeGift(d) {
   const r = await api('/gifts', { method: 'POST', body: { item: d.item, shape: d.shape, design: d.design, engraving: d.engraving.trim(), message: d.message.trim(), packaging: d.packaging,
-    recipientName: d.name.trim(), recipientPhone: d.phone, recipientCity: d.city, recipientAddress: d.address.trim(), deliverBy: d.deliverBy } });
+    recipientName: d.name.trim(), recipientPhone: d.phone, recipientCity: d.city, recipientAddress: d.address.trim(), deliverBy: d.deliverBy, idempotencyKey: d.key } });
   await payService('gift', r.gift, r.payment);
   return gift(r.gift);
 }
@@ -191,6 +239,7 @@ export const phoneStart = phone => api('/me/phone/start', { method: 'POST', body
 export const phoneVerify = (phone, code) => api('/me/phone/verify', { method: 'POST', body: { phone, code } });
 export const reserve = (pid, units, dealerId) => api('/redemptions', { method: 'POST', body: { productId: pid, units, dealerId } }).then(d => redemption(d.redemption));
 export const cancelRedemption = id => api(`/redemptions/${id}/cancel`, { method: 'POST', body: {} });
+export const saveNotifPrefs = p => api('/me/notifications', { method: 'PATCH', body: p });
 export const markRead = () => api('/notifications/read', { method: 'POST', body: {} });
 export const addAlert = (metal, dir, target) => api('/alerts', { method: 'POST', body: { metal, dir, targetPkr: target } }).then(d => alert(d.alert));
 export const removeAlert = id => api(`/alerts/${id}`, { method: 'DELETE' });

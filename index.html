@@ -108,6 +108,10 @@ h3{font-weight:600}
   .device-inner{border-radius:0;--top:env(safe-area-inset-top,0px);--bot:env(safe-area-inset-bottom,0px)}
   .statusbar,.page-caption{display:none}
 }
+/* the phone apps (tablets too) always use the whole screen */
+html.native .device{left:0;top:0;width:100%;height:100%;height:100dvh;border:0;border-radius:0;transform:none;box-shadow:none}
+html.native .device-inner{border-radius:0;--top:env(safe-area-inset-top,0px);--bot:env(safe-area-inset-bottom,0px)}
+html.native .statusbar,html.native .page-caption{display:none}
 /* the framed preview has a home indicator but no safe-area inset */
 .framed{--home:16px}
 
@@ -198,7 +202,7 @@ button.brand-card{transition:transform var(--t1)}button.brand-card:active{transf
 .btn-danger-solid{background:var(--danger);color:#fff}
 .btn-accent{background:var(--gold-500);color:#1E1503}
 .btn-accent:active{background:#B5871F}
-.btn-sm{min-height:40px;padding:0 14px;font-size:14px;width:auto}
+.btn-sm{min-height:44px;padding:0 14px;font-size:14px;width:auto}
 @media (hover:hover){
   .btn-primary:hover{background:var(--green-700)}.btn-secondary:hover{background:#FBFAF6}.btn-danger:hover{background:#FDF6F4}.btn-tertiary:hover{background:var(--fill)}.btn-accent:hover{background:#D3A23A}
 }
@@ -249,7 +253,7 @@ input[type=date].inp{min-width:0;-webkit-appearance:none;appearance:none}
 
 /* stepper */
 .stepper{display:inline-flex;align-items:center;background:var(--fill);border-radius:var(--r-md);padding:3px;flex:none}
-.stepper button{width:40px;height:40px;border-radius:9px;display:grid;place-items:center;color:var(--green-800);transition:background-color var(--t1)}
+.stepper button{width:44px;height:44px;border-radius:9px;display:grid;place-items:center;color:var(--green-800);transition:background-color var(--t1)}
 .stepper button:active{background:var(--surface)}
 .stepper button[disabled]{color:var(--text-3);pointer-events:none}
 .stepper output{min-width:36px;text-align:center;font-weight:600;font-size:17px}
@@ -271,10 +275,11 @@ input[type=date].inp{min-width:0;-webkit-appearance:none;appearance:none}
 
 /* chips (filters) */
 .chips{display:flex;gap:8px;flex-wrap:wrap}
-.chipb{min-height:40px;padding:0 16px;border-radius:999px;background:var(--surface);box-shadow:inset 0 0 0 1px var(--border-2);font-size:14px;font-weight:500;color:var(--text);transition:background-color var(--t2),color var(--t2)}
+.chipb{position:relative;min-height:44px;padding:0 16px;border-radius:999px;background:var(--surface);box-shadow:inset 0 0 0 1px var(--border-2);font-size:14px;font-weight:500;color:var(--text);transition:background-color var(--t2),color var(--t2)}
 .chipb.on{background:var(--green-800);color:#fff;box-shadow:none}
 .chipb:active{transform:scale(.97)}
 .chipb.sm{min-height:34px;padding:0 12px;font-size:13px}
+.chipb.sm::after{content:'';position:absolute;inset:-5px 0}   /* 44 px to tap, 34 px to see */
 .chipb .chip-sub{display:block;font-size:11px;font-weight:500;opacity:.75;margin-top:-2px}
 .chipb:has(.chip-sub){min-height:48px;line-height:1.2;padding:4px 14px}
 .hchips{flex-wrap:nowrap;overflow-x:auto;margin:0 -16px;padding:0 16px 4px;scrollbar-width:none}.hchips::-webkit-scrollbar{display:none}.hchips .chipb{flex:none}
@@ -347,6 +352,7 @@ button.notice{transition:transform var(--t1)}button.notice:active{transform:scal
 .ldot.sim,.ldot.stale{background:#E3962B;box-shadow:0 0 0 3px rgba(227,150,43,.22)}
 
 /* odometer (rolling digits) */
+.sr{position:absolute!important;width:1px!important;height:1px!important;margin:-1px;padding:0;border:0;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap}
 .odo{position:relative;display:inline-flex;align-items:flex-start;white-space:nowrap;line-height:1.2em;isolation:isolate}
 .odo>span{height:1.2em;line-height:1.2em}
 .odo-col{display:inline-block;overflow:hidden}
@@ -509,6 +515,8 @@ button.notice{transition:transform var(--t1)}button.notice:active{transform:scal
 .result p{margin-top:8px;font-size:15px;line-height:1.45;color:var(--text-2)}
 .mark{width:64px;height:64px;border-radius:50%;display:grid;place-items:center;margin:0 auto;background:var(--success-bg);color:var(--success);animation:pop .4s var(--ease) both}
 .mark.warning{background:var(--warning-bg);color:var(--warning)}
+.mark.danger{background:var(--danger-bg);color:var(--danger)}
+.linkbtn.change-num{min-height:0;font-size:14px;padding:12px 4px;margin:-12px -4px}
 .mark svg path{stroke-dasharray:1;stroke-dashoffset:1;animation:draw .45s .25s var(--ease) forwards}
 
 /* ---------- KYC ---------- */
@@ -724,7 +732,7 @@ button.notice{transition:transform var(--t1)}button.notice:active{transform:scal
 
 /* UX additions: toast action, unread dot, receipt opened from a notification */
 .toast .grow{flex:1;min-width:0}
-.toast-act{flex:none;min-height:36px;padding:0 12px;margin:-6px -8px -6px 0;border-radius:var(--r-sm);font-weight:600;color:var(--gold-300)}
+.toast-act{flex:none;min-height:44px;padding:0 12px;margin:-10px -8px -10px 0;border-radius:var(--r-sm);font-weight:600;color:var(--gold-300)}
 .toast-act:active{background:rgba(255,255,255,.12)}
 .ldot.unread{margin-top:6px;background:var(--danger);box-shadow:none}.ldot.unread::after{display:none}
 .from-inbox .result{padding-top:8px}

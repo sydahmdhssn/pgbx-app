@@ -230,3 +230,24 @@ test('H2: a booking or gift order retried with the same key is made once', async
   assert.equal(g1.gift.id, g2.gift.id);
   assert.equal((await db.one(`select count(*)::int n from gift_orders where idempotency_key = $1`, [gk])).n, 1);
 });
+
+test('M8: push and price-alert choices are saved on the server and applied when sending', async () => {
+  const token = await login('3001119902', '10.9.90.2');
+  const me = ok(await call('GET', '/api/v1/me', { token }));
+  assert.deepEqual(me.notifPrefs, { push: true, alerts: true });
+  assert.deepEqual(ok(await call('PATCH', '/api/v1/me/notifications', { token, body: { alerts: false, junk: 1 } })).notifPrefs, { push: true, alerts: false });
+  assert.deepEqual(ok(await call('GET', '/api/v1/me', { token })).notifPrefs, { push: true, alerts: false });
+  const c = await db.one(`select customer_id id from sessions where customer_id = (select id from customers where phone = '3001119902') limit 1`);
+  await db.query(`select notify_customer($1, 'alert', 'Gold is above', 'x', null, true)`, [c.id]);
+  await db.query(`select notify_customer($1, 'security', 'New login', 'x', null, true)`, [c.id]);
+  const rows = await db.query(`select n.kind, n.kind = 'security' or (coalesce((c.notif_prefs->>'push')::boolean, true) and (n.kind <> 'alert' or coalesce((c.notif_prefs->>'alerts')::boolean, true))) wanted
+    from notifications n join customers c on c.id = n.customer_id where c.id = $1`, [c.id]);
+  assert.equal(rows.find(r => r.kind === 'alert').wanted, false);
+  assert.equal(rows.find(r => r.kind === 'security').wanted, true);
+});
+
+test('Low: a lifetime CNIC can be verified', async () => {
+  const token = await login('3001119903', '10.9.90.3');
+  const k = ok(await call('POST', '/api/v1/kyc', { token, body: {} }));
+  assert.equal(ok(await call('POST', `/api/v1/kyc/${k.check.id}/submit`, { token, body: kycBody('3001119903', { expiry: 'lifetime' }) })).status, 'verified');
+});

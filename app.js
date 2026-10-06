@@ -142,6 +142,14 @@ const PRODUCTS = [
   { id: 's-10t',   metal: 'silver', label: '10 tola', short: '10 tola', grams: 10 * TOLA, premium: 2000 },
 ];
 const P = Object.fromEntries(PRODUCTS.map(p => [p.id, p]));
+// Production: a product PGBX adds later is learned from the server instead of breaking the screens that show it.
+// Until /products answers, an unknown id gets a placeholder (named by its id, no value).
+function learnProduct(x) {
+  if (!x || typeof x.id !== 'string') return;
+  const p = { id: x.id, metal: x.metal === 'silver' ? 'silver' : 'gold', label: x.label || x.id, short: x.label || x.id, grams: Number(x.grams) || 0, premium: Number(x.premium_pkr) || 0, extra: true };
+  if (P[x.id] && !P[x.id].extra) return;
+  if (P[x.id]) Object.assign(P[x.id], p); else { PRODUCTS.push(p); P[x.id] = p; }
+}
 const metalName = m => (m === 'gold' ? 'Gold' : 'Silver');
 const pname = p => `${p.label} ${metalName(p.metal)}`;
 
@@ -158,6 +166,7 @@ const kmTo = d => { const R = 6371, r = x => x * Math.PI / 180, dLat = r(d.lat -
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(r(YOU.lat)) * Math.cos(r(d.lat)) * Math.sin(dLng / 2) ** 2; return Math.round(2 * R * Math.asin(Math.sqrt(a)) * 10) / 10; };
 DEALERS.forEach(d => { d.km = kmTo(d); });
 // A collection's dealer, even if the dealer has since been hidden from the list
+if (LIVE) DEALERS.length = 0;          // production lists PGBX's own dealers from the server, never these samples
 const dealerOf = r => DEALERS.find(x => x.id === r.dealerId) || { id: r.dealerId, name: r.dealerName || 'PGBX dealer', area: '', phone: '', hours: '', lat: YOU.lat, lng: YOU.lng, km: 0, out: [] };
 const initialDealerStock = () => Object.fromEntries(DEALERS.map(d => [d.id,
   Object.fromEntries(PRODUCTS.map(p => [p.id, d.out.includes(p.id) ? 0 : 3 + ((p.id.length * 7 + d.km * 10) | 0) % 9]))]));
@@ -165,7 +174,7 @@ const initialDealerStock = () => Object.fromEntries(DEALERS.map(d => [d.id,
 /* ============================================================
    Helpers
    ============================================================ */
-const fmt = n => 'Rs ' + Math.round(n).toLocaleString('en-US');
+const fmt = n => (Number.isFinite(n) ? 'Rs ' + Math.round(n).toLocaleString('en-US') : 'Rs —');   // no price yet: a dash, never NaN or a sample
 const fmtW = g => (g < 1 ? `${+(g * 1000).toFixed(0)} mg` : `${+g.toFixed(3)} g`);
 const pct = n => (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
 const uid = () => Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -188,6 +197,8 @@ function mulberry(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0
 // Rule 1 / FR-R3: when live, buy/sell and product prices come from the server (/api/rates).
 // The local formulas below are used only in simulated mode.
 function rateOf(rates, metal) {
+  // Production never shows the built-in sample prices: until the first live answer every price is unknown
+  if (LIVE && rates.mode !== 'live') return { buyTola: NaN, sellTola: NaN, buyGram: NaN, sellGram: NaN, chg: 0 };
   const m = rates[metal];
   const buyTola = m.buy;
   const sellTola = m.sell != null ? m.sell : Math.round(buyTola * (1 - SPREAD[metal]));
@@ -262,7 +273,6 @@ const PATHS = {
   rates: 'M3 17l5-5 4 4 8-8M15 8h5v5',
   buy: 'M5 8h14l-1.2 11.1a2 2 0 0 1-2 1.9H8.2a2 2 0 0 1-2-1.9L5 8zM9 8V6a3 3 0 0 1 6 0v2',
   wallet: 'M4 7.5A2.5 2.5 0 0 1 6.5 5H18v3M4 7.5v10A2.5 2.5 0 0 0 6.5 20H20v-5M4 7.5A2.5 2.5 0 0 0 6.5 10H20v5M20 15h-4a2 2 0 0 1 0-4h4',
-  redeem: 'M4 10l1.5-5h13L20 10M4 10h16M4 10a2.7 2.7 0 0 0 5.3 0 2.7 2.7 0 0 0 5.4 0 2.7 2.7 0 0 0 5.3 0M5.5 12.5V20h13v-7.5M10 20v-4h4v4',
   account: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4.5 20a7.5 7.5 0 0 1 15 0',
   back: 'M15 5l-7 7 7 7',
   chev: 'M9 6l6 6-6 6',
@@ -322,9 +332,11 @@ const DIGITS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 function Odo({ value, prefix = 'Rs ', decimals = 0, flash, dir }) {
   const [ready, setReady] = useState(false);
   useEffect(() => { let r2; const r = requestAnimationFrame(() => { r2 = requestAnimationFrame(() => setReady(true)); }); return () => { cancelAnimationFrame(r); cancelAnimationFrame(r2); }; }, []);
+  if (!Number.isFinite(Number(value))) return html`<span class="odo">${prefix}—</span>`;
   const s = Number(value).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
   const chars = s.split('');
-  return html`<span class="odo" role="text" aria-label=${prefix + s}>
+  // The rolling digits are hidden from screen readers; they read the plain text instead
+  return html`<span class="odo"><span class="sr">${prefix + s}</span>
     ${flash != null && html`<span class=${'odo-fl' + (dir ? ' ' + dir : '')} key=${'f' + flash} aria-hidden="true"></span>`}
     <span aria-hidden="true" style=${{ marginRight: /\s$/.test(prefix) ? '.24em' : 0 }}>${prefix.trim()}</span>
     ${chars.map((c, i) => { const k = chars.length - i;
@@ -436,6 +448,7 @@ function Login({ S, note, intent, hasPin, onDone, onBrowse, onPin, onRetry }) {
   const [err, setErr] = useState('');
   const [shake, setShake] = useState(0);
   const phoneRef = useRef(null), otpRef = useRef(null);
+  const timers = useRef([]); useEffect(() => () => timers.current.forEach(clearTimeout), []);   // nothing fires after the screen closes
   const cfg = S.otpCfg;
   const demo = !LIVE && cfg.checked && !cfg.unreachable && cfg.configured === false;
   const down = cfg.checked && cfg.unreachable;
@@ -460,7 +473,7 @@ function Login({ S, note, intent, hasPin, onDone, onBrowse, onPin, onRetry }) {
     if (otp.length !== 6 || ok) return;
     let alive = true;
     setBusy(true); setErr('');
-    const finish = () => { setBusy(false); setOk(true); setTimeout(() => { setOut(true); setTimeout(() => onDone(phone), 620); }, 700); };
+    const finish = () => { setBusy(false); setOk(true); timers.current.push(setTimeout(() => { setOut(true); timers.current.push(setTimeout(() => onDone(phone), 620)); }, 700)); };
     if (demo) { const t = setTimeout(finish, 650); return () => clearTimeout(t); }
     otpCall({ action: 'check', phone, code: otp }).then(d => {
       if (!alive) return;
@@ -521,7 +534,7 @@ function Login({ S, note, intent, hasPin, onDone, onBrowse, onPin, onRetry }) {
       </div>` : html`<div class="step-in" key="otp">
         <h2>${ok ? 'Verified' : 'Enter the code'}</h2>
         <p class="sub">${demo ? 'Demo mode: no message was sent to' : `We sent a 6-digit code by ${viaName(sentVia)} to`} +92 ${shown(phone)}.${' '}
-          <button class="linkbtn sm" style="min-height:0;font-size:14px" onClick=${() => { setDir('back'); setStep('phone'); setErr(''); }}>Change number</button></p>
+          <button class="linkbtn sm change-num" disabled=${busy || ok} onClick=${() => { setDir('back'); setStep('phone'); setErr(''); setOtp(''); }}>Change number</button></p>
         <div class=${'otp' + (ok ? ' ok' : '') + (shake ? ' err' : '')} key=${'o' + shake} onClick=${() => otpRef.current && otpRef.current.focus()}>
           ${[0, 1, 2, 3, 4, 5].map(i => html`<div class=${'ob' + (i === otp.length && !ok && !busy ? ' cur' : '')} aria-hidden="true">${otp[i] || ''}</div>`)}
           <input ref=${otpRef} type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" aria-label="6-digit code" value=${otp} disabled=${ok || busy}
@@ -546,37 +559,54 @@ function Login({ S, note, intent, hasPin, onDone, onBrowse, onPin, onRetry }) {
    PIN pad (lock screen and Change PIN)
    ============================================================ */
 // onComplete returns true when the PIN is accepted (dots stay filled), otherwise the pad clears.
-function PinPad({ onComplete, ok, err = 0, showFace, onFace, disabled }) {
+// onComplete may answer later (a Promise): the pad waits, with keys off, until it does.
+function PinPad({ onComplete, ok, err = 0, showFace, onFace, disabled, faceLabel = 'Face ID' }) {
   const [pin, setPin] = useState('');
-  useEffect(() => { if (pin.length === 4) { const t = setTimeout(() => { if (onComplete(pin) !== true) setPin(''); }, 160); return () => clearTimeout(t); } }, [pin]);
-  const press = d => { if (disabled) return; buzz(); setPin(p => (p.length < 4 ? p + d : p)); };
+  const [wait, setWait] = useState(false);
+  const live = useRef(true); useEffect(() => () => { live.current = false; }, []);
+  useEffect(() => {
+    if (pin.length !== 4) return;
+    const t = setTimeout(() => {
+      const r = onComplete(pin);
+      if (r && typeof r.then === 'function') { setWait(true); r.then(v => { if (!live.current) return; setWait(false); if (v !== true) setPin(''); }, () => { if (live.current) { setWait(false); setPin(''); } }); }
+      else if (r !== true) setPin('');
+    }, 160);
+    return () => clearTimeout(t);
+  }, [pin]);
+  const off = disabled || wait || ok;
+  const press = d => { if (off) return; buzz(); setPin(p => (p.length < 4 ? p + d : p)); };
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'face', '0', 'del'];
   return html`
     <div class=${'dots4' + (ok ? ' ok' : '') + (err ? ' err' : '')} key=${'e' + err} role="status" aria-label=${`${pin.length} of 4 digits entered`}>
       ${[0, 1, 2, 3].map(i => html`<span class=${'dot' + (pin.length > i || ok ? ' on' : '')}></span>`)}
     </div>
-    <div class=${'keypad' + (disabled ? ' off' : '')}>
+    <div class=${'keypad' + (disabled ? ' off' : '')} aria-busy=${wait}>
       ${keys.map(k => {
-        if (k === 'face') return showFace ? html`<button class="key plain" onClick=${onFace} aria-label="Unlock with Face ID"><span><${Icon} n="face"/><span class="kl">Face ID</span></span></button>` : html`<span></span>`;
-        if (k === 'del') return html`<button class="key plain" onClick=${() => setPin(p => p.slice(0, -1))} aria-label="Delete digit"><${Icon} n="del"/></button>`;
+        if (k === 'face') return showFace ? html`<button class="key plain" onClick=${onFace} disabled=${off} aria-label=${'Unlock with ' + faceLabel}><span><${Icon} n="face"/><span class="kl">${faceLabel}</span></span></button>` : html`<span></span>`;
+        if (k === 'del') return html`<button class="key plain" onClick=${() => { if (!off) setPin(p => p.slice(0, -1)); }} aria-label="Delete digit"><${Icon} n="del"/></button>`;
         return html`<button class="key" onClick=${() => press(k)}>${k}</button>`;
       })}
     </div>`;
 }
 
 // FR-A3 PIN with face unlock; FR-A4 pause after 3 wrong PINs, end the session after 5.
-function LockScreen({ pin, fails, lockUntil, now, biometric, note, onUnlock, onFail, onBrowse, onLogin, onForgot }) {
+// Production: the PIN is checked by the server (liveCheck / liveBio answer true when unlocked); the demo checks it here.
+function LockScreen({ pin, fails, lockUntil, now, biometric, note, onUnlock, onFail, onBrowse, onLogin, onForgot, liveCheck, liveBio }) {
   const [ok, setOk] = useState(false);
   const [scan, setScan] = useState(false);
   const locked = lockUntil > now;
   const unlock = () => { setOk(true); setTimeout(onUnlock, 650); };
-  const check = p => { if (locked) return false; if (pinOk(p, pin)) { unlock(); return true; } onFail(); return false; };
+  const check = p => {
+    if (locked) return false;
+    if (LIVE) return liveCheck(p).then(v => { if (v) unlock(); return v; });
+    if (pinOk(p, pin)) { unlock(); return true; } onFail(); return false;
+  };
   // Production: Face ID / fingerprint through the phone (native app only); the demo simulates it.
   const bio = LIVE ? window.PGBXNative && window.PGBXNative.biometric : null;
   const canFace = biometric && !locked && (!LIVE || !!(bio && bio.ready));
   const face = async () => {
-    if (locked) return;
-    if (LIVE) { if (bio && await bio.verify('Unlock PGBX').catch(() => false)) unlock(); return; }
+    if (locked || ok) return;
+    if (LIVE) { if (bio && await bio.verify('Unlock PGBX').catch(() => false) && await liveBio()) unlock(); return; }
     setScan(true); setTimeout(() => { setScan(false); unlock(); }, 900);
   };
   const left = PIN_MAX_FAILS - fails;
@@ -587,7 +617,7 @@ function LockScreen({ pin, fails, lockUntil, now, biometric, note, onUnlock, onF
     <h2>${ok ? 'Unlocked' : 'Enter your PIN'}</h2>
     <div class=${'note' + (fails || locked ? ' warn' : '')} role="status">${msg || ''}</div>
     ${!LIVE && pin === PIN_DEFAULT && html`<div class="hint-demo">Demo PIN ${PIN_DEFAULT}</div>`}
-    <${PinPad} ok=${ok} err=${fails} onComplete=${check} showFace=${canFace} onFace=${face} disabled=${locked} />
+    <${PinPad} ok=${ok} err=${fails} onComplete=${check} showFace=${canFace} onFace=${face} disabled=${locked} faceLabel=${bioName()} />
     <div class="lock-links">
       <button class="linkbtn" onClick=${onForgot}>Forgot PIN?</button>
       <div style="display:flex;gap:16px"><button class="linkbtn dim" onClick=${onBrowse}>Browse as guest</button><button class="linkbtn dim" onClick=${onLogin}>Use another number</button></div>
@@ -598,6 +628,13 @@ function LockScreen({ pin, fails, lockUntil, now, biometric, note, onUnlock, onF
 
 // First login (and after "Forgot PIN"): the customer chooses the PIN they'll use to unlock the app on this phone.
 const WEAK_PINS = new Set(['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '0123', '9876', '1212', '2580']);
+// The phone's own name for its biometric unlock
+function bioName() {
+  if (!LIVE) return 'Face ID';
+  const b = window.PGBXNative && window.PGBXNative.biometric, ios = /iPhone|iPad/.test(navigator.userAgent);
+  const kind = b ? b.kind : 'any';
+  return kind === 'face' ? (ios ? 'Face ID' : 'Face unlock') : kind === 'touch' ? (ios ? 'Touch ID' : 'Fingerprint') : (ios ? 'Face ID' : 'Fingerprint or face');
+}
 function CreatePin({ reset, onDone }) {
   const [step, setStep] = useState(0);
   const [first, setFirst] = useState('');
@@ -610,7 +647,11 @@ function CreatePin({ reset, onDone }) {
       setFirst(p); setMsg(''); setStep(1); return false;
     }
     if (p !== first) { setErr(e => e + 1); setMsg('The PINs didn’t match. Choose your PIN again.'); setStep(0); return false; }
-    setOk(true); setTimeout(() => onDone(p), 500); return true;
+    // onDone may answer with a message (the server refused the PIN): start again with it
+    return Promise.resolve(onDone(p)).then(m => {
+      if (typeof m === 'string') { setErr(e => e + 1); setMsg(m); setStep(0); return false; }
+      setOk(true); return true;
+    });
   };
   return html`<div class="lock">
     <${Coin} size=${56} />
@@ -632,7 +673,9 @@ const TabHead = ({ title, sub, right }) => html`<div class="lt"><div><h1>${title
 // Inline notice: kind = info | warning | danger | plain
 const Notice = ({ kind = 'info', icon, title, children, style }) => html`<div class=${'notice ' + kind} role=${kind === 'danger' || kind === 'warning' ? 'alert' : null} style=${style}>
   <${Icon} n=${icon || (kind === 'info' || kind === 'plain' ? 'info' : 'alert')} c="sm"/><div class="grow">${title && html`<b>${title}</b>`}${children}</div></div>`;
-const StaleBanner = () => html`<${Notice} kind="warning" title="Rates are delayed">Buying is paused until fresh prices arrive. This usually takes a few seconds.</${Notice}>`;
+const StaleBanner = ({ S }) => (S && S.rates.mode === 'connecting'
+  ? html`<${Notice} kind="info" title="Getting live prices">Prices appear in a moment. Buying starts once they arrive.</${Notice}>`
+  : html`<${Notice} kind="warning" title="Rates are delayed">Buying is paused until fresh prices arrive. This usually takes a few seconds.</${Notice}>`);
 // Empty state: what is missing, why it matters, what to do next.
 const Empty = ({ icon, title, body, action, onAction }) => html`<div class="empty rise">
   <div class="ei"><${Icon} n=${icon}/></div><b>${title}</b><p>${body}</p>
@@ -726,7 +769,7 @@ function WorldMarkets({ rates }) {
 const KycCta = ({ S, A }) => S.guest || S.kyc.status === 'verified' ? null : html`<button class="notice warning" onClick=${() => A.push({ name: 'kyc' })}>
   <${Icon} n="idcard" c="sm"/>
   <div class="grow"><b>${S.kyc.status === 'pending' ? 'Verification in progress' : S.kyc.status === 'reverify' ? 'Verify your identity again' : 'Verify your identity to start buying'}</b>
-    ${S.kyc.status === 'reverify' ? 'You changed your identity details. It takes about 2 minutes.' : 'You’ll need your CNIC and a selfie. It takes about 2 minutes.'}</div>
+    ${S.kyc.status === 'reverify' ? 'You changed your identity details. It takes about 2 minutes.' : LIVE ? 'You’ll need your CNIC. It takes about 2 minutes.' : 'You’ll need your CNIC and a selfie. It takes about 2 minutes.'}</div>
   <${Icon} n="chev" c="sm chev"/>
 </button>`;
 
@@ -738,7 +781,7 @@ function RatesHome({ S, A }) {
     <header class="home-head on-dark">
       <div class="hh-top"><${Coin} size=${32} /><span class="wm">PGBX</span><${Shariah} small=${true}/>
         ${!guest && html`<span class="end"><button class="iconbtn on-dark" aria-label=${S.unread ? `Notifications, ${S.unread} unread` : 'Notifications'} onClick=${() => A.push({ name: 'inbox' })}><${Icon} n="bell"/>${S.unread > 0 && html`<span class="badge">${S.unread}</span>`}</button></span>`}</div>
-      <p class="hh-greet">${guest ? 'Browsing as a guest' : `Assalam-o-Alaikum, ${S.profile.name.split(' ')[0]}`}</p>
+      <p class="hh-greet">${guest ? 'Browsing as a guest' : (S.profile.name.trim() ? `Assalam-o-Alaikum, ${S.profile.name.trim().split(' ')[0]}` : 'Assalam-o-Alaikum')}</p>
       <h1>Today’s rates</h1>
       <div class="hh-live" role="status"><span class=${dotClass(rates, stale)}></span>${feedLabel(rates, stale, now)}</div>
     </header>
@@ -746,7 +789,7 @@ function RatesHome({ S, A }) {
       <${RateCard} rates=${rates} metal="gold" onOpen=${() => A.openHistory('gold')} />
       <${RateCard} rates=${rates} metal="silver" onOpen=${() => A.openHistory('silver')} />
     </div>
-    ${stale && html`<${StaleBanner}/>`}
+    ${stale && html`<${StaleBanner} S=${S}/>`}
     ${!S.tips.rates && html`<div class="notice plain" role="note"><${Icon} n="info" c="sm"/><div class="grow"><b>Reading these prices</b>
       <span style="display:block"><b style="display:inline">Buy</b> is what you pay PGBX per tola today. <b style="display:inline">Sell</b> is what your holdings are worth at today’s price. Prices refresh every 10 seconds; tap a card for its history.</span></div>
       <button class="linkbtn sm act" onClick=${() => A.dismissTip('rates')}>Got it</button></div>`}
@@ -887,7 +930,7 @@ function BuyList({ S, A }) {
     <${TabHead} title="Buy" sub="Whole bars only, 999.0 purity" right=${!S.guest && html`<${CartButton} S=${S} A=${A} />`} />
     <div class="pad" style="margin-top:16px"><${Seg} label="Metal" items=${[['gold', 'Gold'], ['silver', 'Silver']]} value=${metal} onChange=${v => A.set({ buyMetal: v })} /></div>
     <div class="pad small muted" style="margin-top:12px;display:flex;align-items:center;gap:8px"><span class=${dotClass(S.rates, S.stale)}></span>${metalName(metal)} ${fmt(r.buyTola)} per tola · ${fmt(r.buyGram)} per gram</div>
-    ${S.stale && html`<${StaleBanner}/>`}
+    ${S.stale && html`<${StaleBanner} S=${S}/>`}
     <${KycCta} S=${S} A=${A} />
     ${metal === 'gold' && (q => html`<button class="card micro-cta" onClick=${() => A.openMicro()}>
       <span class="ri gold"><${Icon} n="gem" c="sm"/></span>
@@ -909,6 +952,13 @@ function BuyList({ S, A }) {
    transactions into 1-tola lots and keeps the list of IDs in each lot.
    ============================================================ */
 const fmtG = g => (Number(g) || 0).toFixed(4) + ' g';
+// A Pakistani IBAN: PK, 2 check digits, 4-letter bank code, 16 account characters, and the ISO 13616 mod-97 check
+function ibanValid(v) {
+  if (!/^PK\d{2}[A-Z]{4}[0-9A-Z]{16}$/.test(v)) return false;
+  const r = (v.slice(4) + v.slice(0, 4)).replace(/[A-Z]/g, c => String(c.charCodeAt(0) - 55));
+  let m = 0; for (const d of r) m = (m * 10 + Number(d)) % 97;
+  return m === 1;
+}
 const MICRO_STATUS = { credited: ['success', 'In your gold'], pending_payment: ['warning', 'Awaiting payment'], expired: ['', 'Not paid'], refund_due: ['danger', 'Refund due'],
   pending_payout: ['warning', 'Payment on its way'], paid_out: ['success', 'Paid to your bank'] };
 // Today's $1 price: from the server in production; from the live rates (or a sample dollar rate) in the demo
@@ -921,9 +971,12 @@ function microQuote(S) {
 }
 function MicroScreen({ S, A }) {
   const q = microQuote(S);
-  const [units, setUnits] = useState(1);
+  const [units0, setUnits] = useState(1);
   const m = S.micro || { grams: 0, txns: [] };
   const max = q.maxUnits || 100;
+  const units = Math.min(units0, max);
+  // One request key per purchase: a retry after a lost answer can't buy twice; a new amount or a finished purchase gets a new key
+  const key = useMemo(() => 'K' + uid() + uid(), [units, m.txns.length]);
   const value = Math.floor(m.grams * (q.sellGram || 0));
   const total = (q.unitPkr || 0) * units;
   const ready = q.unitPkr && q.fresh && !S.stale && !S.offline;
@@ -938,7 +991,8 @@ function MicroScreen({ S, A }) {
         <div class="bc-split"><div><span class="bc-label">Worth at today’s sell price</span><b>${fmt(value)}</b></div>
           <div><span class="bc-label">Transactions</span><b>${m.txns.filter(t => t.side === 'buy' && t.status === 'credited').length} bought · ${m.txns.filter(t => t.side === 'sell').length} sold</b></div></div>
       </div>
-      ${S.stale && html`<${StaleBanner}/>`}
+      ${S.stale && html`<${StaleBanner} S=${S}/>`}
+      ${LIVE && !S.stale && !q.unitPkr && html`<div class="pad" style="margin-top:12px"><${Notice} kind="warning" title="Today’s $1 price didn’t load">Check your connection. <button class="linkbtn sm" onClick=${A.microQuote}>Try again</button></${Notice}></div>`}
       <section class="sec"><div class="sec-h"><h3>Buy</h3>${q.usdPkr && html`<span class="aside">$1 = ${fmt(q.unitPkr)} · USD/PKR ${Number(q.usdPkr).toFixed(2)}</span>`}</div>
         <div class="card">
           <div class="small muted">Each dollar is a separate transaction with its own ID. ${q.gramsPerUnit ? `$1 buys ${fmtG(q.gramsPerUnit)} of 24K gold now; about ${q.unitsPerTola.toLocaleString('en-US')} make a tola.` : ''}</div>
@@ -948,7 +1002,7 @@ function MicroScreen({ S, A }) {
               <output aria-live="polite">$${units}</output>
               <button aria-label="One dollar more" disabled=${units >= max} onClick=${() => setUnits(Math.min(max, units + 1))}><${Icon} n="plus" c="sm"/></button>
             </div>
-            <div style="text-align:right"><b>${fmt(total)}</b><div class="small muted">${fmtG((q.gramsPerUnit || 0) * units)}</div></div>
+            <div style="text-align:right"><b>${q.unitPkr ? fmt(total) : 'Rs —'}</b><div class="small muted">${fmtG((q.gramsPerUnit || 0) * units)}</div></div>
           </div>
           <div class="chips" style="margin-top:12px">${[1, 5, 10, 25, 50].filter(n => n <= max).map(n => html`<button class=${'chipb' + (units === n ? ' on' : '')} onClick=${() => setUnits(n)}>$${n}</button>`)}</div>
           ${over && !S.guest && html`<div class="hint err">You can buy up to ${fmt(left)} more today.</div>`}
@@ -966,7 +1020,7 @@ function MicroScreen({ S, A }) {
       </section>
       <p class="foot">Your gold is pooled with other customers’ in whole 1-tola bars PGBX buys and holds; each bar’s record lists every transaction ID in it. ${LIVE ? '' : 'Demo: transactions are simulated on this phone.'}</p>
     </div>
-    <div class="actionbar"><button class="btn btn-primary" disabled=${!S.guest && (!ready || over || S.paying)} onClick=${() => A.microBuy(units)}>${S.guest ? 'Log in to buy' : `Buy $${units} of gold · ${fmt(total)}`}</button></div>
+    <div class="actionbar"><button class="btn btn-primary" disabled=${!S.guest && (!ready || over || S.paying)} onClick=${() => A.microBuy(units, key)}>${S.guest ? 'Log in to buy' : `Buy $${units} of gold · ${fmt(total)}`}</button></div>
   </div>`;
 }
 function MicroSell({ S, A }) {
@@ -976,11 +1030,12 @@ function MicroSell({ S, A }) {
   const grams = Number(g) || 0;
   const amount = Math.floor(grams * (q.sellGram || 0));
   const cleanIban = iban.replace(/\s/g, '').toUpperCase();
-  const ibanOk = /^PK\d{2}[A-Z]{4}[0-9A-Z]{16}$/.test(cleanIban);
+  const ibanOk = ibanValid(cleanIban);
+  const key = useMemo(() => 'S' + uid() + uid(), [g, cleanIban, m.txns && m.txns.length]);
   const tooMuch = grams > m.grams + 1e-9, tooSmall = g !== '' && grams < (q.minSellGrams || 0.001);
   const ok = grams > 0 && !tooMuch && !tooSmall && ibanOk && amount >= 1 && q.fresh && !S.stale && !S.offline && !S.paying;
   const go = () => A.confirm({ title: `Sell ${fmtG(grams)} for ${fmt(amount)}?`, body: `PGBX pays ${fmt(amount)} to the account ending ${cleanIban.slice(-4)}. The price is today’s sell price of ${fmt(q.sellGram)} per gram.`,
-    confirm: 'Sell', onConfirm: () => A.microSell(Math.round(grams * 1e6) / 1e6, cleanIban) });
+    confirm: 'Sell', onConfirm: () => A.microSell(Math.round(grams * 1e6) / 1e6, cleanIban, key, amount) });
   return html`<div class="page has-actions">
     <${TopBar} title="Sell gold" onBack=${A.back} />
     <div class="scroll"><div class="pad">
@@ -994,8 +1049,8 @@ function MicroSell({ S, A }) {
       <div class="card" style="margin-top:16px"><div class="between"><span class="muted">You receive</span><b style="font-size:20px">${fmt(amount)}</b></div>
         <div class="small muted" style="margin-top:4px">At ${q.sellGram ? fmt(q.sellGram) : '—'} per gram, today’s PGBX sell price</div></div>
       <label class="field"><span class="lbl">Pay to (your bank IBAN)</span>
-        <input class=${'inp mono' + (iban && !ibanOk ? ' bad' : '')} autocapitalize="characters" placeholder="PK36 SCBL 0000 0011 2345 6702" value=${iban} onInput=${e => setIban(e.target.value.slice(0, 34))} /></label>
-      ${iban && !ibanOk && html`<div class="hint err">An IBAN is 24 characters and starts with PK.</div>`}
+        <input class=${'inp mono' + (iban && !ibanOk ? ' bad' : '')} autocapitalize="characters" autocorrect="off" autocomplete="off" spellcheck=${false} placeholder="PK36 SCBL 0000 0011 2345 6702" value=${iban} onInput=${e => setIban(e.target.value.slice(0, 34))} /></label>
+      ${iban && !ibanOk && html`<div class="hint err">${/^PK\d{2}[A-Z]{4}[0-9A-Z]{16}$/.test(cleanIban) ? 'That IBAN isn’t valid. Check it against your bank details.' : 'An IBAN is 24 characters and starts with PK.'}</div>`}
       <p class="foot" style="padding:0">The account must be in your name. PGBX sends the payment by bank transfer, usually the same working day.</p>
     </div></div>
     <div class="actionbar"><button class="btn btn-primary" disabled=${!ok} onClick=${go}>${S.paying ? 'Selling…' : amount ? `Sell for ${fmt(amount)}` : 'Sell'}</button></div>
@@ -1005,7 +1060,7 @@ function MicroTxn({ S, A, ref_ }) {
   const t = ((S.micro && S.micro.txns) || []).find(x => x.ref === ref_);
   if (!t) return html`<div class="page"><${TopBar} title="Transaction" onBack=${A.back} /><div class="scroll"><${Empty} icon="gem" title="Transaction not found" body="It may still be loading. Try again in a moment." /></div></div>`;
   const [tone, label] = MICRO_STATUS[t.status] || ['', t.status];
-  const copy = () => { try { navigator.clipboard.writeText(t.ref).then(() => A.toast('Transaction ID copied')); } catch (e) { } };
+  const copy = () => { try { navigator.clipboard.writeText(t.ref).then(() => A.toast('Transaction ID copied'), () => A.toast('Couldn’t copy. Press and hold the ID to copy it.')); } catch (e) { } };
   return html`<div class="page">
     <${TopBar} title=${t.side === 'buy' ? 'Gold bought' : 'Gold sold'} onBack=${A.back} />
     <div class="scroll"><div class="pad">
@@ -1036,6 +1091,8 @@ function MicroTxn({ S, A, ref_ }) {
 // Price lock shown on product, cart and payment (60 s, then refreshed to the latest rate)
 const LockLine = ({ S }) => {
   const remain = S.lock ? Math.min(LOCK_S, Math.max(0, Math.ceil((S.lock.expiresAt - S.now) / 1000))) : LOCK_S;
+  // Production: until the server has locked the price, say so instead of counting down
+  if (LIVE && (!S.lock || S.lock.pending)) return html`<div><div class="lockline" role="status"><span class="spin dark" aria-hidden="true"></span><span>Locking today’s price…</span></div></div>`;
   return html`<div>
     <div class="lockline" role="timer" aria-live="off"><${Icon} n="lock" c="xs"/><span>Price locked for <b style="color:var(--text)">${remain}s</b>, then updated to the latest rate</span></div>
     <div class=${'lockbar' + (remain <= 10 ? ' low' : '')}><i style=${{ transform: `scaleX(${remain / LOCK_S})` }}></i></div>
@@ -1057,7 +1114,7 @@ function ProductScreen({ S, A, pid }) {
         <div><span>Weight</span><b>${p.metal === 'silver' ? p.label : fmtW(p.grams)}</b></div>
         <div><span>Purity</span><b>999.0</b></div>
       </div>
-      ${S.stale && html`<${StaleBanner}/>`}
+      ${S.stale && html`<${StaleBanner} S=${S}/>`}
       <div class="card" style="margin-top:12px">
         <div class="between"><span class="muted">Price per bar</span><b style="font-size:17px">${unit ? html`<${Odo} value=${unit} flash=${S.lock.expiresAt} />` : '—'}</b></div>
         <div style="margin-top:12px"><${LockLine} S=${S} /></div>
@@ -1109,7 +1166,7 @@ function CartScreen({ S, A }) {
       </div>
       <${LimitBar} S=${S} add=${total} />
       ${over && html`<${Notice} kind="warning" title="Over today’s limit">You can buy up to ${fmt(Math.max(0, DAY_LIMIT - S.spentToday))} more today. Remove a bar to continue.</${Notice}>`}
-      ${S.stale && html`<${StaleBanner}/>`}
+      ${S.stale && html`<${StaleBanner} S=${S}/>`}
     </div>
     <${ActionBar} label=${`${units} bar${units > 1 ? 's' : ''} · ${new Set(lines.map(l => P[l.pid].metal)).size > 1 ? 'gold and silver' : metalName(P[lines[0].pid].metal).toLowerCase()}`} amount=${html`<${Odo} value=${total} />`}>
       <button class="btn btn-primary" disabled=${S.stale || over || units > MAX_UNITS} onClick=${() => A.checkout('cart')}>Continue to payment</button>
@@ -1146,7 +1203,7 @@ function PayScreen({ S, A }) {
       <${Notice} kind="plain" icon="shield">Metal is added to your wallet as soon as PGBX confirms your payment. If anything goes wrong, PGBX completes the order or refunds you.</${Notice}>
       ${S.offline && html`<${Notice} kind="warning" icon="wifiOff" title="You’re offline">Connect to the internet to pay. Your order is kept on this screen.</${Notice}>`}
       ${over && html`<${Notice} kind="warning" title="Over today’s limit">This order would take you over today’s limit of ${fmt(DAY_LIMIT)}.</${Notice}>`}
-      ${S.stale && html`<${StaleBanner}/>`}
+      ${S.stale && html`<${StaleBanner} S=${S}/>`}
       <${Demo} title="Simulate a problem">
         <button class="row" onClick=${() => A.set({ simCreditFail: !S.simCreditFail })} role="switch" aria-checked=${S.simCreditFail}>
           <div class="rt"><b>Payment succeeds, crediting fails</b><span>Shows retries and hand-off to PGBX operations</span></div><${Switch} on=${S.simCreditFail} />
@@ -1167,7 +1224,13 @@ function Processing({ fail, kind }) {
     ? [['ok', 'Payment received'], ['bad', 'Couldn’t add the metal to your wallet'], ['ok', 'Retrying (1 of 3)'], ['ok', 'Retrying (2 of 3)'], ['ok', 'Retrying (3 of 3)'], ['flag', 'Passed to PGBX operations']]
     : [['ok', 'Payment confirmed'], ['ok', 'Adding metal to your wallet'], ['ok', 'Issuing your receipt']];
   const [n, setN] = useState(0);
-  useEffect(() => { const t = setInterval(() => setN(v => Math.min(v + 1, steps.length - 1)), fail ? 800 : 550); return () => clearInterval(t); }, []);
+  useEffect(() => { if (LIVE) return; const t = setInterval(() => setN(v => Math.min(v + 1, steps.length - 1)), fail ? 800 : 550); return () => clearInterval(t); }, []);
+  // Production: no made-up progress. The next screen shows what the server says happened.
+  if (LIVE) return html`<div class="center-screen" role="status" aria-live="polite">
+    <div class="spinner" aria-hidden="true"></div>
+    <h2 style="margin-top:24px;font-size:22px">Processing your payment</h2>
+    <p class="small muted" style="margin-top:4px">Please keep the app open.</p>
+  </div>`;
   return html`<div class="center-screen" role="status" aria-live="polite">
     <div class="spinner" aria-hidden="true"></div>
     <h2 style="margin-top:24px;font-size:22px">${fail ? 'Processing your order' : 'Confirming your payment'}</h2>
@@ -1184,6 +1247,7 @@ function Receipt({ S, A, oid, showBack }) {
   // credited | flagged (with operations) | pending (waiting for the payment) | refunded | failed | expired
   const flagged = o.status === 'flagged' || o.status === 'pending';
   const ended = ['refunded', 'failed', 'expired'].includes(o.status);
+  const paid = o.status === 'credited' || o.status === 'flagged';
   const HEAD = { pending: ['Waiting for your payment', 'Your order is reserved while you complete the payment. The metal is added as soon as PGBX receives it.'],
     refunded: ['Order refunded', 'PGBX refunded this order to your payment method.'], failed: ['Payment didn’t go through', 'No money was taken. You can try again from the product.'],
     expired: ['Order expired', 'The payment wasn’t completed in time, so the order was cancelled.'] };
@@ -1205,12 +1269,12 @@ function Receipt({ S, A, oid, showBack }) {
       <div class="kv"><span>Paid with</span><b>${(METHODS.find(m => m.id === o.method) || { name: o.method }).name}</b></div>
       <div class="kv"><span>Date</span><b>${dt(o.ts)}</b></div>
       <div class="kv"><span>Status</span><span class=${'tag ' + (ended ? 'neutral' : flagged ? 'warning' : 'success')}>${o.status === 'pending' ? 'Awaiting payment' : ended ? HEAD[o.status][0] : flagged ? 'With operations' : 'In your wallet'}</span></div>
-      <div class="kv total"><span>Total paid</span><b>${fmt(o.total)}</b></div>
+      <div class="kv total"><span>${paid ? 'Total paid' : 'Total'}</span><b>${fmt(o.total)}</b></div>
       <div class="small muted" style="margin-top:8px">Tax and legal details: <${Tbc}/></div>
     </div>
     <div class="pad stack-btns" style="margin-top:24px">
       <button class="btn btn-primary" onClick=${() => A.tab('wallet')}>View wallet</button>
-      <button class="btn btn-secondary" onClick=${share}><${Icon} n="share" c="sm"/> Share receipt</button>
+      ${paid && html`<button class="btn btn-secondary" onClick=${share}><${Icon} n="share" c="sm"/> Share receipt</button>`}
       ${!showBack && html`<button class="btn btn-tertiary" onClick=${() => A.tab('rates')}>Done</button>`}
     </div>`;
   return showBack ? html`<div class="page"><${TopBar} title="Receipt" onBack=${A.back} /><div class="scroll from-inbox">${body}</div></div>` : html`<div class="scroll">${body}</div>`;
@@ -1230,23 +1294,26 @@ const IdCardArt = ({ back }) => html`<svg class="idcard" viewBox="0 0 250 156" a
 
 function KycScreen({ S, A, next }) {
   const re = S.kyc.status === 'reverify';
-  const [step, setStep] = useState(0);
+  // A check already with PGBX opens on its status instead of starting again
+  const [step, setStep] = useState(LIVE && S.kyc.status === 'pending' ? 7 : 0);
+  const timers = useRef([]); useEffect(() => () => timers.current.forEach(clearTimeout), []);
+  const later = (fn, ms) => timers.current.push(setTimeout(fn, ms));
   const [f, setF] = useState({ cnic: S.profile.cnic || '', name: S.profile.name || '', dob: S.profile.dob || '', expiry: S.kyc.expiry || '' });
   const [touched, setTouched] = useState({});
   const [shot, setShot] = useState({ front: false, back: false, selfie: false });
   const [busy, setBusy] = useState(false);
   const age = f.dob ? (Date.now() - Date.parse(f.dob)) / (365.25 * 86400e3) : 0;
-  const errs = { cnic: f.cnic.replace(/\D/g, '').length !== 13, name: f.name.trim().length < 3, dob: !(age >= 18 && age < 120), expiry: !(Date.parse(f.expiry) > Date.now()) };
+  const errs = { cnic: f.cnic.replace(/\D/g, '').length !== 13, name: f.name.trim().length < 3, dob: !(age >= 18 && age < 120), expiry: f.expiry !== 'lifetime' && !(Date.parse(f.expiry) > Date.now()) };
   const msgs = { cnic: 'Enter all 13 digits of your CNIC.', name: 'Enter your full name as printed on your CNIC.', dob: f.dob ? 'You must be 18 or older.' : 'Enter your date of birth.', expiry: f.expiry ? 'This CNIC has expired.' : 'Enter the expiry date.' };
   const ok = !Object.values(errs).some(Boolean);
   const show = k => (touched[k] || touched.all) && errs[k];
-  const capture = k => { setBusy(true); setTimeout(() => { setShot(s => ({ ...s, [k]: true })); setBusy(false); }, 1500); };
+  const capture = k => { setBusy(true); later(() => { setShot(s => ({ ...s, [k]: true })); setBusy(false); }, 1500); };
   const [result, setResult] = useState(null);
   // Production: the details go to the server and the identity provider decides. The provider's own capture screens
   // (CNIC photos and selfie) open here once PGBX chooses a provider; the demo build simulates them.
   const submit = LIVE
     ? async () => { setStep(5); try { const r = await A.submitKycLive(f); setResult(r); setStep(r.status === 'verified' ? 6 : 7); } catch (e) { setResult({ status: 'error', reason: e.message }); setStep(7); } }
-    : () => { setStep(5); A.submitKyc(f); setTimeout(() => { A.kycVerified(); setStep(6); }, 2600); };
+    : () => { setStep(5); A.submitKyc(f); later(() => { A.kycVerified(); setStep(6); }, 2600); };
   const titles = [re ? 'Verify your identity again' : 'Verify your identity', 'Your CNIC details', 'Front of your CNIC', 'Back of your CNIC', 'Take a selfie', 'Checking your details', 'You’re verified',
     result && result.status === 'failed' ? 'We couldn’t verify you' : result && result.status === 'error' ? 'Something went wrong' : 'We’re checking your details'];
   const Frame = (k, back) => html`<div class="idframe">
@@ -1264,16 +1331,19 @@ function KycScreen({ S, A, next }) {
       <div class="pad step-in" key=${step} style="margin-top:24px">
         <h2 style="font-size:24px">${titles[step]}</h2>
         ${step === 0 && html`<p class="muted" style="margin-top:8px">${re ? 'You changed your identity details, so PGBX needs to check them again before your next purchase.' : 'PGBX checks your identity once, before your first purchase. It takes about 2 minutes.'}</p>
-          <div class="group" style="margin:20px 0 0">${[['Your CNIC details', 'Number, name, date of birth and expiry'], ['Photos of your CNIC', 'Front and back'], ['A selfie', 'Matched to your CNIC photo']].map(([t, d], i) => html`<div class="row"><span class="kn">${i + 1}</span><div class="rt"><b>${t}</b><span>${d}</span></div></div>`)}</div>
-          <p class="small muted" style="margin-top:12px">Your details are encrypted and used only to verify your identity. We’ll ask to use your camera for the photos.</p>
+          <div class="group" style="margin:20px 0 0">${[['Your CNIC details', 'Number, name, date of birth and expiry'], ...(LIVE ? [] : [['Photos of your CNIC', 'Front and back'], ['A selfie', 'Matched to your CNIC photo']])].map(([t, d], i) => html`<div class="row"><span class="kn">${i + 1}</span><div class="rt"><b>${t}</b><span>${d}</span></div></div>`)}</div>
+          <p class="small muted" style="margin-top:12px">Your details are encrypted and used only to verify your identity.${LIVE ? '' : ' We’ll ask to use your camera for the photos.'}</p>
           <button class="btn btn-primary" style="margin-top:24px" onClick=${() => setStep(1)}>Start</button>`}
         ${step === 1 && html`<div>
           ${F('cnic', 'CNIC number', html`<input class=${'inp' + (show('cnic') ? ' bad' : '')} inputmode="numeric" autocomplete="off" placeholder="00000-0000000-0" value=${fmtCnic(f.cnic)} onBlur=${() => setTouched(t => ({ ...t, cnic: true }))} onInput=${e => setF({ ...f, cnic: fmtCnic(e.target.value) })} />`)}
           ${F('name', 'Full name, as on your CNIC', html`<input class=${'inp' + (show('name') ? ' bad' : '')} autocomplete="name" value=${f.name} onBlur=${() => setTouched(t => ({ ...t, name: true }))} onInput=${e => setF({ ...f, name: e.target.value })} />`)}
           <div class="grid2">
             ${F('dob', 'Date of birth', html`<input class=${'inp' + (show('dob') ? ' bad' : '')} type="date" autocomplete="bday" value=${f.dob} onBlur=${() => setTouched(t => ({ ...t, dob: true }))} onInput=${e => setF({ ...f, dob: e.target.value })} />`)}
-            ${F('expiry', 'CNIC expiry', html`<input class=${'inp' + (show('expiry') ? ' bad' : '')} type="date" value=${f.expiry} onBlur=${() => setTouched(t => ({ ...t, expiry: true }))} onInput=${e => setF({ ...f, expiry: e.target.value })} />`)}
+            ${F('expiry', 'CNIC expiry', f.expiry === 'lifetime' ? html`<div class="inp" style="display:flex;align-items:center">Lifetime</div>`
+              : html`<input class=${'inp' + (show('expiry') ? ' bad' : '')} type="date" value=${f.expiry} onBlur=${() => setTouched(t => ({ ...t, expiry: true }))} onInput=${e => setF({ ...f, expiry: e.target.value })} />`)}
           </div>
+          <button class="check" style="margin-top:8px" onClick=${() => setF({ ...f, expiry: f.expiry === 'lifetime' ? '' : 'lifetime' })} role="checkbox" aria-checked=${f.expiry === 'lifetime'}>
+            <span class=${'cbox' + (f.expiry === 'lifetime' ? ' on' : '')} aria-hidden="true"><${Icon} n="check"/></span> My CNIC has no expiry date (lifetime)</button>
           <button class="btn btn-primary" style="margin-top:24px" onClick=${() => (!ok ? setTouched({ all: true }) : LIVE ? submit() : setStep(2))}>${LIVE ? 'Submit for verification' : 'Continue'}</button></div>`}
         ${(step === 2 || step === 3) && html`<p class="muted" style="margin-top:8px">Use good light and avoid glare. All four corners should be visible.</p>
           ${Frame(step === 2 ? 'front' : 'back', step === 3)}
@@ -1327,6 +1397,9 @@ function ProfileScreen({ S, A }) {
   const dirty = idChanged || ['email', 'address'].some(k => (f[k] || '') !== (S.profile[k] || ''));
   const emailBad = f.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email);
   const nameBad = f.name.trim().length < 3;
+  const cnicBad = !!f.cnic && f.cnic.replace(/\D/g, '').length !== 13;
+  const age = f.dob ? (Date.now() - Date.parse(f.dob)) / (365.25 * 86400e3) : null;
+  const dobBad = !!f.dob && !(age >= 18 && age < 120);
   const numOk = PK_MOBILE.test(ph.num);
   // Leaving with unsaved edits asks first, whichever way the customer leaves (back, tab bar or the phone's back gesture)
   useEffect(() => {
@@ -1340,8 +1413,10 @@ function ProfileScreen({ S, A }) {
       <div class="card">
         <label class="field" style="margin-top:0"><span class="lbl">Full name</span><input class=${'inp' + (nameBad ? ' bad' : '')} autocomplete="name" value=${f.name} onInput=${e => setF({ ...f, name: e.target.value })} />
           ${nameBad && html`<div class="hint err">Enter your full name.</div>`}</label>
-        <label class="field"><span class="lbl">CNIC number</span><input class="inp" inputmode="numeric" placeholder="Added during verification" value=${fmtCnic(f.cnic || '')} onInput=${e => setF({ ...f, cnic: fmtCnic(e.target.value) })} /></label>
-        <label class="field"><span class="lbl">Date of birth</span><input class="inp" type="date" autocomplete="bday" value=${f.dob || ''} onInput=${e => setF({ ...f, dob: e.target.value })} /></label>
+        <label class="field"><span class="lbl">CNIC number</span><input class=${'inp' + (cnicBad ? ' bad' : '')} inputmode="numeric" placeholder="Added during verification" value=${fmtCnic(f.cnic || '')} onInput=${e => setF({ ...f, cnic: fmtCnic(e.target.value) })} />
+          ${cnicBad && html`<div class="hint err">Enter all 13 digits of your CNIC.</div>`}</label>
+        <label class="field"><span class="lbl">Date of birth</span><input class=${'inp' + (dobBad ? ' bad' : '')} type="date" autocomplete="bday" value=${f.dob || ''} onInput=${e => setF({ ...f, dob: e.target.value })} />
+          ${dobBad && html`<div class="hint err">${age < 18 ? 'You must be 18 or older.' : 'Check your date of birth.'}</div>`}</label>
         ${idChanged && S.kyc.status === 'verified' && html`<div class="notice warning" style="margin:16px 0 0;width:100%"><${Icon} n="alert" c="sm"/><span>Changing your identity details means PGBX must verify you again. Buying is paused until then.</span></div>`}
       </div>
       <section class="sec">
@@ -1363,7 +1438,7 @@ function ProfileScreen({ S, A }) {
           <label class="field"><span class="lbl">Address (optional)</span><textarea class="inp" rows="2" autocomplete="street-address" placeholder="House, street, area, city" value=${f.address || ''} onInput=${e => setF({ ...f, address: e.target.value })}></textarea></label>
         </div>
       </section>
-      <div class="pad" style="margin-top:24px"><button class="btn btn-primary" disabled=${!dirty || emailBad || nameBad || S.sending} aria-busy=${!!S.sending} onClick=${() => A.saveProfile(f)}>${S.sending ? 'Saving…' : 'Save changes'}</button></div>
+      <div class="pad" style="margin-top:24px"><button class="btn btn-primary" disabled=${!dirty || emailBad || nameBad || cnicBad || dobBad || S.sending} aria-busy=${!!S.sending} onClick=${() => A.saveProfile(f)}>${S.sending ? 'Saving…' : 'Save changes'}</button></div>
     </div>
   </div>`;
 }
@@ -1378,6 +1453,7 @@ function WalletScreen({ S, A }) {
   const pending = S.orders.filter(o => o.status === 'flagged');
   return html`<div class="scroll">
     <${TabHead} title="Wallet" sub="Every bar is backed one-to-one by metal PGBX holds" />
+    ${LIVE && S.missing && S.missing.length > 0 && html`<div class="pad" style="margin-top:12px"><${Notice} kind="warning" title="Some of your account didn’t load">What’s shown may be incomplete. <button class="linkbtn sm" onClick=${A.sync}>Try again</button></${Notice}></div>`}
     <div class="brand-card on-dark" style="margin-top:16px">
       <div class="bc-label">Value at today’s sell price</div>
       <div class="bc-value"><${Odo} value=${wv.total} flash=${S.rates.tick} /></div>
@@ -1426,6 +1502,7 @@ function WalletScreen({ S, A }) {
 
     <section class="sec">
       <div class="sec-h"><h3>Activity</h3></div>
+      ${!history.length && html`<p class="foot" style="margin-top:0">Purchases and collections appear here.</p>`}
       <div class="group inset">
         ${history.map(e => { const p = P[e.pid]; const kind = e.reason === 'purchase' ? 'plus' : e.reason === 'redemption' ? 'minus' : 'open';
           const title = kind === 'plus' ? 'Bought' : kind === 'minus' ? 'Collected' : 'Opening balance';
@@ -1448,13 +1525,29 @@ function holdingsAt(ledger, untilTs) { const h = {}; ledger.forEach(e => { if (e
 const holdText = h => PRODUCTS.filter(p => h[p.id] > 0).map(p => `${h[p.id]} × ${pname(p)}`).join(', ') || 'None';
 function statementData(S, from, to) {
   const a = Date.parse(from + 'T00:00:00'), b = Date.parse(to + 'T23:59:59.999');
-  return { a, b, opening: holdingsAt(S.ledger, a), closing: holdingsAt(S.ledger, b + 1), entries: S.ledger.filter(e => e.ts >= a && e.ts <= b) };
+  return { a, b, opening: holdingsAt(S.ledger, a), closing: holdingsAt(S.ledger, b + 1), entries: S.ledger.filter(e => e.ts >= a && e.ts <= b),
+    // $1 gold: paid purchases and sales in the period, and today's balance (it counts towards the wallet total)
+    micro: ((S.micro && S.micro.txns) || []).filter(t => t.ts >= a && t.ts <= b && ['credited', 'pending_payout', 'paid_out'].includes(t.status)).sort((x, y) => x.ts - y.ts),
+    microGrams: (S.micro && S.micro.grams) || 0 };
 }
+const microType = t => (t.side === 'buy' ? '$1 gold purchase' : '$1 gold sale');
 const entryType = e => (e.reason === 'purchase' ? 'Purchase' : e.reason === 'redemption' ? 'Redemption' : 'Opening balance (sample)');
 function downloadBlob(name, type, text) {
   const url = URL.createObjectURL(new Blob([text], { type }));
   const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+// Saves a file the customer can keep: the phone's share sheet in the native app (Files, Drive, email...), a download
+// in a browser. Answers how it went: 'shared', 'downloaded', 'cancelled' or 'failed'.
+async function saveText(name, type, text) {
+  const nat = window.PGBXNative;
+  if (nat && nat.saveFile) { try { return (await nat.saveFile(name, type, text)) ? 'shared' : 'cancelled'; } catch (e) { return 'failed'; } }
+  if (Live.NATIVE) {
+    try { const f = new File([text], name, { type }); if (navigator.canShare && navigator.canShare({ files: [f] })) { await navigator.share({ files: [f], title: name }); return 'shared'; } }
+    catch (e) { return e && e.name === 'AbortError' ? 'cancelled' : 'failed'; }
+    return 'failed';
+  }
+  downloadBlob(name, type, text); return 'downloaded';
 }
 function statementHtml(S, d, from, to) {
   const esc = x => String(x).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -1465,8 +1558,11 @@ function statementHtml(S, d, from, to) {
 <div class="box"><b>${esc(S.profile.name)}</b> · CNIC ${esc(maskCnic(S.profile.cnic) || 'not verified')} · +92 ${esc(S.phone || '3XX XXX 4521')}<br>Period: ${from} to ${to} · Generated ${esc(dt(Date.now()))}</div>
 <p><b>Opening holdings:</b> ${esc(holdText(d.opening))}<br><b>Closing holdings:</b> ${esc(holdText(d.closing))}</p>
 <table><tr><th>Date</th><th>Type</th><th>Product</th><th>Units</th><th>Price / unit</th><th>Receipt / reference</th></tr>${rows}</table>
+<h2 style="font-size:15px;margin-top:24px;color:#0B4A2C">$1 gold</h2><p><b>Balance today:</b> ${esc(fmtG(d.microGrams))} of 24K gold, pooled in 1-tola bars</p>
+<table><tr><th>Date</th><th>Type</th><th>Grams</th><th>Price / gram</th><th>Amount</th><th>Transaction ID</th></tr>${d.micro.map(t => `<tr><td>${esc(dt(t.ts))}</td><td>${esc(microType(t))}</td><td style="text-align:right">${t.side === 'buy' ? '+' : '−'}${esc(fmtG(t.grams))}</td><td style="text-align:right">${esc(fmt(t.price))}</td><td style="text-align:right">${esc(fmt(t.amount))}</td><td>${esc(t.ref)}</td></tr>`).join('') || '<tr><td colspan="6">No $1 gold activity in this period.</td></tr>'}</table>
 <p class="m">Holdings are calculated from your wallet activity record. Tax and legal details: [To be confirmed by PGBX].${LIVE ? '' : ' Prototype statement with sample data.'}</p></body></html>`;
 }
+const SAVED_MSG = { shared: w => `Statement ready to save as ${w}`, downloaded: w => `Statement downloaded as ${w}`, cancelled: () => 'Not saved', failed: () => 'This phone couldn’t save the statement. Try again, or contact PGBX for a copy.' };
 function StatementScreen({ S, A }) {
   const today = isoDay(S.now);
   const PRESETS = { month: [isoDay(new Date(new Date().getFullYear(), new Date().getMonth(), 1)), today], d30: [isoDay(S.now - 29 * 86400e3), today], d90: [isoDay(S.now - 89 * 86400e3), today] };
@@ -1478,12 +1574,16 @@ function StatementScreen({ S, A }) {
   const csv = () => {
     const q = v => `"${String(v).replace(/"/g, '""')}"`;
     const lines = [['Date', 'Type', 'Product', 'Units', 'Price per unit (PKR)', 'Receipt / reference'].map(q).join(','),
-      ...d.entries.map(e => [new Date(e.ts).toISOString(), entryType(e), pname(P[e.pid]), e.delta, e.price || '', e.ref].map(q).join(','))];
-    downloadBlob(`PGBX-statement-${from}-to-${to}.csv`, 'text/csv', lines.join('\n')); A.toast('Statement downloaded as CSV');
+      ...d.entries.map(e => [new Date(e.ts).toISOString(), entryType(e), pname(P[e.pid]), e.delta, e.price || '', e.ref].map(q).join(',')),
+      ...d.micro.map(t => [new Date(t.ts).toISOString(), microType(t), '24K gold, grams (pooled)', (t.side === 'buy' ? 1 : -1) * t.grams, t.price, t.ref].map(q).join(','))];
+    saveText(`PGBX-statement-${from}-to-${to}.csv`, 'text/csv', lines.join('\n')).then(r => A.toast(SAVED_MSG[r]('CSV')));
   };
   const pdf = () => {
     const h = statementHtml(S, d, from, to);
-    const w = window.open(URL.createObjectURL(new Blob([h], { type: 'text/html' })), '_blank');
+    if (Live.NATIVE) { saveText(`PGBX-statement-${from}-to-${to}.html`, 'text/html', h).then(r => A.toast(SAVED_MSG[r]('printable statement'))); return; }
+    const url = URL.createObjectURL(new Blob([h], { type: 'text/html' }));
+    const w = window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);                // the new tab has loaded it by then
     if (w) w.addEventListener('load', () => setTimeout(() => w.print(), 300));
     if (!w) { downloadBlob(`PGBX-statement-${from}-to-${to}.html`, 'text/html', h); A.toast('Statement downloaded. Open it and print to PDF.'); }
   };
@@ -1503,6 +1603,7 @@ function StatementScreen({ S, A }) {
         ${d.entries.length === 0 && html`<div class="hint" style="margin:0 0 4px">No activity in this period. Choose a longer period to include more.</div>`}
         <div class="kv"><span>Opening holdings</span><b style="max-width:60%">${holdText(d.opening)}</b></div>
         <div class="kv"><span>Closing holdings</span><b style="max-width:60%">${holdText(d.closing)}</b></div>
+        ${(d.micro.length > 0 || d.microGrams > 0) && html`<div class="kv"><span>$1 gold</span><b style="max-width:60%">${d.micro.length} transaction${d.micro.length === 1 ? '' : 's'} · ${fmtG(d.microGrams)} today</b></div>`}
       </div>
       <div class="pad stack-btns" style="margin-top:24px">
         <button class="btn btn-primary" onClick=${pdf}><${Icon} n="doc" c="sm"/> Save as PDF</button>
@@ -1582,6 +1683,8 @@ function RedeemScreen({ S, A, pushed }) {
     <section class="sec">
       <div class="sec-h"><h3>Where</h3><span class="aside">${LIVE ? 'By area' : 'Nearest first'}</span></div>
       ${!LIVE && html`<${DealerMap} selected=${did} isOk=${dealerOk} onSelect=${pickDealer} />`}
+      ${LIVE && !sorted.length && (S.dealersFailed ? html`<${Notice} kind="warning" title="Dealers didn’t load">Check your connection. <button class="linkbtn sm" onClick=${A.reloadPublic}>Try again</button></${Notice}>`
+        : html`<div class="group"><div class="row"><span class="sk" style="width:180px;height:16px"></span></div></div>`)}
       <div class="group inset" role="radiogroup" aria-label="Dealer">
         ${sorted.map(d => { const ok = dealerOk(d); const on = did === d.id;
           return html`<div class=${'row' + (ok ? '' : ' off')} style="align-items:flex-start" tabindex=${ok ? 0 : -1} onClick=${() => ok && pickDealer(d.id)} onKeyDown=${e => { if (ok && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); pickDealer(d.id); } }} role="radio" aria-checked=${on} aria-disabled=${!ok}>
@@ -1599,12 +1702,12 @@ function RedeemScreen({ S, A, pushed }) {
       <div class="card">
         <div class="kv"><span>Collection fee</span><${Tbc}/></div>
         <div class="kv"><span>Gold and silver rules</span><${Tbc}/></div>
-        <div class="kv"><span>Code valid for</span><b>24 hours</b></div>
+        <div class="kv"><span>Code valid for</span><b>${Math.round(RESERVE_MS / 3600e3)} hours</b></div>
       </div>
       <${Notice} kind="plain" icon="idcard"><b>Bring your original CNIC</b>The dealer checks it against your account. Your code works once, and only at the dealer you choose.</${Notice}>
     </section>
     ${S.offline && html`<${Notice} kind="warning" icon="wifiOff" title="You’re offline">Connect to the internet to reserve a collection.</${Notice}>`}
-    <div class="pad" style="margin-top:24px"><button class="btn btn-primary" disabled=${!canConfirm || S.offline} onClick=${() => A.redeem(pid, units, did)}>${did ? `Reserve ${units} bar${units > 1 ? 's' : ''} for collection` : 'Choose a dealer'}</button></div>
+    <div class="pad" style="margin-top:24px"><button class="btn btn-primary" disabled=${!canConfirm || S.offline || S.paying} aria-busy=${!!S.paying} onClick=${() => A.redeem(pid, units, did)}>${S.paying ? html`<span class="spin"></span> Reserving` : did ? `Reserve ${units} bar${units > 1 ? 's' : ''} for collection` : 'Choose a dealer'}</button></div>
     `}
     ${past.length > 0 && html`<section class="sec"><div class="sec-h"><h3>Past collections</h3></div><div class="group inset-thumb">${past.map(r => html`<${RedemptionRow} r=${r} S=${S} A=${A}/>`)}</div></section>`}`;
   return pushed ? html`<div class="page"><${TopBar} title="Collect your bars" onBack=${A.back} /><div class="scroll">${body}</div></div>` : html`<div class="scroll">${body}</div>`;
@@ -1636,8 +1739,8 @@ function CodeScreen({ S, A, rid }) {
       <div class="card" style="text-align:center;padding:24px 16px">
         <span class=${'tag ' + STATUS_TAG[st]}>${STATUS_LABEL[st]}</span>
         <div class="small muted" style="margin-top:12px">Collection code</div>
-        ${r.code ? html`<div class=${'code' + (live ? '' : ' dim')} aria-label=${`Code ${r.code.split('').join(' ')}`}>${r.code.split('').map(c => html`<span aria-hidden="true">${c}</span>`)}</div>`
-          : html`<div class="code dim" aria-label="Code no longer valid">${'••••••'.split('').map(c => html`<span aria-hidden="true">${c}</span>`)}</div>`}
+        ${r.code ? html`<div class=${'code' + (live ? '' : ' dim')}><span class="sr">${`Code ${r.code.split('').join(' ')}`}</span>${r.code.split('').map(c => html`<span aria-hidden="true">${c}</span>`)}</div>`
+          : html`<div class="code dim"><span class="sr">Code no longer valid</span>${'••••••'.split('').map(c => html`<span aria-hidden="true">${c}</span>`)}</div>`}
         <div class="small" style="margin-top:12px;font-weight:600;color:${live ? 'var(--text)' : 'var(--text-2)'}">
           ${live ? `Expires in ${dur(r.expiresAt - S.now)}` : st === 'completed' ? `Collected ${rel(r.completedAt, S.now)}` : st === 'cancelled' ? 'Cancelled. The bars are back in your wallet.' : 'Expired. The bars are back in your wallet.'}
         </div>
@@ -1703,13 +1806,13 @@ function NotifSettings({ S, A }) {
     <${TopBar} title="Notification settings" onBack=${A.back} />
     <div class="scroll">
       <div class="group inset">
-        ${[['push', 'Push notifications', 'On this phone', 'bell'], ['sms', 'SMS', 'To your mobile number', 'phone'], ['email', 'Email', S.profile.email || 'Add an email in Personal details', 'mail']].map(([k, l, d, ic]) => html`<button class="row" onClick=${() => A.set(s => ({ notifPrefs: { ...s.notifPrefs, [k]: !s.notifPrefs[k] } }))} role="switch" aria-checked=${prefs[k]}>
+        ${[['push', 'Push notifications', LIVE ? 'On your phones' : 'On this phone', 'bell'], ...(LIVE ? [] : [['sms', 'SMS', 'To your mobile number', 'phone'], ['email', 'Email', S.profile.email || 'Add an email in Personal details', 'mail']])].map(([k, l, d, ic]) => html`<button class="row" onClick=${() => A.setNotif(k, !prefs[k])} role="switch" aria-checked=${prefs[k]}>
           <span class="ri"><${Icon} n=${ic} c="sm"/></span><div class="rt"><b>${l}</b><span>${d}</span></div><${Switch} on=${prefs[k]} /></button>`)}
       </div>
-      <p class="foot">Where we send notifications, besides the app.</p>
+      <p class="foot">${LIVE ? 'Notifications always appear in the app’s inbox. Security notices are always sent to your phone.' : 'Where we send notifications, besides the app.'}</p>
       <section class="sec"><div class="sec-h"><h3>What we notify you about</h3></div>
         <div class="group">
-          <button class="row" onClick=${() => A.set(s => ({ notifPrefs: { ...s.notifPrefs, alerts: s.notifPrefs.alerts === false } }))} role="switch" aria-checked=${prefs.alerts !== false}>
+          <button class="row" onClick=${() => A.setNotif('alerts', prefs.alerts === false)} role="switch" aria-checked=${prefs.alerts !== false}>
             <div class="rt"><b>Price alerts</b><span>When a price reaches a target you set</span></div><${Switch} on=${prefs.alerts !== false} /></button>
           <div class="row"><div class="rt"><b>Purchases and collections</b><span>Receipts, collection codes and dealer updates. Always on, because they’re about your money and metal.</span></div><span class="tag neutral">Always on</span></div>
           <div class="row"><div class="rt"><b>Security</b><span>New logins, PIN and number changes. Always on to protect your account.</span></div><span class="tag neutral">Always on</span></div>
@@ -1750,8 +1853,8 @@ function AccountScreen({ S, A }) {
     <section class="sec"><div class="sec-h"><h3>Security</h3></div>
       <div class="group inset">
         ${R({ icon: 'key', label: 'Change PIN', go: () => A.push({ name: 'changepin' }) })}
-        ${(!LIVE || (window.PGBXNative && window.PGBXNative.biometric)) && html`<button class="row" onClick=${() => A.set({ biometric: !S.biometric })} role="switch" aria-checked=${S.biometric}>
-          <span class="ri"><${Icon} n="face" c="sm"/></span><div class="rt"><b>${LIVE && /Android/.test(navigator.userAgent) ? 'Unlock with fingerprint or face' : 'Unlock with Face ID'}</b></div><${Switch} on=${S.biometric} /></button>`}
+        ${(!LIVE || (window.PGBXNative && window.PGBXNative.biometric && window.PGBXNative.biometric.ready)) && html`<button class="row" onClick=${() => A.setBio(!S.biometric)} role="switch" aria-checked=${S.biometric}>
+          <span class="ri"><${Icon} n="face" c="sm"/></span><div class="rt"><b>Unlock with ${bioName()}</b></div><${Switch} on=${S.biometric} /></button>`}
         <div class="row"><span class="ri"><${Icon} n="clock" c="sm"/></span><div class="rt"><b>Auto-lock</b><span>After 2 minutes without activity</span></div></div>
       </div></section>
 
@@ -1796,10 +1899,11 @@ function CloseAccount({ S, A }) {
   const pending = S.orders.filter(o => o.status === 'flagged').length;
   const services = S.appraisals.filter(a => ['booked', 'confirmed'].includes(a.status)).length + S.giftOrders.filter(g => ['placed', 'in_production', 'dispatched'].includes(g.status)).length;
   const blockers = [
-    bars > 0 && { t: `You still hold ${bars} bar${bars > 1 ? 's' : ''} worth ${fmt(S.walletValue.total)}`, d: 'Collect them at a dealer first. Selling back to PGBX: ', tbc: true, act: 'Collect your bars', go: () => A.push({ name: 'collect' }) },
-    active > 0 && { t: `${active} collection${active > 1 ? ' is' : 's are'} still open`, d: 'Collect or cancel them first.', act: 'View collections', go: () => A.push({ name: 'collect' }) },
+    LIVE && (!S.synced || (S.missing && S.missing.length > 0)) && { t: 'Your account hasn’t fully loaded', d: 'We need your latest holdings and orders before the account can be closed.', act: 'Try again', go: A.sync },
+    bars > 0 && { t: `You still hold ${bars} bar${bars > 1 ? 's' : ''} worth ${fmt(S.walletValue.total - S.walletValue.micro)}`, d: 'Collect them at a dealer first. Selling back to PGBX: ', tbc: true, act: 'Collect your bars', go: () => A.push({ name: 'collect' }) },
+    active > 0 && { t: `${active} collection${active > 1 ? 's are' : ' is'} still open`, d: 'Collect or cancel them first.', act: 'View collections', go: () => A.push({ name: 'collect' }) },
     services > 0 && { t: `${services} service booking${services > 1 ? 's are' : ' is'} still open`, d: 'Wait until your appraisal visit or gift delivery is done, or cancel it.', act: 'View services', go: () => A.tab('services') },
-    pending > 0 && { t: `${pending} order${pending > 1 ? ' is' : 's are'} still being completed`, d: 'Wait until PGBX operations completes it.', act: 'View wallet', go: () => A.tab('wallet') },
+    pending > 0 && { t: `${pending} order${pending > 1 ? 's are' : ' is'} still being completed`, d: 'Wait until PGBX operations completes it.', act: 'View wallet', go: () => A.tab('wallet') },
     S.micro.grams > 0 && { t: `You still have ${fmtG(S.micro.grams)} of $1 gold`, d: 'Sell it first; PGBX pays it to your bank.', act: 'Sell gold', go: () => A.push({ name: 'micro-sell' }) },
     S.micro.txns.some(t => t.status === 'pending_payout') && { t: 'A payment for gold you sold is still on its way', d: 'Wait until PGBX has paid it to your bank.', act: 'View $1 gold', go: () => A.openMicro() },
   ].filter(Boolean);
@@ -1834,11 +1938,27 @@ function ChangePin({ S, A }) {
   const [ok, setOk] = useState(false);
   const [err, setErr] = useState(0);
   const [msg, setMsg] = useState('');
+  const [cur, setCur] = useState('');
+  const paused = !LIVE && step === 0 && S.pinLockUntil > S.now;
+  const timer = useRef(null); useEffect(() => () => clearTimeout(timer.current), []);
+  const finish = () => { setOk(true); timer.current = setTimeout(() => A.back(), 600); return true; };
   const done = p => {
-    if (step === 0) { if (!pinOk(p, S.pin)) { setErr(e => e + 1); setMsg('That isn’t your current PIN.'); return false; } setMsg(''); setStep(1); return false; }
-    if (step === 1) { if (pinOk(p, S.pin)) { setErr(e => e + 1); setMsg('Choose a PIN that’s different from your current one.'); return false; } setFirst(p); setMsg(''); setStep(2); return false; }
+    // Production: the server checks the current PIN when the new one is saved (wrong ones count towards the limit)
+    if (step === 0) {
+      if (!LIVE && !pinOk(p, S.pin)) { setErr(e => e + 1); setMsg('That isn’t your current PIN.'); A.pinWrong(); return false; }
+      setCur(p); setMsg(''); setStep(1); return false;
+    }
+    if (step === 1) {
+      if (p === cur) { setErr(e => e + 1); setMsg('Choose a PIN that’s different from your current one.'); return false; }
+      if (WEAK_PINS.has(p)) { setErr(e => e + 1); setMsg('That PIN is easy to guess. Choose a different one.'); return false; }
+      setFirst(p); setMsg(''); setStep(2); return false;
+    }
     if (p !== first) { setErr(e => e + 1); setMsg('The PINs didn’t match. Choose your new PIN again.'); setStep(1); return false; }
-    setOk(true); setTimeout(() => { A.setPin(p); A.back(); }, 600); return true;
+    if (!LIVE) { A.setPin(p); return finish(); }
+    return A.setPin(p, cur).then(r => {
+      if (r === true) return finish();
+      setErr(e => e + 1); setMsg(r.message); setStep(r.code === 'WEAK_PIN' ? 1 : 0); return false;
+    });
   };
   return html`<div class="lock">
     <div style="position:absolute;left:8px;top:calc(var(--top) + 4px)"><button class="iconbtn on-dark" onClick=${A.back} aria-label="Cancel"><${Icon} n="x"/></button></div>
@@ -1846,7 +1966,8 @@ function ChangePin({ S, A }) {
     <h2 key=${step}>${steps[step]}</h2>
     <div class=${'note' + (msg ? ' warn' : '')} role="status">${msg || (step === 0 ? '' : 'Avoid easy PINs like 1234 or your birth year.')}</div>
     ${!LIVE && step === 0 && S.pin === PIN_DEFAULT && html`<div class="hint-demo">Demo PIN ${PIN_DEFAULT}</div>`}
-    <${PinPad} key=${step} ok=${ok} err=${err} onComplete=${done} showFace=${false} />
+    ${paused && html`<div class="note warn" role="status">Too many wrong PINs. Try again in ${Math.ceil((S.pinLockUntil - S.now) / 1000)} seconds.</div>`}
+    <${PinPad} key=${step} ok=${ok} err=${err} onComplete=${done} showFace=${false} disabled=${paused} />
   </div>`;
 }
 
@@ -1975,7 +2096,12 @@ const DESIGNS = [['plain', 'Plain', ''], ['eid', 'Eid Mubarak', 'EID MUBARAK'], 
 const MASHA = TOLA / 12, RATTI = TOLA / 96;            // 1 tola = 12 masha = 96 ratti
 const num = v => { const n = Number(String(v || '').replace(/[^\d.]/g, '')); return Number.isFinite(n) ? n : 0; };
 const ymd = d => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
-const dayName = s => new Date(s + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+const dayName = s => new Date(s + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+// Visits and deliveries are in Pakistan (UTC+5, no daylight saving), like the server, wherever the phone's clock is set
+// After a form is checked, bring its first message into view (it may be above or below the screen)
+const showFirstError = () => setTimeout(() => { const e = document.querySelector('.page .hint.err'); if (e) e.scrollIntoView({ block: 'center', behavior: 'smooth' }); }, 50);
+const pkDay = ms => new Date(ms + 5 * 3600e3).toISOString().slice(0, 10);
+const pkTime = (day, hhmm) => Date.parse(`${day}T${hhmm}:00+05:00`);
 const slotName = s => s.replace('-', '–');
 const newPiece = (metal = 'gold') => ({ id: uid(), metal, karat: metal === 'gold' ? '22K' : '925', unit: 'g', g: '', tola: '', t: '', m: '', r: '', stones: '' });
 const pieceGrams = p => Math.max(0, (p.unit === 'tola' ? num(p.tola) * TOLA : p.unit === 'tmr' ? num(p.t) * TOLA + num(p.m) * MASHA + num(p.r) * RATTI : num(p.g)) - num(p.stones));
@@ -2022,9 +2148,10 @@ function GiftPreview({ d, svc, size = 168 }) {
 
 function ServicesScreen({ S, A }) {
   const svc = S.svc;
-  const activeA = S.appraisals.filter(a => ['booked', 'confirmed'].includes(a.status));
-  const activeG = S.giftOrders.filter(g => ['placed', 'in_production', 'dispatched'].includes(g.status));
-  const collections = S.redemptions.filter(r => ['requested', 'ready'].includes(S.statusOf(r))).length;
+  // Bookings and gift orders still waiting for their payment are in progress too (and can be cancelled)
+  const activeA = S.appraisals.filter(a => ['pending_payment', 'booked', 'confirmed'].includes(a.status));
+  const activeG = S.giftOrders.filter(g => ['pending_payment', 'placed', 'in_production', 'dispatched'].includes(g.status));
+  const readyN = S.redemptions.filter(r => S.statusOf(r) === 'ready').length, heldN = S.redemptions.filter(r => S.statusOf(r) === 'requested').length;
   const Svc = ({ icon, title, sub, onClick, badge }) => html`<button class="row" onClick=${onClick}>
     <span class="ri gold"><${Icon} n=${icon} c="sm"/></span><div class="rt"><b>${title}</b><span>${sub}</span></div>
     ${badge ? html`<span class="tag gold">${badge}</span>` : ''}<${Icon} n="chev" c="sm chev"/></button>`;
@@ -2040,9 +2167,9 @@ function ServicesScreen({ S, A }) {
       <div class="group">
         ${Svc({ icon: 'gem', title: '$1 gold', sub: (q => (q.unitPkr ? `Buy gold one dollar at a time · $1 = ${fmt(q.unitPkr)}` : 'Buy gold one dollar at a time'))(microQuote(S)), onClick: () => A.openMicro(), badge: S.micro.grams > 0 ? fmtG(S.micro.grams) : '' })}
         ${Svc({ icon: 'calc', title: 'Jewellery worth', sub: 'Buy-back estimate by karat and weight', onClick: () => A.push({ name: 'worth' }) })}
-        ${Svc({ icon: 'home', title: 'Doorstep appraisal', sub: `A PGBX goldsmith tests your pieces at home · ${svc ? fmt(svc.appraisal.feePkr) : '…'}`, onClick: () => A.startAppraisal(), badge: activeA.length ? `${activeA.length} booked` : '' })}
+        ${Svc({ icon: 'home', title: 'Doorstep appraisal', sub: `A PGBX goldsmith tests your pieces at home · ${svc ? fmt(svc.appraisal.feePkr) : '…'}`, onClick: () => A.startAppraisal(), badge: activeA.length ? `${activeA.length} active` : '' })}
         ${Svc({ icon: 'gift', title: 'Gift gold and silver', sub: 'Bars and coins made to order, delivered to loved ones', onClick: () => A.startGift(), badge: activeG.length ? `${activeG.length} on the way` : '' })}
-        ${Svc({ icon: 'store', title: 'Collect your bars', sub: 'Swap your holdings for the bar at a PGBX dealer', onClick: () => A.push({ name: 'collect' }), badge: collections ? `${collections} ready` : '' })}
+        ${Svc({ icon: 'store', title: 'Collect your bars', sub: 'Swap your holdings for the bar at a PGBX dealer', onClick: () => A.push({ name: 'collect' }), badge: readyN ? `${readyN} ready` : heldN ? `${heldN} reserved` : '' })}
       </div>
     </section>
     ${(activeA.length > 0 || activeG.length > 0) && html`<section class="sec"><div class="sec-h"><h3>In progress</h3></div><div class="group">
@@ -2079,7 +2206,7 @@ function WorthScreen({ S, A }) {
     <${TopBar} title="Jewellery worth" onBack=${A.back} />
     <div class="scroll">
       <div class="pad"><p class="muted">Enter each piece’s karat and weight. We work out its gold or silver content and what PGBX would pay for it at today’s price.</p></div>
-      ${S.stale && html`<${StaleBanner}/>`}
+      ${S.stale && html`<${StaleBanner} S=${S}/>`}
       ${pieces.map((p, i) => { const v = vals[i]; const karats = Object.keys(svc.purity[p.metal] || {}); return html`<section class="card worth-piece" key=${p.id}>
         <div class="between"><b>Piece ${i + 1}</b>${pieces.length > 1 && html`<button class="linkbtn sm" onClick=${() => set(pieces.filter((_, j) => j !== i))} aria-label=${`Remove piece ${i + 1}`}>Remove</button>`}</div>
         <div style="margin-top:12px"><${Seg} label="Metal" items=${[['gold', 'Gold'], ['silver', 'Silver']]} value=${p.metal} onChange=${m => upd(i, { metal: m, karat: m === 'gold' ? '22K' : '925' })} /></div>
@@ -2116,7 +2243,7 @@ function AppraisalBook({ S, A }) {
   const up = patch => A.set(s => ({ apprDraft: { ...s.apprDraft, ...patch } }));
   const [touched, setTouched] = useState(false);
   if (!svc || !d) return html`<div class="page"><${TopBar} title="Doorstep appraisal" onBack=${A.back} /><div class="scroll"><div class="pad"><span class="sk" style="height:240px"></span></div></div></div>`;
-  const days = Array.from({ length: 8 }, (_, i) => ymd(Date.now() + (i + 1) * 86400e3));
+  const days = Array.from({ length: 8 }, (_, i) => pkDay(Date.now() + (i + 1) * 86400e3));
   const phone = d.phone.replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '');
   const errs = {
     items: !d.items.length ? 'Add at least one piece.' : '',
@@ -2129,7 +2256,7 @@ function AppraisalBook({ S, A }) {
   const E = k => touched && errs[k] && html`<div class="hint err">${errs[k]}</div>`;
   const updItem = (i, patch) => up({ items: d.items.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
   const karats = m => Object.keys(svc.purity[m] || {});
-  const pay = () => { if (!ok) { setTouched(true); return; } A.bookAppraisal(); };
+  const pay = () => { if (!ok) { setTouched(true); showFirstError(); return; } A.bookAppraisal(); };
   return html`<div class="page has-actions">
     <${TopBar} title="Doorstep appraisal" onBack=${A.back} />
     <div class="scroll">
@@ -2181,10 +2308,10 @@ function AppraisalDetail({ S, A, id }) {
   const a = S.appraisals.find(x => x.id === id);
   if (!a) return html`<div class="page"><${TopBar} title="Appraisal" onBack=${A.back} /><div class="scroll"><${Empty} icon="home" title="Booking not found" body="It may still be loading. Try again in a moment." /></div></div>`;
   const order = ['booked', 'confirmed', 'completed'], idx = order.indexOf(a.status);
-  const live = ['booked', 'confirmed'].includes(a.status);
-  const start = new Date(`${a.date}T${a.slot.split('-')[0]}:00`).getTime();
+  const live = ['pending_payment', 'booked', 'confirmed'].includes(a.status);
+  const start = pkTime(a.date, a.slot.split('-')[0]);
   const freeCancel = start - S.now >= (S.svc ? S.svc.appraisal.freeCancelHours : 24) * 3600e3;
-  const cancel = () => A.confirm({ title: 'Cancel this visit?', body: freeCancel ? 'Your visit fee will be refunded to your payment method.' : `It’s less than ${S.svc ? S.svc.appraisal.freeCancelHours : 24} hours before the visit, so the fee isn’t refunded.`,
+  const cancel = () => A.confirm({ title: 'Cancel this visit?', body: a.status === 'pending_payment' ? 'Nothing has been paid for this visit yet.' : freeCancel ? 'Your visit fee will be refunded to your payment method.' : `It’s less than ${S.svc ? S.svc.appraisal.freeCancelHours : 24} hours before the visit, so the fee isn’t refunded.`,
     confirm: 'Cancel visit', cancel: 'Keep it', danger: true, onConfirm: () => A.cancelAppraisal(a.id) });
   const labels = { booked: 'Booked', confirmed: 'Goldsmith assigned', completed: 'Report ready' };
   return html`<div class="page">
@@ -2231,9 +2358,10 @@ function GiftNew({ S, A }) {
   const [touched, setTouched] = useState(false);
   if (!svc || !d || S.rates.mode === 'connecting') return html`<div class="page"><${TopBar} title="Gift gold and silver" onBack=${A.back} /><div class="scroll"><div class="pad"><span class="sk" style="height:320px"></span></div></div></div>`;
   const items = svc.gift.items.filter(i => i.metal === d.metal);
-  const it = svc.gift.items.find(i => i.id === d.item) || items[0];
+  const it = svc.gift.items.find(i => i.id === d.item) || items[0] || svc.gift.items[0];
+  if (!it) return html`<div class="page"><${TopBar} title="Gift gold and silver" onBack=${A.back} /><div class="scroll"><${Empty} icon="gift" title="Gifts aren’t available right now" body="PGBX isn’t taking gift orders at the moment. Check back soon." /></div></div>`;
   const price = giftPrice({ ...d, item: it.id }, svc, S.rates);
-  const minDate = ymd(Date.now() + svc.gift.leadDays * 86400e3);
+  const minDate = pkDay(Date.now() + svc.gift.leadDays * 86400e3);
   const phone = d.phone.replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '');
   const errs = {
     name: d.name.trim().length < 3 ? 'Enter the recipient’s full name.' : '',
@@ -2243,9 +2371,9 @@ function GiftNew({ S, A }) {
   };
   const ok = !Object.values(errs).some(Boolean);
   const E = k => touched && errs[k] && html`<div class="hint err">${errs[k]}</div>`;
-  const pickMetal = m => { const first = svc.gift.items.find(i => i.metal === m); up({ metal: m, item: first.id, shape: first.shapes.includes(d.shape) ? d.shape : first.shapes[0] }); };
+  const pickMetal = m => { const first = svc.gift.items.find(i => i.metal === m); if (!first) { A.toast(`${metalName(m)} gifts aren’t available right now.`); return; } up({ metal: m, item: first.id, shape: first.shapes.includes(d.shape) ? d.shape : first.shapes[0] }); };
   const pickItem = i => up({ item: i.id, shape: i.shapes.includes(d.shape) ? d.shape : i.shapes[0] });
-  const pay = () => { if (!ok) { setTouched(true); return; } A.placeGift(); };
+  const pay = () => { if (!ok) { setTouched(true); showFirstError(); return; } A.placeGift(); };
   return html`<div class="page has-actions">
     <${TopBar} title="Gift gold and silver" onBack=${A.back} />
     <div class="scroll">
@@ -2286,7 +2414,7 @@ function GiftNew({ S, A }) {
         <div class="group inset" role="radiogroup" aria-label="Payment method">
           ${METHODS.map(m => html`<button class="row" onClick=${() => A.set({ method: m.id })} role="radio" aria-checked=${S.method === m.id}><span class="ri"><${Icon} n=${m.icon} c="sm"/></span><div class="rt"><b>${m.name}</b><span>${m.sub}</span></div><${Radio} on=${S.method === m.id} /></button>`)}
         </div></section>
-      ${S.stale && html`<${StaleBanner}/>`}
+      ${S.stale && html`<${StaleBanner} S=${S}/>`}
       ${S.offline && html`<${Notice} kind="warning" icon="wifiOff" title="You’re offline">Connect to the internet to order.</${Notice}>`}
     </div>
     <${ActionBar} label="Total" amount=${fmt(price.total)}>
@@ -2301,7 +2429,7 @@ function GiftDetail({ S, A, id }) {
   const order = ['placed', 'in_production', 'dispatched', 'delivered'], idx = order.indexOf(g.status);
   const labels = { placed: 'Placed', in_production: 'Being made', dispatched: 'On its way', delivered: 'Delivered' };
   const it = svc.gift.items.find(i => i.id === g.item);
-  const cancel = () => A.confirm({ title: 'Cancel this gift order?', body: 'Your payment will be refunded to your payment method.', confirm: 'Cancel order', cancel: 'Keep it', danger: true, onConfirm: () => A.cancelGift(g.id) });
+  const cancel = () => A.confirm({ title: 'Cancel this gift order?', body: g.status === 'pending_payment' ? 'Nothing has been paid for this order yet.' : 'Your payment will be refunded to your payment method.', confirm: 'Cancel order', cancel: 'Keep it', danger: true, onConfirm: () => A.cancelGift(g.id) });
   return html`<div class="page">
     <${TopBar} title="Gift order" onBack=${A.back} />
     <div class="scroll">
@@ -2327,7 +2455,7 @@ function GiftDetail({ S, A, id }) {
         <div class="kv"><span>Insured delivery</span><b>${fmt(g.delivery_pkr)}</b></div>
         <div class="kv total"><span>Total paid</span><b>${fmt(g.total)}</b></div>
       </div></section>
-      ${g.status === 'placed' && html`<div class="pad" style="margin-top:24px"><button class="btn btn-danger" onClick=${cancel}>Cancel order</button>
+      ${(g.status === 'placed' || g.status === 'pending_payment') && html`<div class="pad" style="margin-top:24px"><button class="btn btn-danger" onClick=${cancel}>Cancel order</button>
         <p class="hint" style="text-align:center">You can cancel until the refinery starts making it.</p></div>`}
       ${['placed', 'in_production', 'dispatched'].includes(g.status) && html`<${Demo} title="Refinery and courier" body="In the real system PGBX operations updates this in the admin panel.">
         <button class="btn btn-secondary btn-sm" style="width:100%" onClick=${() => A.demoGift(g.id)}>${{ placed: 'Start making it', in_production: 'Hand to the courier', dispatched: 'Mark delivered' }[g.status]}</button></${Demo}>`}
@@ -2395,7 +2523,7 @@ function sanitizeSaved(s) {
   else if (TABS.some(t => t[0] === s.tab)) out.tab = s.tab;
   if (s.buyMetal === 'gold' || s.buyMetal === 'silver') out.buyMetal = s.buyMetal;
   if (typeof s.loggedIn === 'boolean') out.loggedIn = s.loggedIn;
-  if (LIVE && !out.pin) { out.pinSet = false; out.loggedIn = false; }   // no usable PIN on this phone: log in again
+  if (LIVE && !out.pinSet) out.loggedIn = false;                      // no PIN chosen on this phone: log in again
   return out;
 }
 function saveState(st) { try { localStorage.setItem(STORE_KEY, JSON.stringify({ v: 1, s: Object.fromEntries(KEEP.map(k => [k, st[k]])) })); } catch (e) { } }
@@ -2405,12 +2533,15 @@ const SAVED = loadSaved();
 const CARRY_NOTE = (() => { try { const n = sessionStorage.getItem('pgbx-note'); sessionStorage.removeItem('pgbx-note'); return n || ''; } catch (e) { return ''; } })();
 
 // Account data. Cleared on logout and session end; hidden while browsing as a guest.
-const ACCOUNT_BLANK = LIVE ? { ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], banner: null, apprDraft: null, giftDraft: null, micro: { grams: 0, txns: [], lots: null },
+const ACCOUNT_BLANK = LIVE ? { synced: false, missing: [], ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], banner: null, apprDraft: null, giftDraft: null, micro: { grams: 0, txns: [], lots: null },
   profile: { name: '', cnic: '', dob: '', email: '', address: '' }, kyc: { status: 'none', at: null }, checkout: [], lock: null } : {};
 const GUEST_VIEW = { ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], banner: null, micro: { grams: 0, txns: [], lots: { buy: { no: 1, filled: 0 }, sell: { no: 1, filled: 0 } } } };
-const apprDefaults = s => ({ items: [{ metal: 'gold', karat: '', approx_g: 0, note: '' }], date: '', slot: '', city: (s.svc && s.svc.appraisal.cities[0]) || 'Karachi', area: '', address: (s.profile && s.profile.address) || '', phone: s.phone || '', notes: '' });
-const giftDefaults = s => ({ metal: 'gold', item: 'gg-1g', shape: 'coin', design: 'eid', engraving: '', message: '', packaging: 'premium', name: '', phone: '', city: 'Karachi', address: '',
-  deliverBy: ymd(Date.now() + (((s.svc && s.svc.gift.leadDays) || 5) + 2) * 86400e3) });
+// A request key for a draft: the same draft sent twice (a retry after a lost answer) books once; any change makes a new one
+const draftKey = (prefix, d) => { const { key, ...rest } = d; return prefix + (key || '') + hex(sha256(new TextEncoder().encode(JSON.stringify(rest)))).slice(0, 24); };
+const apprDefaults = s => ({ key: uid() + uid(), items: [{ metal: 'gold', karat: '', approx_g: 0, note: '' }], date: '', slot: '', city: (s.svc && s.svc.appraisal.cities[0]) || 'Karachi', area: '', address: (s.profile && s.profile.address) || '', phone: s.phone || '', notes: '' });
+const giftDefaults = s => { const it = (s.svc && s.svc.gift.items[0]) || { id: 'gg-1g', metal: 'gold', shapes: ['coin'] };
+  return { key: uid() + uid(), metal: it.metal, item: it.id, shape: (it.shapes || ['coin'])[0], design: 'eid', engraving: '', message: '', packaging: 'premium', name: '', phone: '', city: (s.svc && s.svc.gift.cities && s.svc.gift.cities[0]) || 'Karachi', address: '',
+  deliverBy: pkDay(Date.now() + (((s.svc && s.svc.gift.leadDays) || 5) + 2) * 86400e3) }; };
 
 function App() {
   const [phase, setPhase] = useState(START === 'home' ? 'app' : START === 'login' ? 'login' : START === 'pin' ? 'pin' : 'splash');
@@ -2418,7 +2549,7 @@ function App() {
   const [st, setSt] = useState(() => ({
     guest: false, tab: 'rates', stack: [], navDir: 'fade', buyMetal: 'gold', qty: 1, lock: null, method: 'bank', paying: false, phone: '',
     rates: initialRates(), ledger: LIVE ? [] : initialLedger(), orders: [], redemptions: [], dealerStock: LIVE ? {} : initialDealerStock(), premiums: null,
-    biometric: true, toast: null, lockNote: '', loginNote: '',
+    biometric: !LIVE, toast: null, lockNote: '', loginNote: '',   // production: only when the customer switches it on
     // loginIntent: why the customer was sent to log in and where to take them afterwards ({ note, go: { tab } | { pid } })
     loginIntent: CARRY_NOTE ? { note: CARRY_NOTE } : null, pinReset: false, tips: {},
     // pinSet: whether this phone has a PIN the customer chose. Demo links that skip login use the demo PIN.
@@ -2439,6 +2570,7 @@ function App() {
     ...(KYC_START === 'verified' ? { kyc: { status: 'verified', at: Date.now() - 20 * 86400e3 }, profile: { ...((SAVED && SAVED.profile) || { name: 'Ahmed Khan', email: '', address: '' }), cnic: (SAVED && SAVED.profile && SAVED.profile.cnic) || '42000-0000000-1', dob: (SAVED && SAVED.profile && SAVED.profile.dob) || '1990-01-01' } } : {}),
   }));
   const [now, setNow] = useState(Date.now());
+  const phaseRef = useRef(phase); phaseRef.current = phase;
   const set = patch => setSt(s => ({ ...s, ...(typeof patch === 'function' ? patch(s) : patch) }));
   const lastActive = useRef(Date.now());
   const committed = useRef(new Set(st.orders.map(o => o.id)));       // idempotency (Rule 2 / NFR-1), survives refresh
@@ -2468,8 +2600,13 @@ function App() {
   // Live rates: poll the server every 10 s (FR-R1). If it never answers, fall back to simulation.
   useEffect(() => {
     if (FEED_FAIL || FORCE_SIM) return;
-    let alive = true, idx = 0;
+    let alive = true, idx = 0, polling = false;
     const poll = async () => {
+      if (polling) return false;                    // a slow answer is still on its way: don't start another
+      polling = true;
+      try { return await pollOnce(); } finally { polling = false; }
+    };
+    const pollOnce = async () => {
       for (let k = 0; k < API_URLS.length; k++) {
         const url = API_URLS[(idx + k) % API_URLS.length];
         try {
@@ -2507,31 +2644,51 @@ function App() {
   // ---------- production: the server is the source of truth ----------
   const knownNotes = useRef(null);
   const syncSeq = useRef(0);              // only the newest sync's answer is applied
-  const sessionEnded = note => { Live.forget(); knownNotes.current = null; syncSeq.current++; set({ ...ACCOUNT_BLANK, loggedIn: false, guest: false, stack: [], loginIntent: null, loginNote: note || 'Your session has ended. Log in again to continue.' }); setPhase('login'); };
+  const readAt = useRef(0);
+  const lastSync = useRef(null);          // the newest complete answer, for actions that need what the server now says               // when the customer last marked all notifications read
+  const sessionEnded = note => { Live.forget(); knownNotes.current = null; syncSeq.current++;
+    set({ ...ACCOUNT_BLANK, loggedIn: false, guest: false, stack: [], pinSet: false, pin: null, pinFails: 0, pinLockUntil: 0, biometric: false, loginIntent: null, loginNote: note || 'Your session has ended. Log in again to continue.' }); setPhase('login'); };
+  const endedNote = e => (e.code === 'ACCOUNT_INACTIVE' || e.code === 'PIN_LOCKED_OUT' ? e.message : undefined);
   const sync = async () => {
     if (!LIVE) return;
-    const n = ++syncSeq.current;
+    const n = ++syncSeq.current, n0 = Date.now();
     try {
       const d = await Live.loadAll();
       if (n !== syncSeq.current) return true;                  // a newer sync (or a logout) superseded this one
-      const fresh = knownNotes.current ? d.notifications.filter(n => !knownNotes.current.has(n.id) && !n.read && !n.quiet) : [];
-      knownNotes.current = new Set(d.notifications.map(n => n.id));
-      set(s => ({ ...d, banner: fresh.length && s.notifPrefs.push && !(fresh[0].kind === 'alert' && s.notifPrefs.alerts === false) ? fresh[0] : s.banner }));
-      return true;
-    } catch (e) { if (Live.signedOut(e)) sessionEnded(e.code === 'ACCOUNT_INACTIVE' ? e.message : undefined); return false; }
+      lastSync.current = d;
+      const ids = [...(d.ledger || []).map(e => e.pid), ...(d.redemptions || []).map(r => r.pid), ...(d.orders || []).flatMap(o => o.lines.map(l => l.pid))];
+      if (ids.some(id => !P[id])) { ids.forEach(id => { if (!P[id]) learnProduct({ id }); }); loadProducts(); }
+      const fresh = knownNotes.current && d.notifications ? d.notifications.filter(n => !knownNotes.current.has(n.id) && !n.read && !n.quiet) : [];
+      if (d.notifications) knownNotes.current = new Set(d.notifications.map(n => n.id));
+      // A mark-all-read made while this sync was on its way wins over the older unread flags
+      if (d.notifications && readAt.current > n0) d.notifications = d.notifications.map(x => ({ ...x, read: true }));
+      set(s => ({ ...d, synced: s.synced || !d.missing.length, banner: fresh.length && s.notifPrefs.push && !(fresh[0].kind === 'alert' && s.notifPrefs.alerts === false) ? fresh[0] : s.banner }));
+      return !d.missing.length;
+    } catch (e) { if (Live.signedOut(e)) sessionEnded(endedNote(e)); return false; }
   };
   const loadDealers = () => Live.dealers().then(ds => {
     DEALERS.splice(0, DEALERS.length, ...ds.map(d => ({ ...d, km: kmTo(d), out: [] })));
-    set({ dealerStock: Object.fromEntries(ds.map(d => [d.id, Object.fromEntries(PRODUCTS.map(p => [p.id, d.available[p.id] || 0]))])) });
-  }).catch(() => {});
+    set({ dealersFailed: false, dealerStock: Object.fromEntries(ds.map(d => [d.id, Object.fromEntries(PRODUCTS.map(p => [p.id, d.available[p.id] || 0]))])) });
+  }).catch(() => set({ dealersFailed: true }));
+  // Dealers, product premiums and service settings are public. Whatever hasn't loaded is asked for again when the
+  // connection comes back, when the app returns to the front, and from the Try again buttons.
+  const loadProducts = () => Live.products().then(ps => { ps.forEach(learnProduct); set({ premiums: Object.fromEntries(ps.map(p => [p.id, p.premium_pkr])) }); }).catch(() => {});
+  const loadPublic = () => {
+    if (!LIVE) return;
+    if (!DEALERS.length) loadDealers();
+    if (!stRef.current || !stRef.current.premiums) loadProducts();
+    // Service fees, deductions and cities from PGBX's settings (public, so guests can use the calculator)
+    if (!stRef.current || !stRef.current.svc) Live.servicesConfig().then(c => set({ svc: { purity: c.purity, buybackDeductionPct: c.buybackDeductionPct, appraisal: c.appraisal,
+      gift: { ...c.gift, items: c.gift.items.map(i => ({ id: i.id, metal: i.metal, label: i.label, grams: i.grams, shapes: i.shapes })) } } })).catch(() => {});
+  };
   useEffect(() => {
     if (!LIVE) return;
     Live.restoreSession();
-    loadDealers();
-    Live.products().then(ps => set({ premiums: Object.fromEntries(ps.map(p => [p.id, p.premium_pkr])) })).catch(() => {});
-    // Service fees, deductions and cities from PGBX's settings (public, so guests can use the calculator)
-    Live.servicesConfig().then(c => set({ svc: { purity: c.purity, buybackDeductionPct: c.buybackDeductionPct, appraisal: c.appraisal,
-      gift: { ...c.gift, items: c.gift.items.map(i => ({ id: i.id, metal: i.metal, label: i.label, grams: i.grams, shapes: i.shapes })) } } })).catch(() => {});
+    loadPublic();
+    const again = () => { if (document.visibilityState !== 'hidden') loadPublic(); };
+    addEventListener('online', again); document.addEventListener('visibilitychange', again);
+    const t = setInterval(again, 30000);
+    return () => { removeEventListener('online', again); document.removeEventListener('visibilitychange', again); clearInterval(t); };
   }, []);
   const signedIn = phase === 'app' && st.loggedIn && !st.guest;
   useEffect(() => {
@@ -2551,10 +2708,28 @@ function App() {
     addEventListener('pgbx-open-link', open); return () => removeEventListener('pgbx-open-link', open);
   }, [signedIn]);
   // A failed request shows its plain-language message; an expired session goes back to login.
-  const liveFail = e => { if (Live.signedOut(e)) sessionEnded(e.code === 'ACCOUNT_INACTIVE' ? e.message : undefined); else toast(e.message); };
+  const liveFail = e => { if (Live.signedOut(e)) sessionEnded(endedNote(e)); else if (!Live.isLocked(e)) toast(e.message); };
+  // Production: the server locked the session (a few minutes without use): show the lock screen, keep the place
+  const lockApp = note => {
+    if (phaseRef.current !== 'app' || !stRef.current.loggedIn || stRef.current.guest) return;
+    set({ lockNote: note || 'Enter your PIN to continue', dialog: null }); setPhase('pin');
+  };
+  // Whenever the lock screen shows, the server session is locked too, so the session can't be used without the PIN
+  useEffect(() => { if (LIVE && phase === 'pin') Live.lockNow(); }, [phase]);
+  useEffect(() => {
+    if (!LIVE) return;
+    const locked = () => lockApp();
+    let away = 0;
+    const pause = () => { away = Date.now(); };
+    const resume = () => { if (away && Date.now() - away > 30000) { Live.lockNow(); lockApp('Locked while PGBX was in the background'); } away = 0; };
+    const closed = () => { if (phaseRef.current === 'app') sync(); };    // back from a payment page
+    addEventListener('pgbx-locked', locked); addEventListener('pgbx-pause', pause); addEventListener('pgbx-resume', resume); addEventListener('pgbx-browser-closed', closed);
+    return () => { removeEventListener('pgbx-locked', locked); removeEventListener('pgbx-pause', pause); removeEventListener('pgbx-resume', resume); removeEventListener('pgbx-browser-closed', closed); };
+  }, []);
 
   // Stale when the server stops answering (30 s) or answers with prices that are themselves old (90 s)
-  const stale = st.rates.mode !== 'connecting' && (now - (st.rates.polledAt || st.rates.updatedAt) > STALE_MS || now - st.rates.updatedAt > DATA_STALE_MS);
+  // Production: no live prices yet counts as stale, so nothing can be bought on a guess
+  const stale = (LIVE && st.rates.mode !== 'live') || (st.rates.mode !== 'connecting' && (now - (st.rates.polledAt || st.rates.updatedAt) > STALE_MS || now - st.rates.updatedAt > DATA_STALE_MS));
   const top = st.stack[st.stack.length - 1];
 
   // action: { label, fn } adds a button such as Undo to the toast
@@ -2598,6 +2773,7 @@ function App() {
   // FR-A4: auto-lock after 2 minutes of inactivity
   useEffect(() => {
     if (phase === 'app' && !st.guest && !(top && ['processing', 'kyc'].includes(top.name)) && now - lastActive.current > AUTOLOCK_MS) {
+      if (LIVE) Live.lockNow();
       set({ lockNote: 'Locked after 2 minutes of inactivity' }); setPhase('pin');
     }
   }, [now]);
@@ -2632,7 +2808,7 @@ function App() {
     const mg = st.guest ? 0 : st.micro.grams, mv = Math.floor(mg * rateOf(st.rates, 'gold').sellGram);   // $1 gold counts as gold
     return { gold: gold + mv, silver, goldG: goldG + mg, silverG, total: gold + silver + mv, microG: mg, micro: mv }; })();
   // Same rule as the server: today's orders that are paid or still payable, plus gift orders (failed, expired and refunded ones don't count)
-  const spentToday = st.orders.filter(o => sameDay(o.ts, now) && (!LIVE || ['pending_payment', 'credited', 'flagged'].includes(o.status))).reduce((a, o) => a + (Number(o.total) || 0), 0)
+  const spentToday = st.orders.filter(o => sameDay(o.ts, now) && (!LIVE || ['pending', 'credited', 'flagged'].includes(o.status))).reduce((a, o) => a + (Number(o.total) || 0), 0)
     + st.giftOrders.filter(g => sameDay(g.createdAt, now) && !['cancelled', 'expired'].includes(g.status)).reduce((a, g) => a + (Number(g.total) || 0), 0)
     + st.micro.txns.filter(t => t.side === 'buy' && sameDay(t.ts, now) && ['credited', 'pending_payment'].includes(t.status)).reduce((a, t) => a + (Number(t.amount) || 0), 0);
   const unread = st.notifications.filter(n => !n.read).length;
@@ -2666,12 +2842,17 @@ function App() {
     openLink: link => {
       // Links come from notifications (saved or from the server): only known screens with valid ids are opened.
       if (!link || typeof link !== 'object' || !LINK_NAMES.includes(link.name)) return;
+      if (link.name === 'wallet') { set({ banner: null, tab: 'wallet', stack: [], navDir: 'fade' }); return; }   // a tab, not a pushed screen
       if (link.name === 'product' && !P[link.pid]) return;
       if (link.name === 'history' && link.metal !== 'gold' && link.metal !== 'silver') return; if (link.name === 'receipt' && link.from === undefined) link = { ...link, from: 'inbox' }; if (link.name === 'receipt' && !st.orders.some(o => o.id === link.oid)) return; if (link.name === 'code' && !st.redemptions.some(r => r.id === link.rid)) return; if (link.name === 'appraisal' && !st.appraisals.some(a => a.id === link.id)) return; if (link.name === 'gift' && !st.giftOrders.some(g => g.id === link.id)) return;
       set(s => ({ banner: null, navDir: 'fwd', stack: [...s.stack, link] })); },
     // Guests are told why they need to log in, and taken where they were going afterwards.
     login: (note, go) => { set({ stack: [], loginNote: '', loginIntent: note ? { note, go } : null }); setPhase('login'); },
-    logout: () => { if (LIVE) { Live.logout(); knownNotes.current = null; syncSeq.current++; } set({ ...ACCOUNT_BLANK, stack: [], guest: false, tab: 'rates', loginNote: '', loginIntent: { note: 'You’ve logged out. Your holdings are safe.' }, loggedIn: false }); setPhase('login'); },
+    logout: () => {
+      if (LIVE) { Live.logout(); knownNotes.current = null; syncSeq.current++; }
+      set({ ...ACCOUNT_BLANK, ...(LIVE ? { pinSet: false, pin: null, biometric: false, pinFails: 0, pinLockUntil: 0, cart: [] } : {}), stack: [], guest: false, tab: 'rates', loginNote: '', loginIntent: { note: 'You’ve logged out. Your holdings are safe.' }, loggedIn: false });
+      setPhase('login');
+    },
     forgotPin: () => { set({ pinReset: true, lockNote: '', loginNote: '', loginIntent: { note: 'Log in with your mobile number to choose a new PIN.' } }); setPhase('login'); },
     dismissTip: k => set(s => ({ tips: { ...s.tips, [k]: true } })),
     removeLine: pid => {
@@ -2702,7 +2883,8 @@ function App() {
     },
     // ---------- $1 gold ----------
     openMicro: () => { A.push({ name: 'micro' }); if (LIVE) Live.microQuote().then(q => set({ microQuote: q }), () => {}); },
-    microBuy: units => {
+    microQuote: () => Live.microQuote().then(q => set({ microQuote: q }), liveFail),
+    microBuy: (units, key) => {
       if (st.guest) { A.login('Log in to buy $1 gold.', { push: { name: 'micro' } }); return; }
       if (st.kyc.status !== 'verified') { A.push({ name: 'kyc' }); return; }
       const q = microQuote(st); const total = (q.unitPkr || 0) * units;
@@ -2712,8 +2894,14 @@ function App() {
       set(s => ({ paying: true, navDir: 'fade', stack: [...s.stack, { name: 'processing', kind: 'micro' }] }));
       const back = s => ({ paying: false, navDir: 'fade', stack: s.stack.filter(r => r.name !== 'processing') });
       if (LIVE) {
-        Live.microBuy(units, 'K' + uid() + uid()).then(async () => { await sync(); set(back); done(q.gramsPerUnit * units); Live.microQuote().then(x => set({ microQuote: x }), () => {}); },
-          e => { set(back); liveFail(e); });
+        // The toast says what the server says: gold added, or still waiting for the payment (a provider's page)
+        Live.microBuy(units, key).then(async o => {
+          await sync(); set(back);
+          const txns = (lastSync.current && lastSync.current.micro && lastSync.current.micro.txns || []).filter(t => t.orderRef === o.ref);
+          if (txns.length && txns.every(t => t.status === 'credited')) done(txns.reduce((a, t) => a + t.grams, 0));
+          else toast('Waiting for your payment. Your gold is added as soon as PGBX receives it.');
+          Live.microQuote().then(x => set({ microQuote: x }), () => {});
+        }, e => { set(back); liveFail(e); });
         return;
       }
       setTimeout(() => set(s => {
@@ -2733,15 +2921,20 @@ function App() {
       }), 1500);
       setTimeout(() => { done(q.gramsPerUnit * units); notify('purchase', 'Gold added', `$${units} of gold (${fmtG(q.gramsPerUnit * units)}) for ${fmt(total)}`, true, { name: 'micro' }); }, 1550);
     },
-    microSell: (grams, iban) => {
+    microSell: (grams, iban, key, expected) => {
       if (st.paying || st.offline) return;
       const q = microQuote(st);
       if (LIVE) {
         set({ paying: true });
-        Live.microSell(grams, iban, 'S' + uid() + uid()).then(async t => {
+        Live.microSell(grams, iban, key, expected).then(async t => {
           await sync(); set(s => ({ paying: false, lastIban: iban, navDir: 'fwd', stack: [...s.stack.filter(r => r.name !== 'micro-sell'), { name: 'micro-txn', ref: t.ref }] }));
           toast(`Sold ${fmtG(grams)} · ${fmt(t.amount)} on its way to your bank`);
-        }, e => { set({ paying: false }); liveFail(e); });
+        }, e => {
+          set({ paying: false });
+          // The price moved since the customer confirmed: show the new price and let them decide again
+          if (e.code === 'PRICE_CHANGED') Live.microQuote().then(x => set({ microQuote: x }), () => {});
+          liveFail(e);
+        });
         return;
       }
       if (grams > st.micro.grams + 1e-9) { toast('That’s more than you have.'); return; }
@@ -2773,7 +2966,7 @@ function App() {
       const phone = d.phone.replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '');
       if (LIVE) {
         set(s => ({ paying: true, navDir: 'fade', stack: [...s.stack, { name: 'processing', kind: 'appraisal' }] }));
-        Live.bookAppraisal({ ...d, phone }).then(async a => { await sync(); set(s => ({ paying: false, apprDraft: null, navDir: 'fade', stack: [...s.stack.filter(r => !['processing', 'appraisal-book'].includes(r.name)), { name: 'appraisal', id: a.id }] })); },
+        Live.bookAppraisal({ ...d, phone, key: draftKey('A', d0) }).then(async a => { await sync(); set(s => ({ paying: false, apprDraft: null, navDir: 'fade', stack: [...s.stack.filter(r => !['processing', 'appraisal-book'].includes(r.name)), { name: 'appraisal', id: a.id }] })); },
           e => { set(s => ({ paying: false, navDir: 'back', stack: s.stack.filter(r => r.name !== 'processing') })); liveFail(e); });
         return;
       }
@@ -2788,7 +2981,7 @@ function App() {
     cancelAppraisal: id => {
       if (LIVE) { Live.cancelAppraisal(id).then(() => { sync(); toast('Visit cancelled'); }, liveFail); return; }
       const a = st.appraisals.find(x => x.id === id); if (!a) return;
-      const refund = new Date(`${a.date}T${a.slot.split('-')[0]}:00`).getTime() - Date.now() >= st.svc.appraisal.freeCancelHours * 3600e3;
+      const refund = pkTime(a.date, a.slot.split('-')[0]) - Date.now() >= st.svc.appraisal.freeCancelHours * 3600e3;
       set(s => ({ appraisals: s.appraisals.map(x => (x.id === id ? { ...x, status: 'cancelled', refundDue: refund } : x)) }));
       notify('service', 'Appraisal cancelled', refund ? `${a.ref}. Your visit fee will be refunded.` : `${a.ref}. The fee isn’t refunded this close to the visit.`, true, { name: 'appraisal', id });
       toast('Visit cancelled');
@@ -2817,7 +3010,7 @@ function App() {
       const phone = d.phone.replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '');
       if (LIVE) {
         set(s => ({ paying: true, navDir: 'fade', stack: [...s.stack, { name: 'processing', kind: 'gift' }] }));
-        Live.placeGift({ ...d, phone }).then(async g => { await sync(); set(s => ({ paying: false, giftDraft: null, navDir: 'fade', stack: [...s.stack.filter(r => !['processing', 'gift-new'].includes(r.name)), { name: 'gift', id: g.id }] })); },
+        Live.placeGift({ ...d, phone, key: draftKey('G', d) }).then(async g => { await sync(); set(s => ({ paying: false, giftDraft: null, navDir: 'fade', stack: [...s.stack.filter(r => !['processing', 'gift-new'].includes(r.name)), { name: 'gift', id: g.id }] })); },
           e => { set(s => ({ paying: false, navDir: 'back', stack: s.stack.filter(r => r.name !== 'processing') })); liveFail(e); });
         return;
       }
@@ -2847,7 +3040,28 @@ function App() {
         delivered: ['Gift delivered', `${g.ref} was delivered to ${g.recipient.name}.`] }[next];
       notify('service', msg[0], msg[1], false, { name: 'gift', id });
     },
-    lockNow: () => { set({ lockNote: 'App locked', stack: [] }); setPhase('pin'); },
+    lockNow: () => { if (LIVE) Live.lockNow(); set({ lockNote: 'App locked', stack: [] }); setPhase('pin'); },
+    // Demo: a new PIN is kept on this phone. Production: saved on the server with the current PIN; answers true or the error.
+    setPin: (p, current) => {
+      if (!LIVE) { set({ pin: p }); toast('PIN changed'); return; }
+      return Live.setPin(p, current).then(() => { toast('PIN changed'); return true; }, e => { if (Live.signedOut(e)) { sessionEnded(endedNote(e)); return { message: e.message }; } return e; });
+    },
+    pinWrong: () => pinFail(),
+    // Production: push and price-alert choices are saved on the server, which applies them when sending
+    setNotif: (k, v) => {
+      const before = st.notifPrefs;
+      set(s => ({ notifPrefs: { ...s.notifPrefs, [k]: v } }));
+      if (LIVE && (k === 'push' || k === 'alerts')) Live.saveNotifPrefs({ [k]: v }).catch(e => { set({ notifPrefs: before }); liveFail(e); });
+    },
+    sync: () => { sync().then(okd => { if (!okd) toast('Your account didn’t fully load. Check your connection and try again.'); }); },
+    reloadPublic: () => loadPublic(),
+    setBio: on => {
+      if (!LIVE) { set({ biometric: on }); return; }
+      if (!on) { set({ biometric: false }); Live.disableBio(); return; }
+      const b = window.PGBXNative && window.PGBXNative.biometric;
+      if (!b) return;
+      b.verify('Turn on ' + bioName()).then(okd => okd && Live.enableBio().then(r => { if (r) { set({ biometric: true }); toast(bioName() + ' is on'); } }, liveFail));
+    },
     openHistory: metal => set(s => ({ stack: [...s.stack, { name: 'history', metal }], navDir: 'fwd' })),
     openProduct: pid => {
       if (st.guest) { A.login(`Log in to buy ${pname(P[pid])}.`, { pid }); return; }
@@ -2945,7 +3159,7 @@ function App() {
     },
     changePhone: n => { if (LIVE) { sync(); toast('Mobile number updated'); return; } set({ phone: n }); notify('security', 'Mobile number changed', `Your account now uses +92 ${n.slice(0, 3)} ${n.slice(3)}. If this wasn’t you, contact PGBX.`, true); toast('Mobile number updated'); },
     setPin: p => { set({ pin: pinStore(p) }); notify('security', 'PIN changed', 'Your app PIN was changed on this device.', true); toast('PIN changed'); },
-    markAllRead: () => { set(s => ({ notifications: s.notifications.map(n => ({ ...n, read: true })) })); if (LIVE) Live.markRead().catch(liveFail); },
+    markAllRead: () => { readAt.current = Date.now(); set(s => ({ notifications: s.notifications.map(n => ({ ...n, read: true })) })); if (LIVE) Live.markRead().catch(liveFail); },
     addAlert: (metal, dir, target) => { if (st.guest) { A.login('Log in to get price alerts.', { tab: 'rates' }); return; } if (LIVE) { Live.addAlert(metal, dir, target).then(a => { set(s => ({ alerts: [a, ...s.alerts] })); toast(`We’ll notify you when ${metalName(metal).toLowerCase()} goes ${dir} ${fmt(target)}`); }, liveFail); return; } set(s => ({ alerts: [...s.alerts, { id: uid(), metal, dir, target, active: true }] })); toast(`We’ll notify you when ${metalName(metal).toLowerCase()} goes ${dir} ${fmt(target)}`); },
     removeAlert: id => {
       if (st.guest) return;
@@ -2981,7 +3195,7 @@ function App() {
       const r = { id: 'RD-' + uid(), pid, units, dealerId, code, createdAt: Date.now(), expiresAt: Date.now() + RESERVE_MS, status: 'requested' };
       const d = DEALERS.find(x => x.id === dealerId);
       set(s => ({ redemptions: [...s.redemptions, r], navDir: 'fwd', stack: [...s.stack, { name: 'code', rid: r.id }] }));
-      notify('redemption', 'Reserved for collection', `${units} × ${pname(P[pid])} at ${d.name}. Code ${code}, valid for 24 hours.`, true, { name: 'code', rid: r.id });
+      notify('redemption', 'Reserved for collection', `${units} × ${pname(P[pid])} at ${d.name}. Code ${code}, valid for ${Math.round(RESERVE_MS / 3600e3)} hours.`, true, { name: 'code', rid: r.id });
     },
     cancelRedemption: id => { if (LIVE) { Live.cancelRedemption(id).then(() => { sync(); loadDealers(); toast('Collection cancelled'); }, liveFail); return; } const r = st.redemptions.find(x => x.id === id); set(s => ({ redemptions: s.redemptions.map(x => (x.id === id ? { ...x, status: 'cancelled' } : x)) })); notify('redemption', 'Collection cancelled', `${r.units} × ${pname(P[r.pid])} is back in your wallet.`, true, { name: 'code', rid: id }); toast('Collection cancelled'); },
     markReady: id => { if (LIVE) return; const r = st.redemptions.find(x => x.id === id); set(s => ({ redemptions: s.redemptions.map(x => (x.id === id && x.status === 'requested' ? { ...x, status: 'ready' } : x)) })); notify('redemption', 'Ready for collection', `${pname(P[r.pid])} is ready at ${DEALERS.find(d => d.id === r.dealerId).name}. Bring your CNIC.`, false, { name: 'code', rid: id }); },
@@ -3003,20 +3217,59 @@ function App() {
   // A guest (including someone who chose "Browse as guest" on the lock screen) sees none of the account's data.
   aRef.current = A;
   const S = { ...st, ...(st.guest ? GUEST_VIEW : {}), now, stale, holdings: st.guest ? {} : holdings, reserved, dealerFree, walletValue, statusOf, spentToday, unread: st.guest ? 0 : unread };
-  const framed = !matchMedia('(max-width:500px), (hover:none) and (pointer:coarse) and (max-height:600px)').matches;   // same rule as the CSS
+  const framed = !Live.NATIVE && !matchMedia('(max-width:500px), (hover:none) and (pointer:coarse) and (max-height:600px)').matches;   // same rule as the CSS
   const enterApp = () => {
     lastActive.current = Date.now();
     set(s => { const go = s.loginIntent && s.loginIntent.go;
       return { guest: false, lockNote: '', loginNote: '', loginIntent: null, navDir: 'fade', pinFails: 0, pinLockUntil: 0, loggedIn: true,
         ...(go && go.tab ? { tab: go.tab, stack: [] } : {}),
         ...(go && go.push ? { tab: 'services', stack: [go.push] } : {}),
+        ...(go && go.push && go.push.name === 'appraisal-book' ? { apprDraft: s.apprDraft || apprDefaults(s) } : {}),
+        ...(go && go.push && go.push.name === 'gift-new' ? { giftDraft: s.giftDraft || giftDefaults(s) } : {}),
         ...(go && go.pid && P[go.pid] ? { buyMetal: P[go.pid].metal, qty: 1, stack: [{ name: 'product', pid: go.pid }], lock: lockFor(s, [go.pid]) } : {}) }; });
     const go = st.loginIntent && st.loginIntent.go;
     if (go && go.pid && P[go.pid]) serverLock([go.pid]);
     setPhase('app');
   };
   // After the code is verified: a phone without a chosen PIN (first login, or "Forgot PIN") creates one first.
-  const afterLogin = () => { if (!st.pinSet || st.pinReset) setPhase('createpin'); else enterApp(); };
+  // Production: the PIN belongs to the server session, so every login chooses one.
+  const afterLogin = () => { if (LIVE || !st.pinSet || st.pinReset) setPhase('createpin'); else enterApp(); };
+  // Production lock screen: the server checks the PIN. Answers true when unlocked.
+  const liveCheck = async p => {
+    try {
+      const r = await Live.unlock(p);
+      if (r.noPin) {
+        // A session from before PINs were checked by the server: the PIN saved on this phone moves to the server once
+        if (st.pin && pinOk(p, st.pin)) { try { await Live.setPin(p); set({ pin: null }); return true; } catch (e) { setPhase('createpin'); return false; } }
+        if (!st.pin) { setPhase('createpin'); return false; }
+        pinFail(); return false;
+      }
+      set({ pinFails: 0, pinLockUntil: 0 }); return true;
+    } catch (e) {
+      if (e.code === 'WRONG_PIN') { set({ pinFails: e.fails || 1, pinLockUntil: e.waitSeconds ? Date.now() + e.waitSeconds * 1000 : 0, lockNote: '' }); return false; }
+      if (e.code === 'PIN_WAIT') { set({ pinLockUntil: Date.now() + (e.retryIn || 30) * 1000 }); return false; }
+      if (Live.signedOut(e)) { sessionEnded(endedNote(e)); if (e.code === 'PIN_LOCKED_OUT') set({ pinReset: true }); return false; }
+      set({ lockNote: e.message }); return false;
+    }
+  };
+  const liveBio = async () => {
+    try { if (await Live.bioUnlock()) return true; set({ biometric: false, lockNote: 'Enter your PIN. Switch ' + bioName() + ' on again in Account.' }); return false; }
+    catch (e) { if (Live.signedOut(e)) sessionEnded(endedNote(e)); else set({ lockNote: e.message }); return false; }
+  };
+  // The PIN chosen after login. Production saves it on the server; a refusal is shown on the PIN screen.
+  const pinChosen = async p => {
+    const reset = st.pinReset;
+    if (LIVE) {
+      try { await Live.setPin(p); } catch (e) { if (Live.signedOut(e)) { sessionEnded(endedNote(e)); return e.message; } return e.message; }
+    }
+    set({ pin: LIVE ? null : pinStore(p), pinSet: true, pinReset: false });
+    setTimeout(() => {
+      enterApp(); toast(reset ? 'New PIN saved. Use it to unlock PGBX on this phone.' : 'PIN created. Use it to unlock PGBX on this phone.');
+      const b = LIVE && window.PGBXNative && window.PGBXNative.biometric;
+      if (b && b.ready) set({ dialog: { title: `Unlock with ${bioName()}?`, body: `Use ${bioName()} instead of your PIN to unlock PGBX on this phone. You can change this in Account.`, confirm: `Use ${bioName()}`, cancel: 'Not now', onConfirm: () => aRef.current.setBio(true) } });
+    }, 500);
+    return true;
+  };
   const browse = () => { set({ guest: true, tab: 'rates', stack: [], lockNote: '', loginIntent: null, navDir: 'fade' }); setPhase('app'); };
   const pinFail = () => {
     const f = st.pinFails + 1;
@@ -3115,13 +3368,20 @@ function App() {
       <${StatusBar} light=${darkTop} />
       ${phase === 'splash' && html`<${Splash} rates=${st.rates} quick=${returning} onDone=${() => {  setPhase(returning ? 'pin' : 'login'); }} />`}
       ${phase === 'login' && html`<${Login} S=${S} note=${st.loginNote} intent=${st.loginIntent && st.loginIntent.note} hasPin=${st.pinSet && !st.pinReset} onRetry=${checkOtp} onDone=${phone => {
-        set({ phone }); afterLogin();
+        // Another customer on this phone: nothing of the previous one's carries over (data, cart, PIN, biometrics)
+        const other = phone !== st.phone;
+        // (what this person just started as a guest, such as an appraisal from the calculator, comes along)
+        const mine = st.loginIntent && st.loginIntent.go && st.loginIntent.go.push ? { apprDraft: st.apprDraft, giftDraft: st.giftDraft, worth: st.worth } : { worth: [] };
+        if (other) set({ ...ACCOUNT_BLANK, ...(LIVE ? {} : { pin: null, pinSet: false }), cart: [], ...mine, biometric: !LIVE && st.biometric, pinFails: 0, pinLockUntil: 0 });
+        set({ phone });
+        if (other && !LIVE) setPhase('createpin'); else afterLogin();
         if (LIVE) { knownNotes.current = null; sync(); return; }
         notify('security', 'New login on this device', `Logged in with +92 ${phone.slice(0, 3)} ${phone.slice(3)}. If this wasn’t you, contact PGBX.`, true);
       }} onBrowse=${browse} onPin=${() => setPhase('pin')} />`}
       ${phase === 'pin' && html`<${LockScreen} pin=${st.pin} fails=${st.pinFails} lockUntil=${st.pinLockUntil} now=${now} biometric=${st.biometric} note=${st.lockNote}
-          onUnlock=${enterApp} onFail=${pinFail} onBrowse=${browse} onForgot=${A.forgotPin} onLogin=${() => { set({ lockNote: '', loginNote: '', loginIntent: null }); setPhase('login'); }} />`}
-      ${phase === 'createpin' && html`<${CreatePin} reset=${st.pinReset} onDone=${p => { set({ pin: pinStore(p), pinSet: true, pinReset: false }); enterApp(); toast(st.pinReset ? 'New PIN saved. Use it to unlock PGBX on this phone.' : 'PIN created. Use it to unlock PGBX on this phone.'); }} />`}
+          liveCheck=${liveCheck} liveBio=${liveBio}
+          onUnlock=${enterApp} onFail=${pinFail} onBrowse=${browse} onForgot=${A.forgotPin} onLogin=${() => { if (LIVE) A.logout(); else { set({ lockNote: '', loginNote: '', loginIntent: null }); setPhase('login'); } }} />`}
+      ${phase === 'createpin' && html`<${CreatePin} reset=${st.pinReset} onDone=${pinChosen} />`}
       ${phase === 'app' && html`<div class=${'app' + (framed ? ' framed' : '') + (hideTabs ? ' no-tabs' : '')}>
         <div class="view"><div class=${enterCls} key=${routeKey} style="position:absolute;inset:0">${content}</div></div>
         ${!hideTabs && html`<nav class="tabbar" aria-label="Main"><div class="tabs">
@@ -3175,6 +3435,7 @@ function StatusBar({ light }) {
 }
 
 /* Fit the 390×844 phone frame into the desktop window */
+if (Live.NATIVE) document.documentElement.classList.add('native');
 function fit() { const s = Math.min(1, (innerHeight - 48) / 862, (innerWidth - 32) / 408); document.documentElement.style.setProperty('--s', Math.max(0.4, s).toFixed(4)); }
 addEventListener('resize', fit); fit();
 
@@ -3186,7 +3447,7 @@ function CrashScreen() {
     <p class="note" style="line-height:1.5">${LIVE ? 'Try again. Your account and holdings are safe on PGBX’s servers. If it keeps happening, clear this phone’s app settings; you’ll need to log in again.' : 'The app couldn’t load your demo data. Try again, or reset the demo to start fresh.'}</p>
     <div class="stack-btns" style="width:100%;max-width:320px;margin-top:24px">
       <button class="btn btn-accent" onClick=${() => location.reload()}>Try again</button>
-      <button class="btn btn-tertiary" style="color:#fff" onClick=${() => { clearSaved(); location.href = location.pathname; }}>${LIVE ? 'Clear settings on this phone' : 'Reset demo data'}</button>
+      <button class="btn btn-tertiary" style="color:#fff" onClick=${async () => { clearSaved(); if (LIVE) await Live.logout().catch(() => {}); location.href = location.pathname; }}>${LIVE ? 'Clear settings on this phone' : 'Reset demo data'}</button>
     </div>
   </div></div></div>`;
 }

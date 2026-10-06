@@ -638,6 +638,8 @@ alter table sessions add column bio_hash text;
 alter table sessions add column pin_fails int not null default 0;
 alter table sessions add column pin_wait_until timestamptz;
 alter table sessions add column unlocked_until timestamptz;
+-- Notification choices the server applies: {"push": false} sends no phone notifications; {"alerts": false} none for price alerts
+alter table customers add column notif_prefs jsonb not null default '{}'::jsonb;
 -- Bookings and gift orders can be retried safely with the same request key
 alter table appraisals add column idempotency_key text;
 alter table gift_orders add column idempotency_key text;
