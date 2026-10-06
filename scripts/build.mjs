@@ -31,7 +31,9 @@ fs.rmSync(dist, { recursive: true, force: true });
 fs.mkdirSync(path.join(dist, 'vendor'), { recursive: true });
 fs.writeFileSync(path.join(dist, 'index.html'), production(index, { assetBase: '' }));
 for (const f of ['app.js', 'live.js', 'favicon.svg', 'vendor/htm-preact-standalone-3.1.1.module.js', 'vendor/LICENSES.txt']) fs.copyFileSync(path.join(ROOT, f), path.join(dist, f));
-fs.copyFileSync(path.join(ROOT, 'mobile', 'bridge.js'), path.join(dist, 'bridge.js'));
+// PGBX_PUSH lists the platforms whose push setup is complete (e.g. "android,ios"); empty means push stays off.
+const push = String(process.env.PGBX_PUSH || '').split(',').map(x => x.trim()).filter(x => ['android', 'ios'].includes(x)).join(',');
+fs.writeFileSync(path.join(dist, 'bridge.js'), fs.readFileSync(path.join(ROOT, 'mobile', 'bridge.js'), 'utf8').replace('__PGBX_PUSH__', push));
 // The native app has no server to send security headers, so its policy is in the page: scripts only from the app
 // itself (plus Cloudflare's human check when PGBX switches it on), network only to the PGBX API.
 const csp = `default-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ${api}; frame-src https://challenges.cloudflare.com; frame-ancestors 'none'; base-uri 'self'; form-action 'none'; object-src 'none'`;

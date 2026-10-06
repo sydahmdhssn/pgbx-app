@@ -23,7 +23,10 @@ if (C && C.isNativePlatform && C.isNativePlatform()) {
     P.NativeBiometric.isAvailable().then(r => { native.biometric.ready = !!r.isAvailable; }, () => {});
   }
 
-  if (P.PushNotifications) {
+  // Push is switched on per platform at build time (PGBX_PUSH=android,ios npm run build:app) only once Firebase
+  // (google-services.json) or the APNs entitlement is in place: registering without them crashes the Android app.
+  const PUSH_ON = '__PGBX_PUSH__'.split(',').map(x => x.trim()).includes(C.getPlatform());
+  if (P.PushNotifications && PUSH_ON) {
     let registered = false;
     native.push = {
       async register(onToken) {

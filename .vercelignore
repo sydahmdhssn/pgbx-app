@@ -3,5 +3,4 @@ dev
 supabase
 mobile
 *.md
-!README.md
 scripts

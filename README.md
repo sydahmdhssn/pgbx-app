@@ -105,7 +105,10 @@ Turn on real codes:
 1. Create a Twilio account, then in the console create a **Verify service** (Verify → Services).
 2. In Vercel → project `pgbx-app` → Settings → Environment Variables, add for Production:
    `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SERVICE_SID`.
-3. Redeploy. The login switches to real SMS codes automatically.
+3. Redeploy. The production app (`/live` and the phone apps) then sends real SMS codes through `/api/v1/auth/otp/*`,
+   which has the human check and database-backed limits. The demo at `/` only sends real codes if `OTP_DEMO_SMS=1` is
+   also set; leave it unset in production, because the demo endpoint's limits are per server instance and could be
+   used to run up SMS costs.
 4. Recommended in Twilio: restrict SMS geo-permissions to Pakistan and keep Fraud Guard on.
 
 WhatsApp codes: since March 2024 WhatsApp requires the business's own approved WhatsApp Business sender.
@@ -201,6 +204,7 @@ so they hold across server instances. Every staff action and every look at a cus
 | `FCM_SERVICE_ACCOUNT` | Firebase service account JSON for push to Android and iOS | Notifications stay in the app |
 | `SITE_PASSWORD` | Password screen in front of the whole site (see above) | Site open |
 | `CRON_SECRET` | Protects the scheduled sweep (Vercel sends it automatically) | Sweep refused |
+| `OTP_DEMO_SMS=1` | Lets the demo at `/` send real SMS codes. Leave unset in production. | Demo login stays in demo mode |
 | `OTP_TEST_MODE=1`, `PAYMENT_PROVIDER=sandbox`, `KYC_PROVIDER=sandbox` | **Test modes. Never in production.** Code 123456 logs anyone in; payments and checks always pass. | — |
 
 ### Connecting PGBX's database
@@ -210,6 +214,8 @@ so they hold across server instances. Every staff action and every look at a cus
 3. Add `DATABASE_URL` (pooled, port 6543) and `CRON_SECRET` in Vercel and redeploy.
 4. Create the first administrator: `DATABASE_URL=... npm run staff:create -- --email name@pgbx.pk --name "Full Name" --role admin`.
    It prints a one-time password and an authenticator secret. Everyone else is added in the admin panel.
+   New and reset staff must choose their own password (12+ characters) at first sign-in; each authenticator code works
+   once. An administrator can reset someone's password and authenticator in Staff → Reset sign-in.
 5. In the admin panel: enter dealers and their stock, the real premiums, limits and spread (Settings), and record a vault count.
 
 ## Services (jewellery worth, doorstep appraisal, gift bullion)
@@ -265,8 +271,15 @@ npm run open:ios        # Xcode (Mac only): set the team, signing, push capabili
 npm run open:android    # Android Studio: add google-services.json for push, create the upload key, then build the bundle
 ```
 
+Push notifications are **off** in the phone apps until their setup is complete, because registering without Firebase
+crashes the Android app. When `google-services.json` is in `mobile/android/app/` (Android) and the Push Notifications
+capability is added in Xcode (iOS, which creates `App.entitlements` with `aps-environment`), build with the platforms
+listed: `PGBX_PUSH=android,ios npm run sync`. The apps are portrait-only on phones; icons and splash screens are
+generated from `favicon.svg`.
+
 Before a store release PGBX needs: Apple and Google developer accounts in PGBX's name, the final bundle ID
-(`pk.com.pgbx.app` is a placeholder), a Firebase project for push, app icons and screenshots, and the privacy answers.
+(`pk.com.pgbx.app` is a placeholder), a Firebase project for push, store screenshots, and the privacy answers (plus an app-level `PrivacyInfo.xcprivacy` if PGBX
+adds code that uses Apple's "required reason" APIs; Capacitor and its plugins ship their own).
 
 ## Security headers
 
