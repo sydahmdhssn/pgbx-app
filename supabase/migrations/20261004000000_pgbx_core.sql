@@ -316,10 +316,10 @@ end $$;
 create trigger audit_no_update before update or delete on audit_log for each row execute function audit_append_only();
 
 -- ---------- derived views ----------
-create view v_holdings as
+create view v_holdings with (security_invoker = true) as
   select customer_id, product_id, sum(delta)::int as units from ledger group by customer_id, product_id having sum(delta) <> 0;
 
-create view v_reserved as
+create view v_reserved with (security_invoker = true) as
   select customer_id, product_id, dealer_id, sum(units)::int as units from redemptions
   where status in ('requested', 'ready') and expires_at > now() group by customer_id, product_id, dealer_id;
 
@@ -331,6 +331,12 @@ create function setting(p_key text) returns jsonb language sql stable as $$
 $$;
 create function setting_int(p_key text) returns bigint language sql stable as $$
   select (value #>> '{}')::bigint from settings where key = p_key
+$$;
+
+-- Business days are Pakistan days (the database itself runs in UTC on Supabase)
+create function pk_today() returns date language sql stable as $$ select (now() at time zone 'Asia/Karachi')::date $$;
+create function pk_day_start(p_day date default null) returns timestamptz language sql stable as $$
+  select (coalesce(p_day, (now() at time zone 'Asia/Karachi')::date))::timestamp at time zone 'Asia/Karachi'
 $$;
 
 create function audit(p_actor text, p_action text, p_entity text, p_id text, p_data jsonb default '{}') returns void language sql as $$
@@ -419,6 +425,7 @@ create function fn_place_order(p_customer uuid, p_lock uuid, p_lines jsonb, p_me
 declare
   v_order orders; v_lock price_locks; v_total bigint := 0; v_units int := 0; v_spent bigint; l jsonb; v_price bigint;
 begin
+  perform pg_advisory_xact_lock(hashtext('buy:' || p_customer));         -- one purchase decision at a time per customer (limits, idempotency)
   select * into v_order from orders where customer_id = p_customer and idempotency_key = p_key;
   if found then return v_order; end if;                                  -- repeat of the same request (Rule 2)
   perform require_active_customer(p_customer, true);
@@ -429,17 +436,18 @@ begin
   for l in select * from jsonb_array_elements(p_lines) loop
     v_price := (v_lock.prices ->> (l ->> 'product_id'))::bigint;
     if v_price is null then perform fail('PRODUCT_NOT_LOCKED'); end if;
-    if (l ->> 'units')::int < 1 then perform fail('BAD_UNITS'); end if;
+    if jsonb_typeof(l -> 'units') <> 'number' or (l ->> 'units')::numeric <> floor((l ->> 'units')::numeric)
+       or (l ->> 'units')::numeric < 1 or (l ->> 'units')::numeric > 1000 then perform fail('BAD_UNITS'); end if;
+    if (select count(*) from jsonb_array_elements(p_lines) y where y ->> 'product_id' = l ->> 'product_id') > 1 then perform fail('DUPLICATE_LINE'); end if;
     v_units := v_units + (l ->> 'units')::int;
     v_total := v_total + v_price * (l ->> 'units')::int;
   end loop;
   if v_units > setting_int('max_units_per_order') then perform fail('ORDER_LIMIT'); end if;
   if setting_int('min_purchase_pkr') is not null and v_total < setting_int('min_purchase_pkr') then perform fail('MIN_PURCHASE'); end if;
-  select coalesce(sum(total_pkr), 0) into v_spent from orders
-  where customer_id = p_customer and status in ('pending_payment', 'credited', 'flagged') and created_at >= date_trunc('day', now());
+  v_spent := spent_today(p_customer);                                  -- purchases and gift orders, Pakistan day
   if v_spent + v_total > setting_int('daily_limit_pkr') then perform fail('DAILY_LIMIT'); end if;
   insert into orders (customer_id, idempotency_key, lock_id, method, total_pkr, receipt_no)
-  values (p_customer, p_key, p_lock, p_method, v_total, 'PGBX-R-' || to_char(now(), 'YYMMDD') || '-' || lpad(nextval('receipt_seq')::text, 6, '0'))
+  values (p_customer, p_key, p_lock, p_method, v_total, 'PGBX-R-' || to_char(now() at time zone 'Asia/Karachi', 'YYMMDD') || '-' || lpad(nextval('receipt_seq')::text, 6, '0'))
   returning * into v_order;
   insert into order_lines (order_id, product_id, units, unit_price_pkr)
   select v_order.id, x ->> 'product_id', (x ->> 'units')::int, (v_lock.prices ->> (x ->> 'product_id'))::bigint
@@ -467,7 +475,16 @@ begin
   values (p_order, p_provider, p_ref, p_amount, 'succeeded', coalesce(p_data, '{}'))
   on conflict (provider, provider_ref) do nothing;
   get diagnostics v_new = row_count;
+  if v_new and v_order.status = 'pending_payment' and v_order.created_at < now() - make_interval(mins => setting_int('order_payment_minutes')::int) then
+    -- paid after the payment window: never credit at an old locked price; operations refunds or credits at today's price
+    update orders set status = 'flagged', paid_at = now(), note = 'Paid after the payment window; refund or re-price' where id = p_order returning * into v_order;
+    perform audit('provider:' || p_provider, 'order.flagged', 'order', p_order::text, jsonb_build_object('reason', 'late_payment'));
+    return v_order;
+  end if;
   if not v_new or v_order.status <> 'pending_payment' then
+    if v_new and v_order.status in ('credited', 'flagged', 'refunded') then   -- a second payment for the same order: refund it
+      perform audit('provider:' || p_provider, 'order.extra_payment', 'order', p_order::text, jsonb_build_object('ref', p_ref, 'amount', p_amount));
+    end if;
     if v_new and v_order.status in ('expired', 'failed') then   -- money arrived after the order lapsed: hold for operations
       update orders set status = 'flagged', paid_at = now(), note = 'Paid after the order lapsed; refund or credit' where id = p_order returning * into v_order;
       perform audit('provider:' || p_provider, 'order.flagged', 'order', p_order::text, jsonb_build_object('reason', 'late_payment'));
@@ -556,6 +573,7 @@ begin
   if v_held < p_units then perform fail('INSUFFICIENT_HOLDINGS'); end if;
   select * into v_dealer from dealers where id = p_dealer and active;
   if not found then perform fail('DEALER_UNAVAILABLE'); end if;
+  perform 1 from dealer_stock where dealer_id = p_dealer and product_id = p_product for update;   -- one reservation per dealer stock line at a time
   select coalesce(s.units, 0) - coalesce((select sum(units) from redemptions r where r.dealer_id = p_dealer and r.product_id = p_product
       and r.status in ('requested', 'ready') and r.expires_at > now()), 0)
     into v_stock from dealer_stock s where s.dealer_id = p_dealer and s.product_id = p_product;
@@ -594,6 +612,7 @@ begin
   end if;
   if v_r.expires_at < now() then perform fail('CODE_EXPIRED'); end if;
   select * into v_c from customers where id = v_r.customer_id;
+  if v_c.status <> 'active' then perform fail('ACCOUNT_INACTIVE'); end if;
   perform audit('staff:' || p_staff, 'redemption.lookup', 'redemption', v_r.id::text, '{}');
   return jsonb_build_object('id', v_r.id, 'status', v_r.status, 'product_id', v_r.product_id, 'units', v_r.units, 'expires_at', v_r.expires_at,
     'customer_name', v_c.name, 'cnic_masked', left(v_c.cnic, 5) || '-•••••••-' || right(v_c.cnic, 1));
@@ -631,6 +650,7 @@ begin
   if v_r.status <> 'ready' then perform fail('REDEMPTION_NOT_READY'); end if;
   if v_r.expires_at < now() then perform fail('CODE_EXPIRED'); end if;
   if not coalesce(p_cnic_checked, false) then perform fail('CNIC_NOT_CHECKED'); end if;
+  if (select status from customers where id = v_r.customer_id) <> 'active' then perform fail('ACCOUNT_INACTIVE'); end if;
   if coalesce(array_length(p_serials, 1), 0) <> v_r.units
      or exists (select 1 from unnest(p_serials) s where coalesce(trim(s), '') = '')
      or (select count(distinct s) from unnest(p_serials) s) <> v_r.units then perform fail('SERIALS_REQUIRED'); end if;
@@ -724,8 +744,10 @@ declare v jsonb;
 begin
   select jsonb_build_object(
     'day', p_day,
-    'payments_succeeded_pkr', (select coalesce(sum(amount_pkr), 0) from payments where status = 'succeeded' and created_at::date = p_day),
-    'orders_credited_pkr', (select coalesce(sum(o.total_pkr), 0) from orders o where o.status = 'credited' and o.credited_at::date = p_day),
+    'payments_succeeded_pkr', (select coalesce(sum(amount_pkr), 0) from payments where status = 'succeeded' and created_at >= pk_day_start(p_day) and created_at < pk_day_start(p_day + 1)),
+    'orders_credited_pkr', (select coalesce(sum(o.total_pkr), 0) from orders o where o.status = 'credited' and o.credited_at >= pk_day_start(p_day) and o.credited_at < pk_day_start(p_day + 1)),
+    'extra_payments', (select coalesce(jsonb_agg(jsonb_build_object('order', x.order_id, 'payments', x.n)), '[]') from
+       (select order_id, count(*) n from payments where status = 'succeeded' group by order_id having count(*) > 1) x),
     'paid_not_credited', (select coalesce(jsonb_agg(jsonb_build_object('order', o.id, 'receipt', o.receipt_no, 'status', o.status, 'total', o.total_pkr)), '[]')
        from orders o where exists (select 1 from payments p where p.order_id = o.id and p.status = 'succeeded') and o.status not in ('credited', 'refunded')),
     'credited_without_payment', (select coalesce(jsonb_agg(jsonb_build_object('order', o.id, 'receipt', o.receipt_no)), '[]')
@@ -758,6 +780,13 @@ begin
   return 0;
 end $$;
 
+create index on payments (order_id);
+create index on push_tokens (customer_id);
+create index on kyc_checks (customer_id);
+create index on staff_sessions (staff_id);
+create index on price_alerts (metal) where active;
+create index on sessions (customer_id);
+
 -- =====================================================================
 -- Lock everything down: no access through the public Supabase keys.
 -- =====================================================================
@@ -768,3 +797,21 @@ begin
     execute format('alter table %I enable row level security', t);
   end loop;
 end $$;
+-- Only the server's own connection may use the database. On Supabase the anon and authenticated roles (the public
+-- keys) get nothing: no tables, views, sequences or functions (functions are executable by PUBLIC by default).
+revoke execute on all functions in schema public from public;
+do $$
+declare r text;
+begin
+  foreach r in array array['anon', 'authenticated'] loop
+    if exists (select 1 from pg_roles where rolname = r) then
+      execute format('revoke all on all tables in schema public from %I', r);
+      execute format('revoke all on all sequences in schema public from %I', r);
+      execute format('revoke all on all functions in schema public from %I', r);
+      execute format('alter default privileges in schema public revoke all on tables from %I', r);
+      execute format('alter default privileges in schema public revoke all on sequences from %I', r);
+      execute format('alter default privileges in schema public revoke all on functions from %I', r);
+    end if;
+  end loop;
+end $$;
+alter default privileges in schema public revoke execute on functions from public;

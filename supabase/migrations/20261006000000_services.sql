@@ -58,6 +58,7 @@ create table appraisals (
   result jsonb,                                              -- assay result recorded by operations
   payment_ref text, paid_at timestamptz,
   refund_due boolean not null default false,
+  note text,                                                 -- why operations needs to look (late or wrong payment, full slot)
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -82,6 +83,7 @@ create table gift_orders (
   tracking text,
   payment_ref text, paid_at timestamptz,
   refund_due boolean not null default false,
+  note text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -92,6 +94,23 @@ alter table gift_items enable row level security;
 alter table appraisals enable row level security;
 alter table gift_orders enable row level security;
 
+-- What a customer has committed to today (Pakistan day): purchases and gift orders, unpaid ones only while still payable
+create function spent_today(p_customer uuid) returns bigint language plpgsql stable as $$
+declare v bigint;
+begin
+  select (select coalesce(sum(total_pkr), 0) from orders where customer_id = p_customer and created_at >= pk_day_start()
+            and (status in ('credited', 'flagged') or (status = 'pending_payment' and created_at > now() - make_interval(mins => setting_int('order_payment_minutes')::int))))
+       + (select coalesce(sum(total_pkr), 0) from gift_orders where customer_id = p_customer and created_at >= pk_day_start()
+            and (status in ('placed', 'in_production', 'dispatched', 'delivered') or (status = 'pending_payment' and created_at > now() - make_interval(mins => setting_int('order_payment_minutes')::int))))
+  into v;
+  return v;
+end $$;
+-- Visits a slot already holds: paid ones and unpaid ones still within their payment window
+create function slot_taken(p_date date, p_slot text) returns int language sql stable as $$
+  select count(*)::int from appraisals where visit_date = p_date and slot = p_slot
+    and (status in ('booked', 'confirmed') or (status = 'pending_payment' and created_at > now() - make_interval(mins => setting_int('order_payment_minutes')::int)))
+$$;
+
 -- ---------- doorstep appraisal ----------
 create function fn_book_appraisal(p_customer uuid, p_city text, p_area text, p_address text, p_phone text, p_date date, p_slot text,
   p_items jsonb, p_notes text, p_visit_code text) returns appraisals language plpgsql as $$
@@ -100,12 +119,13 @@ begin
   perform require_active_customer(p_customer, false);
   if not (setting('appraisal_cities') ? p_city) then perform fail('CITY_NOT_SERVED'); end if;
   if not (setting('appraisal_slots') ? p_slot) then perform fail('BAD_SLOT'); end if;
-  if p_date <= current_date or p_date > current_date + 30 then perform fail('BAD_DATE'); end if;
+  if p_date <= pk_today() or p_date > pk_today() + 30 then perform fail('BAD_DATE'); end if;
   if jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 or jsonb_array_length(p_items) > 20 then perform fail('NO_ITEMS'); end if;
   if length(coalesce(p_address, '')) < 10 or length(coalesce(p_area, '')) < 2 then perform fail('BAD_ADDRESS'); end if;
-  if (select count(*) from appraisals where visit_date = p_date and slot = p_slot and status in ('booked', 'confirmed')) >= 6 then perform fail('SLOT_FULL'); end if;
+  perform pg_advisory_xact_lock(hashtext('slot:' || p_date || p_slot));
+  if slot_taken(p_date, p_slot) >= 6 then perform fail('SLOT_FULL'); end if;
   insert into appraisals (ref, customer_id, city, area, address, phone, visit_date, slot, items, notes, fee_pkr, visit_code)
-  values ('PGBX-A-' || to_char(now(), 'YYMMDD') || '-' || lpad(nextval('service_seq')::text, 5, '0'), p_customer, p_city, p_area, p_address, p_phone,
+  values ('PGBX-A-' || to_char(now() at time zone 'Asia/Karachi', 'YYMMDD') || '-' || lpad(nextval('service_seq')::text, 5, '0'), p_customer, p_city, p_area, p_address, p_phone,
     p_date, p_slot, p_items, nullif(p_notes, ''), setting_int('appraisal_fee_pkr'), p_visit_code)
   returning * into v;
   perform audit('customer:' || p_customer, 'appraisal.created', 'appraisal', v.id::text, jsonb_build_object('date', p_date, 'slot', p_slot));
@@ -178,16 +198,15 @@ create function fn_place_gift(p_customer uuid, p_item text, p_shape text, p_desi
 declare q jsonb; v gift_orders;
 begin
   perform require_active_customer(p_customer, true);                     -- buying metal: identity verified
+  perform pg_advisory_xact_lock(hashtext('buy:' || p_customer));
   q := fn_gift_quote(p_item, p_shape, p_design, p_engraving, p_packaging);
   if not (setting('gift_cities') ? p_city) then perform fail('CITY_NOT_SERVED'); end if;
   if length(coalesce(p_name, '')) < 3 or length(coalesce(p_address, '')) < 10 or length(coalesce(p_phone, '')) < 10 then perform fail('BAD_RECIPIENT'); end if;
-  if p_deliver_by < current_date + setting_int('gift_lead_days')::int or p_deliver_by > current_date + 60 then perform fail('BAD_DATE'); end if;
-  if (select coalesce(sum(total_pkr), 0) from orders where customer_id = p_customer and status in ('pending_payment', 'credited', 'flagged') and created_at >= date_trunc('day', now()))
-     + (select coalesce(sum(total_pkr), 0) from gift_orders where customer_id = p_customer and status <> 'cancelled' and created_at >= date_trunc('day', now()))
-     + (q ->> 'total_pkr')::bigint > setting_int('daily_limit_pkr') then perform fail('DAILY_LIMIT'); end if;
+  if p_deliver_by < pk_today() + setting_int('gift_lead_days')::int or p_deliver_by > pk_today() + 60 then perform fail('BAD_DATE'); end if;
+  if spent_today(p_customer) + (q ->> 'total_pkr')::bigint > setting_int('daily_limit_pkr') then perform fail('DAILY_LIMIT'); end if;
   insert into gift_orders (ref, customer_id, item_id, shape, design, engraving, message, packaging, recipient_name, recipient_phone, recipient_city,
     recipient_address, deliver_by, metal_pkr, making_pkr, packaging_pkr, delivery_pkr, total_pkr, rate_snapshot)
-  values ('PGBX-G-' || to_char(now(), 'YYMMDD') || '-' || lpad(nextval('service_seq')::text, 5, '0'), p_customer, p_item, p_shape, p_design,
+  values ('PGBX-G-' || to_char(now() at time zone 'Asia/Karachi', 'YYMMDD') || '-' || lpad(nextval('service_seq')::text, 5, '0'), p_customer, p_item, p_shape, p_design,
     nullif(p_engraving, ''), nullif(p_message, ''), p_packaging, p_name, p_phone, p_city, p_address, p_deliver_by,
     (q ->> 'metal_pkr')::bigint, (q ->> 'making_pkr')::bigint, (q ->> 'packaging_pkr')::bigint, (q ->> 'delivery_pkr')::bigint, (q ->> 'total_pkr')::bigint, (q ->> 'snapshot')::bigint)
   returning * into v;
@@ -229,13 +248,25 @@ end $$;
 
 -- ---------- payment for a service (once; wrong amount is refused) ----------
 create function fn_service_paid(p_kind text, p_id uuid, p_ref text, p_amount bigint) returns jsonb language plpgsql as $$
-declare a appraisals; g gift_orders;
+-- Every payment is recorded. Money that can't be used (wrong amount, booking cancelled or lapsed, slot full) is marked for
+-- refund and shown to operations; it is never silently dropped.
+declare a appraisals; g gift_orders; v_note text;
 begin
   if p_kind = 'appraisal' then
     select * into a from appraisals where id = p_id for update;
     if not found then perform fail('NOT_FOUND'); end if;
-    if a.status <> 'pending_payment' then return jsonb_build_object('status', a.status, 'duplicate', true); end if;
-    if p_amount <> a.fee_pkr then perform fail('AMOUNT_MISMATCH'); end if;
+    if a.payment_ref is not null then return jsonb_build_object('status', a.status, 'duplicate', true); end if;
+    perform pg_advisory_xact_lock(hashtext('slot:' || a.visit_date || a.slot));
+    v_note := case when a.status <> 'pending_payment' then 'Paid after the booking was cancelled; refund'
+                   when p_amount <> a.fee_pkr then 'Amount paid differs from the fee; refund'
+                   when (select count(*) from appraisals where visit_date = a.visit_date and slot = a.slot and status in ('booked', 'confirmed')) >= 6 then 'Slot filled before payment; refund or rebook'
+                   when a.created_at < now() - make_interval(mins => setting_int('order_payment_minutes')::int) then 'Paid after the payment window; refund or rebook' end;
+    if v_note is not null then
+      update appraisals set payment_ref = p_ref, paid_at = now(), refund_due = true, note = v_note, status = 'cancelled', updated_at = now() where id = p_id returning * into a;
+      perform audit('provider', 'appraisal.payment_refund', 'appraisal', p_id::text, jsonb_build_object('ref', p_ref, 'amount', p_amount, 'reason', v_note));
+      perform notify_customer(a.customer_id, 'service', 'Payment received, booking not confirmed', a.ref || ': we couldn’t confirm this visit, so your payment will be refunded.', jsonb_build_object('name', 'appraisal', 'id', a.id), true);
+      return jsonb_build_object('status', a.status, 'refund_due', true);
+    end if;
     update appraisals set status = 'booked', payment_ref = p_ref, paid_at = now(), updated_at = now() where id = p_id returning * into a;
     perform notify_customer(a.customer_id, 'service', 'Appraisal booked',
       a.ref || ' · ' || to_char(a.visit_date, 'DD Mon') || ', ' || a.slot || '. We’ll confirm your goldsmith before the visit.', jsonb_build_object('name', 'appraisal', 'id', a.id), false);
@@ -244,8 +275,16 @@ begin
   elsif p_kind = 'gift' then
     select * into g from gift_orders where id = p_id for update;
     if not found then perform fail('NOT_FOUND'); end if;
-    if g.status <> 'pending_payment' then return jsonb_build_object('status', g.status, 'duplicate', true); end if;
-    if p_amount <> g.total_pkr then perform fail('AMOUNT_MISMATCH'); end if;
+    if g.payment_ref is not null then return jsonb_build_object('status', g.status, 'duplicate', true); end if;
+    v_note := case when g.status <> 'pending_payment' then 'Paid after the order was cancelled; refund'
+                   when p_amount <> g.total_pkr then 'Amount paid differs from the order total; refund'
+                   when g.created_at < now() - make_interval(mins => setting_int('order_payment_minutes')::int) then 'Paid after the payment window; refund or re-price' end;
+    if v_note is not null then
+      update gift_orders set payment_ref = p_ref, paid_at = now(), refund_due = true, note = v_note, status = 'cancelled', updated_at = now() where id = p_id returning * into g;
+      perform audit('provider', 'gift.payment_refund', 'gift', p_id::text, jsonb_build_object('ref', p_ref, 'amount', p_amount, 'reason', v_note));
+      perform notify_customer(g.customer_id, 'service', 'Payment received, order not placed', g.ref || ': we couldn’t place this order, so your payment will be refunded.', jsonb_build_object('name', 'gift', 'id', g.id), true);
+      return jsonb_build_object('status', g.status, 'refund_due', true);
+    end if;
     update gift_orders set status = 'placed', payment_ref = p_ref, paid_at = now(), updated_at = now() where id = p_id returning * into g;
     perform notify_customer(g.customer_id, 'service', 'Gift order placed', g.ref || ' · ' || rs(g.total_pkr) || '. Delivery by ' || to_char(g.deliver_by, 'DD Mon') || '.',
       jsonb_build_object('name', 'gift', 'id', g.id), false);
@@ -310,4 +349,30 @@ begin
   select count(*) into n from p;
   if n > 0 then perform audit('system', 'customers.purged', 'customer', null, jsonb_build_object('count', n)); end if;
   return n;
+end $$;
+
+-- Housekeeping for the scheduled sweep: old price locks, ended sessions and old rate snapshots
+create function fn_housekeeping() returns int language plpgsql as $$
+declare n int := 0; m int;
+begin
+  delete from price_locks l where l.expires_at < now() - interval '2 days' and not exists (select 1 from orders o where o.lock_id = l.id);
+  get diagnostics m = row_count; n := n + m;
+  delete from sessions where (revoked_at is not null or expires_at < now()) and coalesce(revoked_at, expires_at) < now() - interval '30 days';
+  get diagnostics m = row_count; n := n + m;
+  delete from staff_sessions where (revoked_at is not null or expires_at < now()) and coalesce(revoked_at, expires_at) < now() - interval '30 days';
+  get diagnostics m = row_count; n := n + m;
+  return n;
+end $$;
+-- New functions get the same lock-down as the core
+revoke execute on all functions in schema public from public;
+do $$
+declare r text;
+begin
+  foreach r in array array['anon', 'authenticated'] loop
+    if exists (select 1 from pg_roles where rolname = r) then
+      execute format('revoke all on all tables in schema public from %I', r);
+      execute format('revoke all on all functions in schema public from %I', r);
+      execute format('revoke all on all sequences in schema public from %I', r);
+    end if;
+  end loop;
 end $$;

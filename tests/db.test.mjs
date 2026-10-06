@@ -184,3 +184,32 @@ test('shared rate limit blocks after the maximum and reports the wait', async ()
   for (let i = 0; i < 3; i++) assert.equal((await db.one(`select fn_rate_limit('otp:3001112222', 3600, 3) w`)).w, 0);
   assert.ok((await db.one(`select fn_rate_limit('otp:3001112222', 3600, 3) w`)).w > 0);
 });
+
+test('a payment after the payment window is never credited at the old price', async () => {
+  const c = await customer('3000000099');
+  const l = await lock(c, ['g-1g']);
+  const o = await order(c, l.id, [{ product_id: 'g-1g', units: 1 }], 'late-window');
+  await db.query(`update orders set created_at = now() - interval '6 hours' where id = $1`, [o.id]);
+  const r = await paid(o);
+  assert.equal(r.status, 'flagged');
+  assert.equal(await holdings(c, 'g-1g'), 0);
+});
+
+test('order lines must be whole, sane numbers and not repeat a product', async () => {
+  const c = await customer('3000000098');
+  const l = await lock(c, ['g-1g']);
+  await rejects(order(c, l.id, [{ product_id: 'g-1g', units: 1.5 }], 'f1'), 'BAD_UNITS');
+  await rejects(order(c, l.id, [{ product_id: 'g-1g', units: 1e12 }], 'f2'), 'BAD_UNITS');
+  await rejects(order(c, l.id, [{ product_id: 'g-1g', units: 1 }, { product_id: 'g-1g', units: 1 }], 'f3'), 'DUPLICATE_LINE');
+});
+
+test('a suspended customer can’t collect at a dealer', async () => {
+  const c = await customer('3000000097');
+  await buy(c, 'g-10mg', 1);
+  const r = await db.one(`select * from fn_reserve($1, 'g-10mg', 1, 'd1', '771177')`, [c]);
+  const s = await dealerStaff('d1');
+  await db.query(`update customers set status = 'suspended' where id = $1`, [c]);
+  await rejects(db.one(`select fn_dealer_lookup($1, '771177') r`, [s]), 'ACCOUNT_INACTIVE');
+  await db.query(`update redemptions set status = 'ready' where id = $1`, [r.id]);
+  await rejects(db.one(`select * from fn_dealer_handover($1, $2, $3, true)`, [s, r.id, ['SN1']]), 'ACCOUNT_INACTIVE');
+});

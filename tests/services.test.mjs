@@ -32,8 +32,11 @@ test('appraisal booking checks city, slot, date, items and address', async () =>
 
 test('appraisal is paid once, assigned, completed and notified', async () => {
   const c = await customer('3100000002'); const s = await staff();
+  const wrong = await book(c, { date: day(4) });                           // a wrong amount is kept and marked for refund, never lost
+  const w = (await db.one(`select fn_service_paid('appraisal', $1, 'r0', 100) r`, [wrong.id])).r;
+  assert.equal(w.refund_due, true);
+  assert.equal((await db.one(`select payment_ref, status from appraisals where id = $1`, [wrong.id])).payment_ref, 'r0');
   const a = await book(c);
-  await rejects(db.one(`select fn_service_paid('appraisal', $1, 'r1', 100) r`, [a.id]), 'AMOUNT_MISMATCH');
   assert.equal((await db.one(`select fn_service_paid('appraisal', $1, 'r1', 2500) r`, [a.id])).r.status, 'booked');
   assert.equal((await db.one(`select fn_service_paid('appraisal', $1, 'r1', 2500) r`, [a.id])).r.duplicate, true);
   await rejects(db.one(`select * from fn_appraisal_update($1, $2, 'complete', '{}')`, [s, a.id]), 'BAD_ACTION');   // not yet confirmed
@@ -43,7 +46,7 @@ test('appraisal is paid once, assigned, completed and notified', async () => {
   const done = await db.one(`select * from fn_appraisal_update($1, $2, 'complete', '{"summary":"22K confirmed, 19.6 g net"}')`, [s, a.id]);
   assert.equal(done.status, 'completed');
   const n = await db.query(`select title from notifications where customer_id = $1 order by created_at`, [c]);
-  assert.deepEqual(n.map(x => x.title), ['Appraisal booked', 'Appraisal confirmed', 'Appraisal report ready']);
+  assert.deepEqual(n.map(x => x.title), ['Payment received, booking not confirmed', 'Appraisal booked', 'Appraisal confirmed', 'Appraisal report ready']);
 });
 
 test('appraisal cancellation: refund only when paid and early enough', async () => {
@@ -125,4 +128,42 @@ test('unpaid bookings lapse', async () => {
   await db.query(`update appraisals set created_at = now() - interval '2 hours' where id = $1`, [a.id]);
   assert.ok((await db.one(`select fn_expire_services() n`)).n >= 1);
   assert.equal((await db.one(`select status from appraisals where id = $1`, [a.id])).status, 'cancelled');
+});
+
+test('payments after cancellation or the payment window are kept for refund', async () => {
+  const c = await customer('3100000020');
+  const a = await book(c, { date: day(6) });
+  await db.one(`select * from fn_cancel_appraisal($1, $2)`, [c, a.id]);
+  const r = (await db.one(`select fn_service_paid('appraisal', $1, 'late1', 2500) r`, [a.id])).r;
+  assert.equal(r.refund_due, true);
+  const g = await gift(c);
+  await db.query(`update gift_orders set created_at = now() - interval '2 hours' where id = $1`, [g.id]);
+  assert.equal((await db.one(`select fn_service_paid('gift', $1, 'late2', $2) r`, [g.id, g.total_pkr])).r.refund_due, true);
+});
+
+test('unpaid bookings hold their slot while payable, so a slot can’t be overbooked', async () => {
+  const c = await customer('3100000021');
+  for (let i = 0; i < 6; i++) await book(c, { date: day(11), slot: '12:00-14:00' });
+  await rejects(book(c, { date: day(11), slot: '12:00-14:00' }), 'SLOT_FULL');
+});
+
+test('gift orders and purchases share one daily limit', async () => {
+  const c = await customer('3100000022');
+  await db.query(`update settings set value = '100000' where key = 'daily_limit_pkr'`);
+  await gift(c);                                                             // 46,500
+  const l = await db.one(`select * from fn_create_lock($1, $2)`, [c, ['g-1g']]);
+  await rejects(db.one(`select * from fn_place_order($1, $2, $3::jsonb, 'bank', 'lim1')`, [c, l.id, JSON.stringify([{ product_id: 'g-1g', units: 2 }])]), 'DAILY_LIMIT');
+  await db.query(`update settings set value = '1500000' where key = 'daily_limit_pkr'`);
+});
+
+test('the public Supabase roles can read nothing, views included', async () => {
+  for (const q of ['create role anon', 'grant usage on schema public to anon', 'grant select on all tables in schema public to anon']) await db.query(q);   // as Supabase's defaults would
+  const c = await customer('3100000023');
+  await db.query(`insert into ledger (customer_id, product_id, delta, reason, ref, created_by) values ($1, 'g-1g', 1, 'purchase', 'x', 'test')`, [c]);
+  await db.query(`set role anon`);
+  try {
+    assert.equal((await db.query(`select * from ledger`)).length, 0);
+    assert.equal((await db.query(`select * from v_holdings`)).length, 0);           // views follow row-level security
+    await rejects(db.query(`select fn_close_account($1)`, [c]), 'permission denied');  // functions aren't callable
+  } finally { await db.query(`reset role`); }
 });
