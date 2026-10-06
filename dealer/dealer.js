@@ -2,7 +2,7 @@
 // Flow: customer shows a 6-digit code -> dealer looks it up -> prepares the bars and marks ready -> checks the CNIC,
 // records one serial number per bar and confirms the handover. Every step is recorded on the server.
 import { html, render, useState, useEffect, useRef } from '../vendor/htm-preact-standalone-3.1.1.module.js';
-import { api, useLoad, useStaff, SignIn, ChangePassword, Loading, Failed, Tag, Toast, useToast, productName, when, left, ago } from '../staff/kit.js';
+import { api, useLoad, useStaff, SignIn, ChangePassword, Loading, Failed, Tag, Toast, useToast, Act, Asker, ask, productName, when, left, ago } from '../staff/kit.js';
 
 function Lookup({ toast, openRedemption }) {
   const [code, setCode] = useState('');
@@ -87,7 +87,7 @@ function Handover({ r, onDone, onBack, toast }) {
   </div>`;
 }
 
-function Queue({ open }) {
+function Queue({ toast }) {
   const { data, error, loading, reload } = useLoad('/dealer/redemptions');
   useEffect(() => { const t = setInterval(reload, 30000); return () => clearInterval(t); }, []);
   if (error) return html`<${Failed} error=${error} retry=${reload} />`;
@@ -99,15 +99,17 @@ function Queue({ open }) {
     <div class="card"><h2>Waiting (${active.length})</h2>
       ${active.length ? html`<div class="tbl-wrap"><table><tbody>${active.map(r => html`<tr>
         <td><b>${r.units} × ${productName(r.product_id)}</b><div class="muted small">${r.customer_name || 'Customer'} · ${left(r.expires_at)}</div></td>
-        <td class="r"><${Tag} s=${r.status} /></td></tr>`)}</tbody></table></div>
-        <p class="muted small" style="margin:12px 0 0">To hand over, ask for the customer’s code on the Collect tab.</p>`
+        <td class="r">${r.status === 'requested'
+          ? html`<${Act} cls="btn sm" run=${async () => { await api(`/dealer/redemptions/${r.id}/ready`, { method: 'POST', body: {} }); toast('Marked ready. The customer has been told.'); reload(); }}>Mark ready</${Act}>`
+          : html`<${Tag} s=${r.status} />`}</td></tr>`)}</tbody></table></div>
+        <p class="muted small" style="margin:12px 0 0">Prepare the bars and mark them ready so the customer knows to come. To hand over, ask for the customer’s code on the Collect tab.</p>`
       : html`<div class="empty">No collections waiting. New reservations appear here.</div>`}
     </div>
     <div class="card"><h2>Handed over (last 24 h)</h2>
       ${done.length ? html`<div class="tbl-wrap"><table><tbody>${done.map(r => html`<tr>
         <td>${r.units} × ${productName(r.product_id)}<div class="muted small mono">${(r.serials || []).join(', ')}</div></td>
         <td class="r muted small">${ago(r.completed_at)}</td></tr>`)}</tbody></table></div>`
-      : html`<div class="empty">Nothing handed over yet today.</div>`}
+      : html`<div class="empty">Nothing handed over in the last 24 hours.</div>`}
     </div>
   </div>`;
 }
@@ -139,17 +141,17 @@ function Dealer() {
   return html`<div class="dl">
     <header class="dl-top"><div><b>${me.dealer?.name || 'PGBX dealer'}</b><span>${me.name}</span></div>
       <div class="row"><button class="btn ghost sm" onClick=${() => setPw(true)}>Password</button>
-      <button class="btn ghost sm" onClick=${() => confirm('Sign out of the dealer app?') && signOut()}>Sign out</button></div></header>
+      <button class="btn ghost sm" onClick=${async () => (await ask({ title: 'Sign out of the dealer app?', confirm: 'Sign out' })) && signOut()}>Sign out</button></div></header>
     ${pw && html`<${ChangePassword} onDone=${() => { setPw(false); show('Password changed. Other devices were signed out.'); }} onCancel=${() => setPw(false)} />`}
     <main class="dl-body">
       ${tab === 'collect' && (current
         ? html`<${Handover} r=${current} toast=${show} onBack=${() => setCurrent(null)} onDone=${() => { setCurrent(null); show('Handover recorded. The customer’s wallet is updated.'); }} />`
         : html`<${Lookup} toast=${show} openRedemption=${setCurrent} />`)}
-      ${tab === 'queue' && html`<${Queue} />`}
+      ${tab === 'queue' && html`<${Queue} toast=${show} />`}
       ${tab === 'stock' && html`<${Stock} />`}
     </main>
     <nav class="dl-tabs" aria-label="Sections"><div>${TABS.map(([k, l]) => html`<button aria-current=${tab === k ? 'page' : undefined} onClick=${() => setTab(k)}>${l}</button>`)}</div></nav>
-    <${Toast} toast=${toast} />
+    <${Toast} toast=${toast} /><${Asker} />
   </div>`;
 }
 

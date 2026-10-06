@@ -34,7 +34,7 @@ p{margin:0 0 12px}
 
 /* layout */
 .shell{display:grid;grid-template-columns:232px minmax(0,1fr);min-height:100vh}
-.side{background:var(--green-900);color:#fff;padding:20px 12px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:2px}
+.side{background:var(--green-900);color:#fff;padding:20px 12px;position:sticky;top:0;height:100vh;height:100dvh;display:flex;flex-direction:column;gap:2px;overflow-y:auto;overscroll-behavior:contain}
 .side .brand b{color:#fff} .side .brand span{color:rgba(255,255,255,.6)}
 .side a{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 12px;border-radius:var(--r-sm);color:rgba(255,255,255,.78);text-decoration:none;font-size:14px}
 .side a:hover{background:rgba(255,255,255,.06);color:#fff}
@@ -124,8 +124,13 @@ dl.kv dt{color:var(--text-2)} dl.kv dd{margin:0;min-width:0;overflow-wrap:anywhe
 .dl-body{flex:1;padding:16px 16px 96px}
 .dl-tabs{position:fixed;left:0;right:0;bottom:0;display:flex;justify-content:center;background:var(--surface);border-top:1px solid var(--border);padding-bottom:env(safe-area-inset-bottom)}
 .dl-tabs div{display:flex;width:100%;max-width:560px}
-.dl-tabs button{flex:1;border:0;background:none;padding:12px 4px 10px;font-size:13px;font-weight:600;color:var(--text-3);cursor:pointer;min-height:56px}
+.dl-tabs button{flex:1;border:0;background:none;padding:12px 4px 10px;font-size:13px;font-weight:600;color:var(--text-2);cursor:pointer;min-height:56px}
 .dl-tabs button[aria-current=page]{color:var(--green-800);box-shadow:inset 0 3px 0 var(--gold-500)}
 .big-units{font:600 44px/1 var(--serif)}
 .dl .toast{bottom:calc(76px + env(safe-area-inset-bottom))}
 .nowrap{white-space:nowrap}
+
+/* a dialog with an action running: its other buttons wait */
+.modal[data-busy] button{pointer-events:none;opacity:.6}
+.dl-top .row{flex-wrap:nowrap;gap:4px}.dl-top .btn{white-space:nowrap}
+.dl-top>div:first-child{min-width:0}.dl-top>div:first-child b,.dl-top>div:first-child span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

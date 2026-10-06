@@ -1,15 +1,16 @@
 // PGBX admin panel for operations and administrators (FR-M1–M10).
 // Roles: admin (everything), ops (day-to-day work; cannot change settings, prices, dealers' details, staff or suspend
 // customers). The server enforces roles; this screen only hides what a role can't use.
-import { html, render, useState, useEffect } from '../vendor/htm-preact-standalone-3.1.1.module.js';
-import { api, useLoad, useStaff, SignIn, ChangePassword, Loading, Failed, Tag, Toast, useToast, Modal, Act, Brand, pkr, when, day, ago, productName, PRODUCT_NAMES } from '../staff/kit.js';
+import { html, render, useState, useEffect, useRef } from '../vendor/htm-preact-standalone-3.1.1.module.js';
+import { api, useLoad, useStaff, SignIn, ChangePassword, Loading, Failed, Tag, Toast, useToast, Modal, Act, Asker, ask, Shown, Brand, pkr, when, day, ago, productName, PRODUCT_NAMES } from '../staff/kit.js';
+import { qrSvg } from '../staff/qr.js';
 
 const ORDER = Object.keys(PRODUCT_NAMES);
 const pkToday = () => new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 10);   // PGBX's business day is Pakistan time (UTC+5)
 const byProduct = (a, b) => ORDER.indexOf(a.product_id) - ORDER.indexOf(b.product_id);
 
 const SECTIONS = [
-  ['overview', 'Overview'], ['kyc', 'Identity checks'], ['orders', 'Orders'], ['appraisals', 'Doorstep appraisals'], ['gifts', 'Gift orders'], ['micro', '$1 gold & tola lots'], ['customers', 'Customers'], ['support', 'Support'], ['dealers', 'Dealers & stock'],
+  ['overview', 'Overview'], ['kyc', 'Identity checks'], ['orders', 'Orders'], ['appraisals', 'Doorstep appraisals'], ['gifts', 'Gift orders'], ['micro', '$1 gold & tola lots'], ['refunds', 'Refunds'], ['customers', 'Customers'], ['support', 'Support'], ['dealers', 'Dealers & stock'],
   ['products', 'Products & premiums'], ['reconciliation', 'Reconciliation'], ['settings', 'Settings'], ['audit', 'Audit log'], ['staff', 'Staff', 'admin'],
 ];
 const go = (s, id) => { location.hash = id ? `${s}/${id}` : s; };
@@ -38,11 +39,13 @@ function Overview() {
         <a class=${'card stat' + (d.appraisals_to_assign ? ' attn' : '')} href="#appraisals" style="text-decoration:none;color:inherit"><div class="k">Appraisals to assign</div><div class="v">${d.appraisals_to_assign ?? 0}</div></a>
         <a class="card stat" href="#gifts" style="text-decoration:none;color:inherit"><div class="k">Gift orders in progress</div><div class="v">${d.gifts_open ?? 0}</div></a>
         <a class=${'card stat' + (d.lots_to_settle ? ' attn' : '')} href="#micro" style="text-decoration:none;color:inherit"><div class="k">Full tola lots to settle</div><div class="v">${d.lots_to_settle ?? 0}</div></a>
-        <a class=${'card stat' + (d.payouts_pending ? ' attn' : '')} href="#micro" style="text-decoration:none;color:inherit"><div class="k">$1 gold payouts to send</div><div class="v">${d.payouts_pending ?? 0}</div></a>
+        <a class=${'card stat' + (d.payouts_pending ? ' attn' : '')} href="#micro/payouts" style="text-decoration:none;color:inherit"><div class="k">$1 gold payouts to send</div><div class="v">${d.payouts_pending ?? 0}</div></a>
+        <a class=${'card stat' + (d.refunds_due ? ' attn' : '')} href="#refunds" style="text-decoration:none;color:inherit"><div class="k">Refunds to pay</div><div class="v">${d.refunds_due ?? 0}</div></a>
         <div class="card stat"><div class="k">Sales today</div><div class="v">${pkr(d.sales_today_pkr)}</div><div class="muted small">${d.orders_today} orders</div></div>
         <div class="card stat"><div class="k">Active collections</div><div class="v">${d.active_collections}</div></div>
         <div class="card stat"><div class="k">Customers</div><div class="v">${d.customers}</div><div class="muted small">${d.verified} verified</div></div>
       </div>
+      ${d.sandbox && html`<div class="note warn">Test providers are switched on (sandbox payments, identity checks or login codes). Money and identities shown here are not real; never pay out or hand over against them.</div>`}
       <${Card} title="Latest rates (per tola)">${d.rates ? html`<dl class="kv">
         <dt>Gold buy / sell</dt><dd class="num">${pkr(d.rates.gold_buy_tola)} / ${pkr(d.rates.gold_sell_tola)}</dd>
         <dt>Silver buy / sell</dt><dd class="num">${pkr(d.rates.silver_buy_tola)} / ${pkr(d.rates.silver_sell_tola)}</dd>
@@ -66,7 +69,7 @@ function Kyc({ toast }) {
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Customer', 'CNIC', 'Reason', 'Since', '']} empty="Nothing here." rows=${d.checks.map(k => html`<tr>
       <td><a href=${'#customers/' + k.customer_id}>${k.name || '—'}</a><div class="muted small">+92 ${k.phone || '—'}</div></td>
       <td class="mono">${k.cnic || '—'}</td><td class="small">${k.reason || '—'}</td><td class="small">${ago(k.created_at)}</td>
-      <td class="r">${['review', 'submitted'].includes(k.status) ? html`<button class="btn sm" onClick=${() => { setReason(''); setDeciding(k); }}>Decide</button>` : html`<${Tag} s=${k.status} />`}</td></tr>`)} /></${Card}>`}</${Screen}>
+      <td class="r">${['review', 'submitted'].includes(k.status) ? html`<button class="btn sm" onClick=${() => { setReason(''); setDeciding(k); }}>Decide</button>` : html`<${Tag} s=${k.status} />`}</td></tr>`)} /><${Shown} n=${d.checks.length} total=${d.total} /></${Card}>`}</${Screen}>
     ${deciding && html`<${Modal} title="Decide identity check" onClose=${() => setDeciding(null)}>
       <dl class="kv" style="margin-bottom:16px"><dt>Name</dt><dd>${deciding.name}</dd><dt>CNIC</dt><dd class="mono">${deciding.cnic}</dd><dt>Provider note</dt><dd>${deciding.reason || '—'}</dd></dl>
       <p class="muted small">Compare the CNIC images and selfie in the provider’s dashboard before deciding.</p>
@@ -92,7 +95,7 @@ function Orders({ toast }) {
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Receipt', 'Customer', '#Total', 'Note', 'Created', '']} empty="No orders with this status." rows=${d.orders.map(o => html`<tr>
       <td class="mono small">${o.receipt_no || o.id.slice(0, 8)}</td><td>${o.name || '—'}<div class="muted small">+92 ${o.phone || '—'}</div></td>
       <td class="r num">${pkr(o.total_pkr)}</td><td class="small">${o.note || '—'}</td><td class="small">${when(o.created_at)}</td>
-      <td class="r">${o.status === 'flagged' ? html`<button class="btn sm" onClick=${() => { setNote(''); setResolving(o); }}>Resolve</button>` : html`<${Tag} s=${o.status} />`}</td></tr>`)} /></${Card}>`}</${Screen}>
+      <td class="r">${o.status === 'flagged' ? html`<button class="btn sm" onClick=${() => { setNote(''); setResolving(o); }}>Resolve</button>` : html`<${Tag} s=${o.status} />`}</td></tr>`)} /><${Shown} n=${d.orders.length} total=${d.total} /></${Card}>`}</${Screen}>
     ${resolving && html`<${Modal} title="Resolve order" onClose=${() => setResolving(null)}>
       <dl class="kv" style="margin-bottom:16px"><dt>Receipt</dt><dd class="mono">${resolving.receipt_no}</dd><dt>Total</dt><dd>${pkr(resolving.total_pkr)}</dd><dt>Why flagged</dt><dd>${resolving.note || '—'}</dd></dl>
       <p class="muted small">Check the payment in the provider’s dashboard first. Credit only if the full amount was received; otherwise refund it through the provider.</p>
@@ -112,12 +115,13 @@ function Customers() {
     <${Card}><label class="f"><span class="sr">Search</span><input class="in" type="search" placeholder="Search by mobile number, name or CNIC" value=${q} onInput=${e => setQ(e.target.value)} /></label>
     <${Screen} load=${load}>${d => html`<${Table} head=${['Name', 'Mobile', 'CNIC', 'Identity', 'Account', 'Joined']} empty=${term ? 'No customers match.' : 'No customers yet.'} rows=${d.customers.map(c => html`<tr class="click" onClick=${() => go('customers', c.id)}>
       <td><a href=${'#customers/' + c.id} onClick=${e => e.stopPropagation()}>${c.name || 'Not given yet'}</a></td><td class="num">${c.phone ? '+92 ' + c.phone : '—'}</td><td class="mono small">${c.cnic || '—'}</td>
-      <td><${Tag} s=${c.kyc_status} /></td><td><${Tag} s=${c.status} /></td><td class="small">${day(c.created_at)}</td></tr>`)} />`}</${Screen}></${Card}>`;
+      <td><${Tag} s=${c.kyc_status} /></td><td><${Tag} s=${c.status} /></td><td class="small">${day(c.created_at)}</td></tr>`)} /><${Shown} n=${d.customers.length} total=${d.total} />`}</${Screen}></${Card}>`;
 }
 function Customer({ id, me, toast }) {
   const load = useLoad('/admin/customers/' + id);
   const setStatus = async status => {
-    const reason = prompt(status === 'suspended' ? 'Why are you suspending this account? (kept in the audit log)' : 'Why are you reactivating this account?');
+    const reason = await ask({ title: status === 'suspended' ? 'Suspend this account?' : 'Reactivate this account?', body: status === 'suspended' ? 'The customer is signed out everywhere and can’t log in until reactivated.' : null,
+      input: status === 'suspended' ? 'Why? (kept in the audit log)' : 'Why? (kept in the audit log)', confirm: status === 'suspended' ? 'Suspend' : 'Reactivate', danger: status === 'suspended' });
     if (!reason) return;
     await api(`/admin/customers/${id}/status`, { method: 'POST', body: { status, reason } });
     toast(status === 'suspended' ? 'Suspended. The customer has been signed out.' : 'Account reactivated.');
@@ -140,7 +144,7 @@ function Customer({ id, me, toast }) {
       <${Card} title="Orders"><${Table} head=${['Receipt', '#Total', 'Status', 'Date']} empty="No orders." rows=${d.orders.map(o => html`<tr>
         <td class="mono small">${o.receipt_no || '—'}</td><td class="r num">${pkr(o.total_pkr)}</td><td><${Tag} s=${o.status} /></td><td class="small">${when(o.created_at)}</td></tr>`)} /></${Card}>
       <${Card} title="Collections"><${Table} head=${['Product', '#Units', 'Dealer', 'Status', 'Date']} empty="No collections." rows=${d.redemptions.map(r => html`<tr>
-        <td>${productName(r.product_id)}</td><td class="r num">${r.units}</td><td>${r.dealer_id}</td><td><${Tag} s=${r.status} /></td><td class="small">${when(r.created_at)}</td></tr>`)} /></${Card}>
+        <td>${productName(r.product_id)}</td><td class="r num">${r.units}</td><td>${r.dealer_name || r.dealer_id}</td><td><${Tag} s=${r.status} /></td><td class="small">${when(r.created_at)}</td></tr>`)} /></${Card}>
       <${Card} title="Identity checks"><${Table} head=${['Provider', 'Status', 'Reason', 'Decided']} empty="No checks." rows=${d.kyc.map(k => html`<tr>
         <td>${k.provider}</td><td><${Tag} s=${k.status} /></td><td class="small">${k.reason || '—'}</td><td class="small">${k.decided_at ? when(k.decided_at) + ' · ' + (k.decided_by || '') : '—'}</td></tr>`)} /></${Card}>
     </div>`}</${Screen}>`;
@@ -158,9 +162,12 @@ function Appraisals({ toast }) {
     toast({ assign: 'Goldsmith assigned. The customer has been told.', complete: 'Result sent to the customer.', cancel: 'Visit cancelled. The customer has been told.' }[act.action]);
     setAct(null); setF({}); load.reload();
   };
+  // Each visit starts with an empty form: nothing typed for one customer can be sent to another
+  const open = (a, action) => { setF({}); setAct({ a, action }); };
+  const close = () => { setAct(null); setF({}); };
   const items = a => (a.items || []).map(i => `${i.metal === 'silver' ? 'Silver' : 'Gold'}${i.karat ? ' ' + i.karat : ''}${i.approx_g ? ' ~' + i.approx_g + ' g' : ''}${i.note ? ' (' + i.note + ')' : ''}`).join(', ');
   return html`<${Head} title="Doorstep appraisals" sub="Paid visits: assign a goldsmith, then record the assay result">
-      <${Seg} label="Status" value=${status} onChange=${setStatus} options=${[['booked', 'To assign'], ['confirmed', 'Assigned'], ['completed', 'Completed'], ['cancelled', 'Cancelled']]} /></${Head}>
+      <${Seg} label="Status" value=${status} onChange=${setStatus} options=${[['booked', 'To assign'], ['confirmed', 'Assigned'], ['completed', 'Completed'], ['cancelled', 'Cancelled'], ['pending_payment', 'Awaiting payment']]} /></${Head}>
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Visit', 'Customer', 'Address', 'Pieces', status === 'confirmed' ? 'Goldsmith' : 'Ref', '']} empty="Nothing here." rows=${d.appraisals.map(a => html`<tr>
       <td><b>${SLOT_DAY(a.date)}</b><div class="muted small">${a.slot}</div></td>
       <td>${a.customer_name || '—'}<div class="muted small">+92 ${a.phone}</div></td>
@@ -169,12 +176,12 @@ function Appraisals({ toast }) {
       <td class="small">${status === 'confirmed' && a.goldsmith ? html`${a.goldsmith.name}<div class="muted">${a.goldsmith.phone} · code ${a.visit_code}</div>` : html`<span class="mono">${a.ref}</span>`}
         ${a.refund_due ? html`<div><span class="tag warn">refund due</span></div>` : ''}</td>
       <td class="r"><div class="row" style="justify-content:flex-end">
-        ${a.status === 'booked' && html`<button class="btn sm" onClick=${() => setAct({ a, action: 'assign' })}>Assign</button>`}
-        ${a.status === 'confirmed' && html`<button class="btn sm" onClick=${() => setAct({ a, action: 'complete' })}>Record result</button>`}
-        ${['booked', 'confirmed'].includes(a.status) && html`<button class="btn sm sec" onClick=${() => setAct({ a, action: 'cancel' })}>Cancel</button>`}
+        ${a.status === 'booked' && html`<button class="btn sm" onClick=${() => open(a, 'assign')}>Assign</button>`}
+        ${a.status === 'confirmed' && html`<button class="btn sm" onClick=${() => open(a, 'complete')}>Record result</button>`}
+        ${['booked', 'confirmed'].includes(a.status) && html`<button class="btn sm sec" onClick=${() => open(a, 'cancel')}>Cancel</button>`}
         ${a.status === 'completed' && a.result && html`<span class="small muted" style="max-width:220px;display:inline-block">${a.result.summary}</span>`}
-      </div></td></tr>`)} /></${Card}>`}</${Screen}>
-    ${act && html`<${Modal} title=${{ assign: 'Assign goldsmith', complete: 'Record assay result', cancel: 'Cancel visit' }[act.action]} onClose=${() => setAct(null)}>
+      </div></td></tr>`)} /><${Shown} n=${d.appraisals.length} total=${d.total} /></${Card}>`}</${Screen}>
+    ${act && html`<${Modal} title=${{ assign: 'Assign goldsmith', complete: 'Record assay result', cancel: 'Cancel visit' }[act.action]} onClose=${close}>
       <p class="muted small">${act.a.ref} · ${SLOT_DAY(act.a.date)}, ${act.a.slot} · ${act.a.area}, ${act.a.city}</p>
       ${act.action === 'assign' && html`
         <label class="f"><span>Goldsmith’s name</span><input class="in" value=${f.name || ''} onInput=${e => setF({ ...f, name: e.target.value })} /></label>
@@ -187,7 +194,7 @@ function Appraisals({ toast }) {
         <label class="f"><span>Result for the customer</span><textarea class="in" rows="4" value=${f.summary || ''} onInput=${e => setF({ ...f, summary: e.target.value })}></textarea></label>`}
       ${act.action === 'cancel' && html`<label class="f"><span>Reason (sent to the customer)</span><input class="in" value=${f.reason || ''} onInput=${e => setF({ ...f, reason: e.target.value })} />
         <small>A paid visit cancelled by PGBX is marked for refund.</small></label>`}
-      <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setAct(null)}>Close</button>
+      <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${close}>Close</button>
         <${Act} cls=${act.action === 'cancel' ? 'btn danger' : 'btn'} run=${run}>${{ assign: 'Assign', complete: 'Send result', cancel: 'Cancel visit' }[act.action]}</${Act}></div>
     </${Modal}>`}`;
 }
@@ -205,7 +212,7 @@ function Gifts({ toast }) {
   };
   const NEXT = { placed: ['produce', 'Start production'], in_production: ['dispatch', 'Dispatch'], dispatched: ['deliver', 'Mark delivered'] };
   return html`<${Head} title="Gift orders" sub="Bullion and coins made to order and delivered by insured courier">
-      <${Seg} label="Status" value=${status} onChange=${setStatus} options=${[['placed', 'New'], ['in_production', 'In production'], ['dispatched', 'Dispatched'], ['delivered', 'Delivered'], ['cancelled', 'Cancelled']]} /></${Head}>
+      <${Seg} label="Status" value=${status} onChange=${setStatus} options=${[['placed', 'New'], ['in_production', 'In production'], ['dispatched', 'Dispatched'], ['delivered', 'Delivered'], ['cancelled', 'Cancelled'], ['pending_payment', 'Awaiting payment']]} /></${Head}>
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Deliver by', 'Piece', 'Engraving and card', 'Recipient', '#Total', '']} empty="Nothing here." rows=${d.gifts.map(g => html`<tr>
       <td><b>${SLOT_DAY(g.deliver_by)}</b><div class="muted small mono">${g.ref}</div></td>
       <td>${g.metal === 'silver' ? 'Silver' : 'Gold'} ${g.item_label} ${g.shape}<div class="muted small">${DESIGN[g.design]} · ${g.packaging} box</div></td>
@@ -216,7 +223,7 @@ function Gifts({ toast }) {
         ${NEXT[g.status] && html`<button class="btn sm" onClick=${() => { setF({}); setAct({ g, action: NEXT[g.status][0] }); }}>${NEXT[g.status][1]}</button>`}
         ${['placed', 'in_production'].includes(g.status) && html`<button class="btn sm sec" onClick=${() => { setF({}); setAct({ g, action: 'cancel' }); }}>Cancel</button>`}
         ${g.tracking && html`<span class="small mono">${g.tracking}</span>`}
-      </div></td></tr>`)} /></${Card}>`}</${Screen}>
+      </div></td></tr>`)} /><${Shown} n=${d.gifts.length} total=${d.total} /></${Card}>`}</${Screen}>
     ${act && html`<${Modal} title=${{ produce: 'Start production', dispatch: 'Dispatch', deliver: 'Mark delivered', cancel: 'Cancel order' }[act.action]} onClose=${() => setAct(null)}>
       <p class="muted small">${act.g.ref} · ${act.g.item_label} ${act.g.shape} for ${act.g.recipient.name}</p>
       ${act.action === 'dispatch' && html`<label class="f"><span>Courier tracking number</span><input class="in mono" value=${f.tracking || ''} onInput=${e => setF({ ...f, tracking: e.target.value })} />
@@ -230,13 +237,15 @@ function Gifts({ toast }) {
 
 // ---------- $1 gold: tola lots, any transaction ID, payouts ----------
 const grams = g => (g === null || g === undefined ? '—' : Number(g).toFixed(4) + ' g');
+const MICRO_TABS = ['buy', 'sell', 'payouts', 'paid'];
 function Micro({ id, toast }) {
-  const [tab, setTab] = useState('buy');
+  const [tab, setTab] = useState(MICRO_TABS.includes(id) ? id : 'buy');
+  useEffect(() => { if (MICRO_TABS.includes(id)) setTab(id); }, [id]);
   const [q, setQ] = useState('');
   const [found, setFound] = useState(null);
   const find = async e => { e && e.preventDefault(); if (!q.trim()) return; setFound(null);
     try { setFound(await api('/admin/micro/find?ref=' + encodeURIComponent(q.trim()))); } catch (x) { setFound({ error: x.message }); } };
-  if (id) return html`<${MicroLot} ref_=${id} toast=${toast} />`;
+  if (id && !MICRO_TABS.includes(id)) return html`<${MicroLot} ref_=${id} toast=${toast} />`;
   return html`<${Head} title="$1 gold & tola lots" sub="Customers buy $1 of gold at a time. Paid transactions from everyone fill 1-tola lots in order; each lot keeps every transaction ID in it." />
     <${Card}><form class="row" onSubmit=${find}><label class="f" style="flex:1;margin:0"><span class="sr">Transaction, order or lot ID</span>
       <input class="in mono" placeholder="Find a transaction, order or lot ID, e.g. PGBX-M-261006-1A2B3C4D" value=${q} onInput=${e => setQ(e.target.value)} /></label>
@@ -254,10 +263,10 @@ function Micro({ id, toast }) {
             ${found.transaction.payout_to && found.transaction.side === 'sell' && html`<dt>Pay to</dt><dd class="mono">${found.transaction.payout_to}</dd>`}
             <dt>In lot</dt><dd>${found.transaction.lots.length ? found.transaction.lots.map(l => html`<a class="mono" style="margin-right:10px" href=${'#micro/' + l.ref}>${l.ref}</a><span class="small muted" style="margin-right:12px">${grams(l.grams)}</span>`) : 'Not in a lot yet (unpaid)'}</dd></dl>`}</div>`}
     </${Card}>
-    <div style="margin:16px 0"><${Seg} label="View" value=${tab} onChange=${setTab} options=${[['buy', 'Buy lots'], ['sell', 'Sell lots'], ['payouts', 'Payouts to send'], ['paid', 'Payouts sent'], ['refunds', 'Refunds due']]} /></div>
+    <div style="margin:16px 0"><${Seg} label="View" value=${tab} onChange=${setTab} options=${[['buy', 'Buy lots'], ['sell', 'Sell lots'], ['payouts', 'Payouts to send'], ['paid', 'Payouts sent']]} /></div>
     ${(tab === 'buy' || tab === 'sell') && html`<${MicroLots} side=${tab} toast=${toast} />`}
     ${(tab === 'payouts' || tab === 'paid') && html`<${MicroPayouts} done=${tab === 'paid'} toast=${toast} />`}
-    ${tab === 'refunds' && html`<${MicroRefunds} />`}`;
+    <p class="muted small">Payments to give back for $1 gold, appraisals, gifts and orders are under <a href="#refunds">Refunds</a>.</p>`;
 }
 function MicroLots({ side, toast }) {
   const load = useLoad('/admin/micro/lots?side=' + side);
@@ -318,18 +327,36 @@ function MicroPayouts({ done, toast }) {
   const pay = async () => { await api(`/admin/micro/payouts/${paying.id}`, { method: 'POST', body: { ref } }); toast('Payout recorded. The customer has been told.'); setPaying(null); load.reload(); };
   return html`<${Screen} load=${load}>${d => html`<${Card} title=${done ? 'Payouts sent' : 'Sales to pay out'}><${Table} head=${['Sale', 'Customer', '#Grams', '#Amount', 'Pay to (IBAN)', '']} empty=${done ? 'Nothing paid yet.' : 'No payouts waiting.'} rows=${d.payouts.map(p => html`<tr>
     <td class="mono small">${p.ref}<div class="muted">${when(p.created_at)}</div></td><td><a href=${'#customers/' + p.customer_id}>${p.name || '—'}</a><div class="muted small">+92 ${p.phone || '—'}</div></td>
-    <td class="r num">${Number(p.grams).toFixed(4)}</td><td class="r num">${pkr(p.amount_pkr)}</td><td class="mono small">${p.payout_to}</td>
-    <td class="r">${done ? html`<span class="small mono">${p.payout_ref}</span><div class="muted small">${when(p.paid_out_at)}</div>` : html`<button class="btn sm" onClick=${() => { setRef(''); setPaying(p); }}>Mark paid</button>`}</td></tr>`)} /></${Card}>
+    <td class="r num">${Number(p.grams).toFixed(4)}</td><td class="r num">${pkr(p.amount_pkr)}</td><td class="mono small">${p.payout_to}${p.sandbox && html`<div><span class="tag bad" title="This customer's gold was bought with test payments">test money: don’t pay</span></div>`}</td>
+    <td class="r">${done ? html`<span class="small mono">${p.payout_ref}</span><div class="muted small">${when(p.paid_out_at)}</div>` : html`<button class="btn sm" onClick=${() => { setRef(''); setPaying(p); }}>Mark paid</button>`}</td></tr>`)} /><${Shown} n=${d.payouts.length} total=${d.total} /></${Card}>
     ${paying && html`<${Modal} title="Record the bank transfer" onClose=${() => setPaying(null)}>
       <p>Send <b>${pkr(paying.amount_pkr)}</b> to <span class="mono">${paying.payout_to}</span> (${paying.name || 'customer'}), then enter the transfer reference.</p>
       <label class="f"><span>Bank transfer reference</span><input class="in mono" value=${ref} onInput=${e => setRef(e.target.value)} /></label>
       <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setPaying(null)}>Cancel</button><${Act} disabled=${ref.trim().length < 4} run=${pay}>Mark paid</${Act}></div>
     </${Modal}>`}`}</${Screen}>`;
 }
-function MicroRefunds() {
-  const load = useLoad('/admin/micro/refunds');
-  return html`<${Screen} load=${load}>${d => html`<${Card} title="Payments to refund" action=${html`<span class="muted small">Refund through the payment provider</span>`}><${Table} head=${['Order', 'Customer', '#Amount', 'Why', 'Paid']} empty="No refunds due." rows=${d.refunds.map(r => html`<tr>
-    <td class="mono small">${r.ref}<div class="muted">${r.payment_ref}</div></td><td>${r.name || '—'}<div class="muted small">+92 ${r.phone || '—'}</div></td><td class="r num">${pkr(r.total_pkr)}</td><td class="small">${r.note}</td><td class="small">${when(r.paid_at)}</td></tr>`)} /></${Card}>`}</${Screen}>`;
+// ---------- refunds (H8): every payment PGBX must give back, from any service ----------
+const REFUND_KIND = { order: 'Order', micro: '$1 gold', appraisal: 'Appraisal', gift: 'Gift' };
+function Refunds({ toast }) {
+  const [status, setStatus] = useState('due');
+  const load = useLoad('/admin/refunds?status=' + status);
+  const [paying, setPaying] = useState(null);
+  const [ref, setRef] = useState('');
+  const mark = async () => { await api(`/admin/refunds/${paying.id}`, { method: 'POST', body: { ref } }); toast('Refund recorded.'); setPaying(null); load.reload(); };
+  return html`<${Head} title="Refunds" sub="Payments to give back: overpayments, payments for cancelled bookings and gifts, and payments that arrived too late">
+      <${Seg} label="Status" value=${status} onChange=${setStatus} options=${[['due', 'To refund'], ['refunded', 'Refunded']]} /></${Head}>
+    <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['What', 'Customer', '#Amount', 'Why', 'Paid with', status === 'due' ? '' : 'Refunded']} empty=${status === 'due' ? 'No refunds due.' : 'Nothing refunded yet.'} rows=${d.refunds.map(r => html`<tr>
+      <td>${REFUND_KIND[r.kind] || r.kind}<div class="mono small">${r.entity_ref || String(r.entity_id).slice(0, 8)}</div></td>
+      <td>${r.customer_id ? html`<a href=${'#customers/' + r.customer_id}>${r.name || 'Customer'}</a>` : '—'}<div class="muted small">${r.phone ? '+92 ' + r.phone : ''}</div></td>
+      <td class="r num">${pkr(r.amount_pkr)}</td><td class="small" style="max-width:260px">${r.reason}</td>
+      <td class="small">${r.provider || '—'}<div class="mono muted">${r.payment_ref || ''}</div>${r.provider === 'sandbox' && html`<div><span class="tag bad">test money: nothing to refund</span></div>`}</td>
+      <td class="r">${r.status === 'due' ? html`<button class="btn sm" onClick=${() => { setRef(''); setPaying(r); }}>Mark refunded</button>` : html`<span class="small mono">${r.refund_ref}</span><div class="muted small">${when(r.refunded_at)} · ${r.refunded_by || ''}</div>`}</td></tr>`)} />
+      <${Shown} n=${d.refunds.length} total=${d.total} /></${Card}>`}</${Screen}>
+    ${paying && html`<${Modal} title="Record the refund" onClose=${() => setPaying(null)}>
+      <p>Refund <b>${pkr(paying.amount_pkr)}</b> to ${paying.name || 'the customer'} through ${paying.provider || 'the payment provider'}${paying.payment_ref ? html` (payment <span class="mono">${paying.payment_ref}</span>)` : ''}, then enter the refund reference.</p>
+      <label class="f"><span>Refund reference</span><input class="in mono" value=${ref} onInput=${e => setRef(e.target.value)} /></label>
+      <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setPaying(null)}>Cancel</button><${Act} disabled=${ref.trim().length < 4} run=${mark}>Mark refunded</${Act}></div>
+    </${Modal}>`}`;
 }
 
 // ---------- support ----------
@@ -344,7 +371,7 @@ function Support({ toast }) {
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Customer', 'Topic', 'Message', 'Sent', '']} empty=${status === 'open' ? 'No open requests.' : 'Nothing closed yet.'} rows=${d.requests.map(r => html`<tr>
       <td>${r.customer_id ? html`<a href=${'#customers/' + r.customer_id}>${r.name || 'Customer'}</a>` : '—'}<div class="muted small">${r.phone ? '+92 ' + r.phone : ''}</div></td>
       <td><span class="tag">${r.topic}</span></td><td class="small" style="max-width:420px">${r.body}</td><td class="small">${ago(r.created_at)}</td>
-      <td class="r">${r.status === 'open' ? html`<button class="btn sm" onClick=${() => { setReply(''); setOpen(r); }}>Reply</button>` : html`<span class="muted small">${when(r.closed_at)}</span>`}</td></tr>`)} /></${Card}>`}</${Screen}>
+      <td class="r">${r.status === 'open' ? html`<button class="btn sm" onClick=${() => { setReply(''); setOpen(r); }}>Reply</button>` : html`<span class="muted small">${when(r.closed_at)}</span>`}</td></tr>`)} /><${Shown} n=${d.requests.length} total=${d.total} /></${Card}>`}</${Screen}>
     ${open && html`<${Modal} title="Reply and close" onClose=${() => setOpen(null)}>
       <p class="small" style="background:var(--fill);padding:12px;border-radius:8px">${open.body}</p>
       <label class="f"><span>Reply (sent to the customer’s inbox; optional)</span><textarea class="in" rows="4" value=${reply} onInput=${e => setReply(e.target.value)}></textarea>
@@ -360,9 +387,10 @@ function Dealers({ me, toast }) {
   const [adding, setAdding] = useState(false);
   const [f, setF] = useState({ id: '', name: '', area: '', address: '', phone: '', hours: '' });
   const setStock = async (dealer, product, value) => {
-    const units = Number(value);
-    if (!Number.isInteger(units) || units < 0) { toast('Enter a whole number of 0 or more.', true); return; }
-    const note = prompt(`Set ${productName(product)} at ${dealer.name} to ${units}. Reason (e.g. delivery, count correction):`);
+    const v = String(value).trim();
+    if (!/^\d+$/.test(v)) { toast('Enter a whole number of 0 or more. An empty field isn’t saved.', true); load.reload(); return; }
+    const units = Number(v);
+    const note = await ask({ title: `Set ${productName(product)} at ${dealer.name} to ${units}?`, input: 'Reason (e.g. delivery, count correction)', confirm: 'Save stock' });
     if (note === null) { load.reload(); return; }
     try { await api(`/admin/dealers/${dealer.id}/stock`, { method: 'PUT', body: { product_id: product, units, note } }); toast('Stock updated.'); }
     catch (e) { toast(e.message, true); }
@@ -373,7 +401,7 @@ function Dealers({ me, toast }) {
   return html`<${Head} title="Dealers & stock" sub="Stock here is what customers can reserve. Change a number and press Enter or leave the field to save.">
       ${me.role === 'admin' && html`<button class="btn sm" onClick=${() => setAdding(true)}>Add dealer</button>`}</${Head}>
     ${products.error && html`<${Failed} error=${products.error} retry=${products.reload} />`}
-    <${Screen} load=${load}>${d => !products.data ? html`<div class="card"><${Loading} /></div>` : html`<div class="stack">${d.dealers.map(dl => html`<${Card} title=${dl.name}
+    <${Screen} load=${load}>${d => !products.data ? (products.error ? null : html`<div class="card"><${Loading} /></div>`) : html`<div class="stack">${d.dealers.map(dl => html`<${Card} title=${dl.name}
         action=${html`<div class="row"><${Tag} s=${dl.active ? 'active' : 'closed'} />${me.role === 'admin' && html`<${Act} cls="btn sm sec" confirm=${dl.active ? `Hide ${dl.name} from customers? Active collections there still work.` : null} run=${() => toggle(dl)}>${dl.active ? 'Deactivate' : 'Activate'}</${Act}>`}</div>`}>
       <p class="muted small">${dl.area} · ${dl.address || 'No address'} · ${dl.phone || 'No phone'} · ${dl.hours || 'No hours'}</p>
       <div class="tbl-wrap"><table><thead><tr>${products.data.products.map(p => html`<th class="r">${productName(p.id).replace(/^(Gold|Silver) /, m => m[0] + ' ')}</th>`)}</tr></thead>
@@ -400,10 +428,12 @@ function Products({ me, toast }) {
         onKeyDown=${e => e.key === 'Enter' && e.target.blur()} onChange=${e => {
           const v = e.target.value.trim().replace(/,/g, '');
           if (!/^\d+$/.test(v)) { toast('Enter the premium as a whole number of rupees (0 or more).', true); load.reload(); return; }
-          if (!confirm(`Change the premium for ${productName(p.id)} from ${pkr(p.premium_pkr)} to ${pkr(Number(v))}? New price locks use it straight away.`)) { load.reload(); return; }
-          save(p, { premium_pkr: Number(v) });
+          ask({ title: `Change the premium for ${productName(p.id)}?`, body: `From ${pkr(p.premium_pkr)} to ${pkr(Number(v))}. New price locks use it straight away.`, confirm: 'Change premium' })
+            .then(okd => (okd ? save(p, { premium_pkr: Number(v) }) : load.reload()));
         }} />` : pkr(p.premium_pkr)}</td>
-      <td>${admin ? html`<label class="row small"><input type="checkbox" checked=${p.active} onChange=${e => save(p, { active: e.target.checked })} /> ${p.active ? 'On sale' : 'Hidden'}</label>` : html`<${Tag} s=${p.active ? 'active' : 'closed'} />`}</td></tr>`)} />
+      <td>${admin ? html`<label class="row small"><input type="checkbox" checked=${p.active} onChange=${e => { const on = e.target.checked; e.target.checked = p.active;
+          ask({ title: on ? `Put ${productName(p.id)} on sale?` : `Hide ${productName(p.id)} from customers?`, body: on ? 'Customers can buy it straight away.' : 'Customers can’t buy it until it’s put back on sale. What they hold isn’t affected.', confirm: on ? 'Put on sale' : 'Hide product', danger: !on })
+            .then(okd => okd && save(p, { active: on })); }} /> ${p.active ? 'On sale' : 'Hidden'}</label>` : html`<${Tag} s=${p.active ? 'active' : 'closed'} />`}</td></tr>`)} />
       <p class="muted small" style="margin:12px 0 0">Sample premiums until PGBX confirms the real ones.</p></${Card}>`}</${Screen}>`;
 }
 
@@ -435,6 +465,23 @@ function Reconciliation({ toast }) {
           })} />
           <p class="muted small" style="margin:12px 0 0">Cover = vault + dealer stock − units owed to customers. A negative number means PGBX holds less metal than customers own.</p>
         </${Card}>
+        ${r.extra_payments && r.extra_payments.length > 0 && html`<div class="note warn">Orders paid more than once: ${r.extra_payments.length}. The extra payments are in <a href="#refunds">Refunds</a>.</div>`}
+        ${r.services && html`<${Card} title="$1 gold and services: money received this day">
+          <dl class="kv">${['micro', 'appraisal', 'gift'].map(k => html`<dt>${{ micro: '$1 gold', appraisal: 'Doorstep appraisals', gift: 'Gift orders' }[k]}</dt><dd class="num">${pkr((r.services.received_pkr || {})[k] || 0)}</dd>`)}
+            <dt>$1 gold credited</dt><dd class="num">${pkr(r.services.micro_credited_pkr)}</dd></dl>
+          ${r.services.micro_paid_not_credited.length > 0 && html`<div class="note warn" style="margin-top:12px">$1 gold paid but not credited: ${r.services.micro_paid_not_credited.map(o => o.ref).join(', ')}</div>`}
+        </${Card}>`}
+        ${r.micro && (() => { const gap = Number(r.micro.bars_held_grams) - Number(r.micro.customer_grams);
+          return html`<${Card} title="$1 gold metal">
+            <div class="grid g4">
+              <div class="card stat"><div class="k">Customers own</div><div class="v">${Number(r.micro.customer_grams).toFixed(4)} g</div></div>
+              <div class="card stat"><div class="k">Tola bars held</div><div class="v">${Number(r.micro.bars_held_grams).toFixed(3)} g</div><div class="muted small">bought − sold lots</div></div>
+              <div class=${'card stat' + (r.micro.buy_lots_to_settle ? ' attn' : '')}><div class="k">Bars still to buy</div><div class="v">${r.micro.buy_lots_to_settle}</div><div class="muted small">${r.micro.sell_lots_to_settle} tola to sell</div></div>
+              <a class=${'card stat' + (r.micro.payouts_overdue ? ' attn' : '')} href="#micro/payouts" style="text-decoration:none;color:inherit"><div class="k">Payouts to send</div><div class="v">${r.micro.payouts_pending}</div><div class="muted small">${pkr(r.micro.payouts_pending_pkr)}${r.micro.payouts_overdue ? ` · ${r.micro.payouts_overdue} over 2 days` : ''}</div></a>
+            </div>
+            <p class="muted small" style="margin:12px 0 0">The open lot is always partly filled, so bars held is normally a little below what customers own (less than 1 tola) until it fills. ${gap < -11.664 ? html`<b style="color:var(--danger)">More than a tola short: buy the bars for the full lots.</b>` : ''}</p>
+          </${Card}>`; })()}
+        ${r.refunds_due && html`<a class=${'card stat' + (r.refunds_due.count ? ' attn' : '')} href="#refunds" style="text-decoration:none;color:inherit"><div class="k">Refunds to pay</div><div class="v">${r.refunds_due.count}</div><div class="muted small">${pkr(r.refunds_due.pkr)}</div></a>`}
       </div>`;
     }}</${Screen}>
     ${count && html`<${Modal} title="Record vault count" onClose=${() => setCount(null)}>
@@ -466,29 +513,43 @@ function Settings({ me, toast }) {
   const save = async (key, text) => {
     let value;
     try { value = text.trim() === '' ? null : JSON.parse(text); } catch { toast('Enter a number, or valid JSON.', true); load.reload(); return; }
-    if (!confirm(`Change "${SETTING_HELP[key]?.[0] || key}" to ${JSON.stringify(value)}? This applies to all customers straight away.`)) { load.reload(); return; }
+    if (!(await ask({ title: `Change “${SETTING_HELP[key]?.[0] || key}”?`, body: `New value: ${JSON.stringify(value)}. This applies to all customers straight away.`, confirm: 'Change setting' }))) { load.reload(); return; }
     try { await api('/admin/settings', { method: 'PATCH', body: { [key]: value } }); toast('Setting saved.'); } catch (e) { toast(e.message, true); }
     load.reload();
   };
   return html`<${Head} title="Settings" sub=${admin ? 'Business rules the app and server follow. Changes are recorded in the audit log.' : 'Only administrators can change settings.'} />
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Setting', 'Value', 'Last changed']} empty="No settings." rows=${d.settings.map(s => html`<tr>
       <td>${SETTING_HELP[s.key]?.[0] || s.key}<div class="muted small mono">${s.key}${SETTING_HELP[s.key] ? ' · ' + SETTING_HELP[s.key][1] : ''}</div></td>
-      <td>${admin ? html`<input class="in mono" style="min-width:140px" value=${s.value === null ? '' : JSON.stringify(s.value)} aria-label=${s.key}
+      <td>${admin ? html`<input class="in mono" style="min-width:140px" value=${s.value === null ? '' : JSON.stringify(s.value)} aria-label=${SETTING_HELP[s.key]?.[0] || s.key}
         onKeyDown=${e => e.key === 'Enter' && e.target.blur()} onChange=${e => save(s.key, e.target.value)} />` : html`<span class="mono">${s.value === null ? '— (not set)' : JSON.stringify(s.value)}</span>`}</td>
       <td class="small">${s.updated_by ? when(s.updated_at) + ' · ' + s.updated_by : 'Sample default'}</td></tr>`)} /></${Card}>`}</${Screen}>`;
 }
 
 // ---------- audit ----------
+// Filters by kind of item, action (prefix, e.g. "payment." or "pin.locked"), who did it and the item's ID; pages back in time.
 function Audit() {
-  const [entity, setEntity] = useState('');
-  const load = useLoad('/admin/audit?entity=' + entity);
-  return html`<${Head} title="Audit log" sub="Every important action, by whom and when. Entries can’t be edited or deleted.">
-      <select class="in" style="width:auto" value=${entity} onChange=${e => setEntity(e.target.value)} aria-label="Filter">
-        ${[['', 'Everything'], ['customer', 'Customers'], ['order', 'Orders'], ['redemption', 'Collections'], ['kyc', 'Identity checks'], ['appraisal', 'Appraisals'], ['gift', 'Gift orders'], ['micro', '$1 gold'], ['lot', 'Tola lots'], ['support', 'Support'], ['staff', 'Staff'], ['setting', 'Settings'], ['dealer', 'Dealers'], ['product', 'Products'], ['paid', 'Payment mismatches'], ['error', 'Errors']].map(([v, l]) => html`<option value=${v}>${l}</option>`)}
-      </select></${Head}>
-    <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['When', 'Who', 'Action', 'Item', 'Details']} empty="No entries." rows=${d.entries.map(a => html`<tr>
+  const [f, setF] = useState({ entity: '', action: '', actor: '', id: '' });
+  const [q, setQ] = useState(f);
+  const [before, setBefore] = useState([]);                     // stack of page starts, for Newer / Older
+  useEffect(() => { const t = setTimeout(() => { setQ(f); setBefore([]); }, 350); return () => clearTimeout(t); }, [f.action, f.actor, f.id]);
+  const params = new URLSearchParams({ entity: q.entity, action: q.action.trim(), actor: q.actor.trim(), id: q.id.trim(), ...(before.length ? { before: before[before.length - 1] } : {}) });
+  const load = useLoad('/admin/audit?' + params);
+  const ent = v => { setF({ ...f, entity: v }); setQ({ ...q, entity: v }); setBefore([]); };
+  return html`<${Head} title="Audit log" sub="Every important action, by whom and when. Entries can’t be edited or deleted." />
+    <${Card}><div class="grid g4" style="gap:12px">
+      <label class="f" style="margin:0"><span>Item</span><select class="in" value=${f.entity} onChange=${e => ent(e.target.value)}>
+        ${[['', 'Everything'], ['customer', 'Customers'], ['order', 'Orders'], ['redemption', 'Collections'], ['kyc', 'Identity checks'], ['appraisal', 'Appraisals'], ['gift', 'Gift orders'], ['micro', '$1 gold'], ['lot', 'Tola lots'], ['refund', 'Refunds'], ['support', 'Support'], ['staff', 'Staff'], ['setting', 'Settings'], ['dealer', 'Dealers'], ['product', 'Products']].map(([v, l]) => html`<option value=${v}>${l}</option>`)}
+      </select></label>
+      <label class="f" style="margin:0"><span>Action starts with</span><input class="in mono" placeholder="e.g. payment. or login" value=${f.action} onInput=${e => setF({ ...f, action: e.target.value })} /></label>
+      <label class="f" style="margin:0"><span>Done by</span><input class="in mono" placeholder="e.g. staff:… or customer:…" value=${f.actor} onInput=${e => setF({ ...f, actor: e.target.value })} /></label>
+      <label class="f" style="margin:0"><span>Item ID</span><input class="in mono" placeholder="Full ID" value=${f.id} onInput=${e => setF({ ...f, id: e.target.value })} /></label>
+    </div></${Card}>
+    <div style="height:16px"></div>
+    <${Screen} load=${load}>${d => html`<${Card} action=${html`<div class="row"><button class="btn sm sec" disabled=${!before.length} onClick=${() => setBefore(before.slice(0, -1))}>Newer</button>
+        <button class="btn sm sec" disabled=${!d.more} onClick=${() => setBefore([...before, d.entries[d.entries.length - 1].id])}>Older</button></div>`}>
+      <${Table} head=${['When', 'Who', 'Action', 'Item', 'Details']} empty="No entries match." rows=${d.entries.map(a => html`<tr>
       <td class="small" style="white-space:nowrap">${when(a.at)}</td><td class="small mono">${a.actor}</td><td><span class="tag">${a.action}</span></td>
-      <td class="small mono">${a.entity}${a.entity_id ? ' ' + String(a.entity_id).slice(0, 8) : ''}</td><td class="small mono" style="max-width:320px;overflow-wrap:anywhere">${a.data && Object.keys(a.data).length ? JSON.stringify(a.data) : ''}</td></tr>`)} /></${Card}>`}</${Screen}>`;
+      <td class="small mono">${a.entity}${a.entity_id ? html` <button class="btn ghost sm mono" style="padding:0;min-height:0" title="Show everything for this item" onClick=${() => { setF({ ...f, id: String(a.entity_id) }); }}>${String(a.entity_id).slice(0, 8)}</button>` : ''}</td><td class="small mono" style="max-width:320px;overflow-wrap:anywhere">${a.data && Object.keys(a.data).length ? JSON.stringify(a.data) : ''}</td></tr>`)} /></${Card}>`}</${Screen}>`;
 }
 
 // ---------- staff ----------
@@ -517,10 +578,14 @@ function Staff({ me, toast }) {
       <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setAdding(false)}>Cancel</button>
         <${Act} disabled=${!f.name || !f.email || (f.role === 'dealer' && !f.dealer_id)} run=${add}>Create account</${Act}></div>
     </${Modal}>`}
-    ${setup && html`<${Modal} title="Share these once" onClose=${() => confirm('Close? The password and secret won’t be shown again.') && setSetup(null)}>
+    ${setup && html`<${Modal} title="Share these once" onClose=${() => ask({ title: 'Close without sharing?', body: 'The password and authenticator secret won’t be shown again.', confirm: 'Close', danger: true }).then(okd => okd && setSetup(null))}>
       <p>Give these to <b>${setup.email}</b> in person or through a secure channel. They are not stored in readable form and won’t be shown again. They must choose their own password when they first sign in.</p>
       <label class="f"><span>One-time password</span><div class="secret">${setup.password}</div></label>
-      <label class="f"><span>Authenticator secret</span><div class="secret">${setup.totpSecret}</div><small>In Google Authenticator, Microsoft Authenticator or 1Password: add account → enter key manually.</small></label>
+      <div class="f"><span>Authenticator</span>
+        <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+          <div role="img" aria-label="QR code for the authenticator app" style="line-height:0" dangerouslySetInnerHTML=${{ __html: qrSvg(setup.otpauthUrl || `otpauth://totp/${encodeURIComponent('PGBX:' + setup.email)}?secret=${setup.totpSecret}&issuer=PGBX`, 4) }}></div>
+          <small style="flex:1;min-width:180px">Scan with Google Authenticator, Microsoft Authenticator or 1Password. Or add the account by entering this key: <span class="secret" style="display:block;margin-top:6px">${setup.totpSecret.replace(/(.{4})/g, '$1 ').trim()}</span></small>
+        </div></div>
       <div class="row" style="justify-content:flex-end"><button class="btn" onClick=${() => setSetup(null)}>I’ve shared them</button></div>
     </${Modal}>`}`;
 }
@@ -533,7 +598,9 @@ function Admin() {
   const [pw, setPw] = useState(false);
   const [toast, showToast] = useToast();
   const [narrow, setNarrow] = useState(() => matchMedia('(max-width:860px)').matches);
-  const counts = useLoad('/admin/overview', [section, !!me && !me.mustChangePassword]);
+  const counts = useLoad(me && !me.mustChangePassword ? '/admin/overview' : null, [section]);   // nothing is asked before sign-in
+  const sideRef = useRef();
+  useEffect(() => { if (menu && sideRef.current) (sideRef.current.querySelector('[aria-current=page]') || sideRef.current.querySelector('a'))?.focus(); }, [menu]);
   useEffect(() => { setMenu(false); window.scrollTo(0, 0); }, [section, id]);
   useEffect(() => { const m = matchMedia('(max-width:860px)'); const f = () => setNarrow(m.matches); m.addEventListener('change', f); return () => m.removeEventListener('change', f); }, []);
   useEffect(() => { if (!menu) return; const k = e => e.key === 'Escape' && setMenu(false); addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, [menu]);
@@ -543,14 +610,14 @@ function Admin() {
   // Every confirmation also refreshes the counts in the menu, so a handled item stops showing as waiting.
   const show = (text, err) => { showToast(text, err); if (!err) counts.reload(); };
   const badge = { kyc: counts.data?.kyc_review, orders: counts.data?.flagged_orders, support: counts.data?.support_open, appraisals: counts.data?.appraisals_to_assign,
-    micro: (counts.data?.lots_to_settle || 0) + (counts.data?.payouts_pending || 0) + (counts.data?.micro_refunds || 0) };
+    micro: (counts.data?.lots_to_settle || 0) + (counts.data?.payouts_pending || 0), refunds: counts.data?.refunds_due };
   const props = { me, toast: show };
-  const views = { overview: Overview, kyc: Kyc, orders: Orders, appraisals: Appraisals, gifts: Gifts, micro: Micro, customers: Customers, support: Support, dealers: Dealers, products: Products, reconciliation: Reconciliation, settings: Settings, audit: Audit, staff: Staff };
+  const views = { overview: Overview, kyc: Kyc, orders: Orders, appraisals: Appraisals, gifts: Gifts, micro: Micro, refunds: Refunds, customers: Customers, support: Support, dealers: Dealers, products: Products, reconciliation: Reconciliation, settings: Settings, audit: Audit, staff: Staff };
   const allowed = k => { const s = SECTIONS.find(x => x[0] === k); return s && (!s[2] || s[2] === me.role); };
   const View = section === 'customers' && id ? null : allowed(section) ? views[section] : Overview;   // ops can't open admin-only sections by URL
   const hidden = narrow && !menu;                              // the closed drawer can't be reached with Tab or a screen reader
   return html`<div class="shell">
-    <nav class=${'side' + (menu ? ' open' : '')} id="side" aria-label="Sections" inert=${hidden ? true : undefined} aria-hidden=${hidden ? 'true' : undefined}>
+    <nav class=${'side' + (menu ? ' open' : '')} id="side" ref=${sideRef} aria-label="Sections" inert=${hidden ? true : undefined} aria-hidden=${hidden ? 'true' : undefined}>
       <${Brand} sub="Admin panel" />
       ${SECTIONS.filter(s => !s[2] || s[2] === me.role).map(([k, l]) => html`<a href=${'#' + k} aria-current=${section === k ? 'page' : undefined}>${l}${badge[k] > 0 && html`<span class="badge">${badge[k]}</span>`}</a>`)}
       <div class="who"><b>${me.name}</b>${me.role === 'admin' ? 'Administrator' : 'Operations'}<div class="row" style="margin-top:8px;gap:12px">
@@ -563,7 +630,7 @@ function Admin() {
       <button class="btn sm sec menu" style="margin-bottom:12px" onClick=${() => setMenu(true)} aria-label="Open menu" aria-expanded=${menu} aria-controls="side">☰ Menu</button>
       ${View ? html`<${View} ...${props} id=${id} />` : html`<${Customer} id=${id} ...${props} />`}
     </main>
-    <${Toast} toast=${toast} />
+    <${Toast} toast=${toast} /><${Asker} />
   </div>`;
 }
 

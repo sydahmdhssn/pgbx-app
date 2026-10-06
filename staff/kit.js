@@ -31,13 +31,16 @@ export async function api(path, { method = 'GET', body, timeout = 15000, quiet =
   return d;
 }
 
-// Loads data for a screen: { data, error, loading, reload }
+// Loads data for a screen: { data, error, loading, reload }. A null path loads nothing (e.g. before sign-in).
+// A different path (another tab or filter) clears the old rows at once, so they can't be clicked while the new ones load.
 export function useLoad(path, deps = []) {
-  const [s, setS] = useState({ data: null, error: null, loading: true });
-  const seq = useRef(0);
+  const [s, setS] = useState({ data: null, error: null, loading: !!path });
+  const seq = useRef(0), shown = useRef(path);
   const reload = useCallback(() => {
     const n = ++seq.current;
-    setS(p => ({ ...p, loading: true, error: null }));
+    if (!path) { setS({ data: null, error: null, loading: false }); return; }
+    const fresh = shown.current !== path; shown.current = path;
+    setS(p => ({ data: fresh ? null : p.data, loading: true, error: null }));
     api(path).then(d => n === seq.current && setS({ data: d, error: null, loading: false }), e => n === seq.current && setS({ data: null, error: e, loading: false }));
   }, [path]);
   useEffect(reload, [path, ...deps]);
@@ -59,8 +62,11 @@ export function left(d) {
   const s = (new Date(d) - Date.now()) / 1000;
   if (s <= 0) return 'expired';
   if (s < 3600) return Math.ceil(s / 60) + ' min left';
-  return Math.floor(s / 3600) + ' h ' + Math.floor((s % 3600) / 60) + ' min left';
+  if (s < 2 * 86400) return Math.floor(s / 3600) + ' h ' + Math.floor((s % 3600) / 60) + ' min left';
+  return Math.floor(s / 86400) + ' days left';
 }
+// "Showing 200 of 1,240" under a list the server cut short
+export const Shown = ({ n, total }) => (total > n ? html`<p class="muted small" style="margin:10px 0 0">Showing ${n} of ${total.toLocaleString('en-PK')}. The oldest aren’t shown; use search or filters to find them.</p>` : null);
 export const PRODUCT_NAMES = {
   'g-10mg': 'Gold 10 mg', 'g-20mg': 'Gold 20 mg', 'g-50mg': 'Gold 50 mg', 'g-100mg': 'Gold 100 mg', 'g-500mg': 'Gold 500 mg', 'g-1g': 'Gold 1 gram', 'g-5g': 'Gold 5 gram',
   's-1t': 'Silver 1 tola', 's-3t': 'Silver 3 tola', 's-5t': 'Silver 5 tola', 's-10t': 'Silver 10 tola',
@@ -103,6 +109,8 @@ export function Modal({ title, children, onClose }) {
     const first = box.current && (box.current.querySelector('input,select,textarea') || box.current.querySelector(FOCUSABLE));
     (first || box.current)?.focus();
     const k = e => {
+      const open = document.querySelectorAll('.modal-bg');            // only the dialog on top answers the keyboard
+      if (box.current && open.length && open[open.length - 1] !== box.current.parentElement) return;
       if (e.key === 'Escape') { close.current(); return; }
       if (e.key !== 'Tab' || !box.current) return;
       const f = [...box.current.querySelectorAll(FOCUSABLE)]; if (!f.length) return;
@@ -116,16 +124,39 @@ export function Modal({ title, children, onClose }) {
   return html`<div class="modal-bg" onClick=${e => e.target === e.currentTarget && onClose()}>
     <div class="modal" role="dialog" aria-modal="true" aria-label=${title} ref=${box} tabindex="-1"><h2>${title}</h2>${children}</div></div>`;
 }
-// Button that runs an async action, shows progress and reports the result
+// In-page questions instead of the browser's confirm()/prompt(): ask({ title, body, input, confirm, danger })
+// answers true (or the typed text) when confirmed, null when cancelled. <Asker/> must be on the page once.
+let showAsk = null;
+export function ask(q) {
+  if (!showAsk) return Promise.resolve(window.confirm(q.title) ? (q.input ? '' : true) : null);
+  return new Promise(done => showAsk({ ...q, done }));
+}
+export function Asker() {
+  const [q, setQ] = useState(null);
+  const [text, setText] = useState('');
+  useEffect(() => { showAsk = x => { setText(x.value || ''); setQ(x); }; return () => { showAsk = null; }; }, []);
+  if (!q) return null;
+  const end = v => { setQ(null); q.done(v); };
+  const need = q.input && q.required !== false;
+  return html`<${Modal} title=${q.title} onClose=${() => end(null)}>
+    ${q.body && html`<p>${q.body}</p>`}
+    ${q.input && html`<label class="f"><span>${q.input}</span><input class="in" value=${text} onInput=${e => setText(e.target.value)} onKeyDown=${e => { if (e.key === 'Enter' && (!need || text.trim())) end(text.trim()); }} /></label>`}
+    <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => end(null)}>Cancel</button>
+      <button class=${q.danger ? 'btn danger' : 'btn'} disabled=${need && !text.trim()} onClick=${() => end(q.input ? text.trim() : true)}>${q.confirm || 'Confirm'}</button></div>
+  </${Modal}>`;
+}
+// Button that runs an async action, shows progress and reports the result. While it runs, the other buttons in the
+// same dialog are paused too, so two different actions can't be sent at once.
 export function Act({ run, children, cls = 'btn', confirm, disabled, done, onError }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
-  const go = async () => {
-    if (confirm && !window.confirm(confirm)) return;
-    setBusy(true); setErr(null);
+  const go = async e => {
+    if (confirm && !(await ask({ title: confirm, confirm: 'Yes, continue', danger: /deactivate|reset|hide|suspend/i.test(confirm) }))) return;
+    const box = e && e.currentTarget && e.currentTarget.closest('.modal');
+    setBusy(true); setErr(null); if (box) box.setAttribute('data-busy', '');
     try { const r = await run(); done && done(r); }
-    catch (e) { onError ? onError(e) : setErr(e.message); }      // shown next to the button, not in a browser alert
-    finally { setBusy(false); }
+    catch (x) { onError ? onError(x) : setErr(x.message); }      // shown next to the button, not in a browser alert
+    finally { setBusy(false); if (box) box.removeAttribute('data-busy'); }
   };
   return html`<button class=${cls} onClick=${go} disabled=${busy || disabled} aria-busy=${busy}>${busy ? 'Working…' : children}</button>${err && html`<span class="act-err" role="alert">${err}</span>`}`;
 }
