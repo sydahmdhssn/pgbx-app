@@ -321,6 +321,20 @@ Before a store release PGBX needs: Apple and Google developer accounts in PGBX's
 (`pk.com.pgbx.app` is a placeholder), a Firebase project for push, store screenshots, and the privacy answers (plus an app-level `PrivacyInfo.xcprivacy` if PGBX
 adds code that uses Apple's "required reason" APIs; Capacitor and its plugins ship their own).
 
+## Performance rules
+
+Measured on a 4x-slowed CPU (a mid-range phone). Keep these when changing the app:
+
+- **Animate only `transform` and `opacity`.** They run on the compositor. Animating `background-position`, sizes or
+  colours in a loop repaints on the main thread every frame (the rate cards' edge shine did, costing ~100 ms of main
+  thread per second at idle).
+- **Long lists:** wrap the rows in `<Keep deps=[...]>` so the once-a-second clock doesn't rebuild them (use
+  `minuteOf(now)` for "N min ago" times, and call actions through `ACT`), and use `useGrowing` for unbounded lists.
+- **Formatting:** use the cached `F.*` formatters, `fmt` and `fmtDec`, never `toLocaleString(locale, options)` in render code.
+- **No non-passive `touchmove`/`wheel` listeners** (they make scrolling wait for JavaScript); saving to the phone
+  happens in idle time.
+- Entrance cascades animate only the first rows of a list; new modules get a `modulepreload` link in `index.html`.
+
 ## Security headers
 
 `vercel.json` sends a Content-Security-Policy (scripts only from this site, connections only to this site and

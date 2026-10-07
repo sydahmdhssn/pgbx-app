@@ -19,8 +19,9 @@ function production(html, { assetBase }) {
     .replace('<meta name="pgbx-build" content="demo">', `<meta name="pgbx-build" content="production">\n<meta name="pgbx-api" content="${api}">`)
     .replace(/<meta name="description" content="[^"]*">/, '<meta name="description" content="PGBX: buy Shariah-compliant 999.0 gold and silver at live prices, hold it in your wallet and collect it at PGBX dealers.">')
     .replace(/<div class="page-caption">[^<]*<\/div>\n?/, '')
-    .replace('<script type="module" src="app.js"></script>', `<script type="module" src="${assetBase}app.js"></script>`);
-  if (!out.includes('content="production"') || !out.includes(`src="${assetBase}app.js"`)) throw new Error('index.html changed: update scripts/build.mjs');
+    .replace('<script type="module" src="app.js"></script>', `<script type="module" src="${assetBase}app.js"></script>`)
+    .replace(/<link rel="modulepreload" href="([^"]+)">/g, (m, f) => `<link rel="modulepreload" href="${assetBase}${f}">`);
+  if (!out.includes('content="production"') || !out.includes(`src="${assetBase}app.js"`) || !out.includes(`modulepreload" href="${assetBase}live.js"`)) throw new Error('index.html changed: update scripts/build.mjs');
   return out;
 }
 const index = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');

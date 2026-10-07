@@ -1,5 +1,5 @@
 // htm + Preact, self-hosted (no third-party CDN at runtime); licences in vendor/LICENSES.txt
-import { html, render, useState, useEffect, useRef, useMemo, useErrorBoundary } from './vendor/htm-preact-standalone-3.1.1.module.js';
+import { html, render, Component, useState, useEffect, useRef, useMemo, useErrorBoundary } from './vendor/htm-preact-standalone-3.1.1.module.js';
 import * as Live from './live.js';
 
 // Two builds from one code base (npm run build:app writes the production one to dist/ and live/):
@@ -174,21 +174,34 @@ const initialDealerStock = () => Object.fromEntries(DEALERS.map(d => [d.id,
 /* ============================================================
    Helpers
    ============================================================ */
-const fmt = n => (Number.isFinite(n) ? 'Rs ' + Math.round(n).toLocaleString('en-US') : 'Rs —');   // no price yet: a dash, never NaN or a sample
+// Formatters are built once: toLocaleString(locale, options) builds a new one on every call, which is up to 30x slower
+// (it showed up as the main cost of redrawing long lists)
+const F = {
+  int: new Intl.NumberFormat('en-US'),
+  dec: {},                                                     // by number of decimals
+  dt: new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+  hm: new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' }),
+  dayMon: new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short' }),
+  wdHm: new Intl.DateTimeFormat('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' }),
+  dd2Mon: new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short' }),
+  wdDayMonUtc: new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }),
+};
+const fmtDec = (n, d) => (F.dec[d] || (F.dec[d] = new Intl.NumberFormat('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }))).format(n);
+const fmt = n => (Number.isFinite(n) ? 'Rs ' + F.int.format(Math.round(n)) : 'Rs —');   // no price yet: a dash, never NaN or a sample
 const fmtW = g => (g < 1 ? `${+(g * 1000).toFixed(0)} mg` : `${+g.toFixed(3)} g`);
 const pct = n => (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
 const uid = () => Math.random().toString(36).slice(2, 8).toUpperCase();
-const dt = ts => new Date(ts).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+const dt = ts => F.dt.format(new Date(ts));
 const ago = ms => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s ago` : `${Math.floor(s / 60)}m ${s % 60}s ago`; };
 // Human-readable time for lists: "Just now", "5 min ago", "Today, 14:05", "Yesterday, 09:10", "28 Sept, 16:40"
 const rel = (ts, now = Date.now()) => {
   const m = Math.floor((now - ts) / 60000), d = new Date(ts);
-  const hm = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const hm = F.hm.format(d);
   if (m < 1) return 'Just now';
   if (m < 60) return `${m} min ago`;
   if (sameDay(ts, now)) return `Today, ${hm}`;
   if (sameDay(ts, now - 86400e3)) return `Yesterday, ${hm}`;
-  return `${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}, ${hm}`;
+  return `${F.dayMon.format(d)}, ${hm}`;
 };
 const dur = ms => { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 3600)}h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}m ${String(s % 60).padStart(2, '0')}s`; };
 const buzz = () => { try { navigator.vibrate && navigator.vibrate(6); } catch (e) { } };
@@ -322,18 +335,43 @@ const PATHS = {
   scale: 'M12 4v16M6 20h12M5 7h14M5 7l-3 6a3 3 0 0 0 6 0L5 7zM19 7l-3 6a3 3 0 0 0 6 0l-3-6z',
   wa: 'M4 20l1.3-4A8 8 0 1 1 8 18.7L4 20zM9 9.5c0 3 2.5 5.5 5.5 5.5l1.2-1.4-1.9-.9-.8.8a3.5 3.5 0 0 1-2.4-2.4l.8-.8-.9-1.9L9 9.5z',
 };
+// ---------- rendering helpers ----------
+// <Keep deps=[...] render=${() => ...}/> redraws its part only when one of deps changes (compared by identity), so the
+// app's once-a-second clock doesn't rebuild long lists whose rows can't have changed. Inside, call actions through ACT
+// (always the newest set) rather than a captured A.
+class Keep extends Component {
+  shouldComponentUpdate(n) { const a = this.props.deps, b = n.deps; return a.length !== b.length || a.some((x, i) => x !== b[i]); }
+  render() { return this.props.render(); }
+}
+let ACT = null;
+// The minute shown by rel() ("3 min ago") changes once a minute; lists depend on this instead of the 1 s clock
+const minuteOf = now => Math.floor(now / 60000);
+// Long lists render their first rows at once and the rest as the customer scrolls towards them, so opening a screen
+// with hundreds of entries costs the same as one with forty. Returns [rows to draw, element to put after them].
+function useGrowing(items, first = 40, step = 60) {
+  const [n, setN] = useState(first);
+  const ref = useRef(null);
+  const more = items.length > n;
+  useEffect(() => {
+    if (!more || !ref.current || !window.IntersectionObserver) { if (more && !window.IntersectionObserver) setN(items.length); return; }
+    const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) setN(x => x + step); }, { rootMargin: '800px 0px' });
+    io.observe(ref.current); return () => io.disconnect();
+  }, [more, n]);
+  return [more ? items.slice(0, n) : items, more ? html`<div ref=${ref} aria-hidden="true" style="height:1px"></div>` : null];
+}
 const Icon = ({ n, c = '', s }) => html`<svg class=${'icon ' + c} viewBox="0 0 24 24" style=${s} aria-hidden="true"><path d=${PATHS[n]} /></svg>`;
 
 /* ============================================================
    Motion helpers
    ============================================================ */
 // Rolling-digit price: each digit column slides (transform only). Rolls up from 0 on first view.
-const DIGITS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+// The rolling strip is one text block of ten lines (0-9), not ten elements: same look, ~90% fewer elements per price
+const DIGIT_STRIP = '0\n1\n2\n3\n4\n5\n6\n7\n8\n9';
 function Odo({ value, prefix = 'Rs ', decimals = 0, flash, dir }) {
   const [ready, setReady] = useState(false);
   useEffect(() => { let r2; const r = requestAnimationFrame(() => { r2 = requestAnimationFrame(() => setReady(true)); }); return () => { cancelAnimationFrame(r); cancelAnimationFrame(r2); }; }, []);
   if (!Number.isFinite(Number(value))) return html`<span class="odo">${prefix}—</span>`;
-  const s = Number(value).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  const s = fmtDec(Number(value), decimals);
   const chars = s.split('');
   // The rolling digits are hidden from screen readers; they read the plain text instead
   return html`<span class="odo"><span class="sr">${prefix + s}</span>
@@ -341,7 +379,7 @@ function Odo({ value, prefix = 'Rs ', decimals = 0, flash, dir }) {
     <span aria-hidden="true" style=${{ marginRight: /\s$/.test(prefix) ? '.24em' : 0 }}>${prefix.trim()}</span>
     ${chars.map((c, i) => { const k = chars.length - i;
       return /\d/.test(c)
-        ? html`<span class="odo-col" key=${'d' + k} aria-hidden="true"><span class="odo-strip" style=${{ transform: `translateY(${ready ? -Number(c) * 10 : 0}%)`, transitionDelay: (i * 35) + 'ms' }}>${DIGITS.map(d => html`<i>${d}</i>`)}</span></span>`
+        ? html`<span class="odo-col" key=${'d' + k} aria-hidden="true"><span class="odo-strip" style=${{ transform: `translateY(${ready ? -Number(c) * 10 : 0}%)`, transitionDelay: (i * 35) + 'ms' }}>${DIGIT_STRIP}</span></span>`
         : html`<span key=${'s' + k} aria-hidden="true">${c}</span>`; })}
   </span>`;
 }
@@ -420,8 +458,9 @@ const dotClass = (rates, stale) => 'ldot' + (stale ? ' stale' : rates.mode !== '
 // First launch: the mark draws in once (about 2 s). Returning customers get a short splash before the PIN.
 function Splash({ onDone, rates, quick }) {
   const [out, setOut] = useState(false);
-  const finish = () => { if (out) return; setOut(true); setTimeout(onDone, 350); };
-  useEffect(() => { const t = setTimeout(finish, quick ? 800 : 2100); return () => clearTimeout(t); }, []);
+  const finish = () => { if (out) return; setOut(true); setTimeout(onDone, quick ? 250 : 350); };
+  // A returning customer is on the PIN pad in about half a second (the brand shows, then gets out of the way)
+  useEffect(() => { const t = setTimeout(finish, quick ? 350 : 2100); return () => clearTimeout(t); }, []);
   return html`<div class=${'splash on-dark' + (quick ? ' quick' : '') + (out ? ' out' : '')} onClick=${finish}>
     <${Logo} size=${quick ? 112 : 140} animate=${!quick} orbit=${true} />
     <h1>Pakistan Gold Bullion Exchange</h1>
@@ -837,20 +876,36 @@ function RatesHome({ S, A }) {
 function Chart({ points, color, range }) {
   const ref = useRef(null);
   const [hover, setHover] = useState(null);
-  if (!points || points.length < 2) return null;
+  const pending = useRef(null);
+  useEffect(() => () => cancelAnimationFrame(pending.current && pending.current.raf), []);
   const W = 340, H = 180, PT = 12, PB = 6;
-  const ys = points.map(p => p[1]); const min = Math.min(...ys), max = Math.max(...ys);
-  const pad = (max - min) * 0.15 || max * 0.002, lo = min - pad, hi = max + pad;
-  const x = i => (i / (points.length - 1)) * W;
-  const y = v => PT + (1 - (v - lo) / (hi - lo)) * (H - PT - PB);
-  const d = points.map((p, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ',' + y(p[1]).toFixed(1)).join('');
-  const move = e => { const r = ref.current.getBoundingClientRect(); const rel = (e.clientX - r.left) / r.width; setHover(Math.max(0, Math.min(points.length - 1, Math.round(rel * (points.length - 1))))); };
-  const tf = t => { const dd = new Date(t); return range === 'day' ? dd.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : range === 'week' ? dd.toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : dd.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }); };
+  // The line is computed once per set of points, not on every pointer move or clock tick
+  const geo = useMemo(() => {
+    if (!points || points.length < 2) return null;
+    const ys = points.map(p => p[1]); const min = Math.min(...ys), max = Math.max(...ys);
+    const pad = (max - min) * 0.15 || max * 0.002, lo = min - pad, hi = max + pad;
+    const x = i => (i / (points.length - 1)) * W;
+    const y = v => PT + (1 - (v - lo) / (hi - lo)) * (H - PT - PB);
+    return { lo, hi, x, y, d: points.map((p, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ',' + y(p[1]).toFixed(1)).join('') };
+  }, [points]);
+  if (!geo) return null;
+  const { lo, hi, x, y, d } = geo;
+  // Pointer moves (up to 120 a second) are coalesced to one update per frame
+  const move = e => {
+    const cx = e.clientX;
+    if (pending.current) { pending.current.cx = cx; return; }
+    pending.current = { cx, raf: requestAnimationFrame(() => {
+      const r = ref.current && ref.current.getBoundingClientRect(), c = pending.current.cx; pending.current = null;
+      if (!r) return;
+      setHover(Math.max(0, Math.min(points.length - 1, Math.round((c - r.left) / r.width * (points.length - 1)))));
+    }) };
+  };
+  const tf = t => { const dd = new Date(t); return range === 'day' ? F.hm.format(dd) : range === 'week' ? F.wdHm.format(dd) : F.dd2Mon.format(dd); };
   const grid = [0.25, 0.5, 0.75].map(f => lo + (hi - lo) * f);
   return html`<div class="chart-wrap">
-    <svg ref=${ref} class="chart" viewBox=${`0 0 ${W} ${H}`} onPointerMove=${move} onPointerDown=${move} onPointerLeave=${() => setHover(null)} role="img" aria-label=${`Chart from ${fmt(points[0][1])} to ${fmt(points[points.length - 1][1])}`}>
+    <svg ref=${ref} class="chart" viewBox=${`0 0 ${W} ${H}`} onPointerMove=${move} onPointerDown=${move} onPointerLeave=${() => { if (pending.current) { cancelAnimationFrame(pending.current.raf); pending.current = null; } setHover(null); }} role="img" aria-label=${`Chart from ${fmt(points[0][1])} to ${fmt(points[points.length - 1][1])}`}>
       <defs><linearGradient id="chFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color=${color} stop-opacity=".16"/><stop offset="1" stop-color=${color} stop-opacity="0"/></linearGradient></defs>
-      ${grid.map(v => html`<line class="ch-grid" x1="0" x2=${W} y1=${y(v)} y2=${y(v)}/><text class="ch-lbl" x=${W - 2} y=${y(v) - 4} text-anchor="end">${Math.round(v).toLocaleString('en-US')}</text>`)}
+      ${grid.map(v => html`<line class="ch-grid" x1="0" x2=${W} y1=${y(v)} y2=${y(v)}/><text class="ch-lbl" x=${W - 2} y=${y(v) - 4} text-anchor="end">${F.int.format(Math.round(v))}</text>`)}
       <path class="ch-area" d=${d + `L${W},${H}L0,${H}Z`} fill="url(#chFill)"/>
       <path class="ch-line" d=${d} stroke=${color} pathLength="1"/>
       ${hover != null && html`<line x1=${x(hover)} x2=${x(hover)} y1="0" y2=${H} stroke="rgba(29,43,34,.25)" stroke-dasharray="3 3"/><circle cx=${x(hover)} cy=${y(points[hover][1])} r="5" fill="#fff" stroke=${color} stroke-width="2.5"/>`}
@@ -1012,10 +1067,10 @@ function MicroScreen({ S, A }) {
       ${m.grams > 0 && html`<div class="pad" style="margin-top:12px"><button class="btn btn-secondary" style="width:100%" onClick=${() => A.push({ name: 'micro-sell' })}><${Icon} n="scale" c="sm"/> Sell gold</button></div>`}
       <section class="sec"><div class="sec-h"><h3>Transactions</h3>${m.txns.length > 0 && html`<span class="aside">Tap one to see its tola lot</span>`}</div>
         ${m.txns.length === 0 ? html`<${Empty} icon="gem" title="No transactions yet" body="Every $1 you buy and every sale appears here with its transaction ID." />`
-          : html`<div class="group">${m.txns.slice(0, 100).map(t => html`<button class="row" onClick=${() => A.push({ name: 'micro-txn', ref: t.ref })}>
+          : html`<${Keep} deps=${[m.txns, minuteOf(S.now)]} render=${() => html`<div class="group">${m.txns.slice(0, 100).map(t => html`<button class="row" onClick=${() => ACT.push({ name: 'micro-txn', ref: t.ref })}>
             <span class=${'ri' + (t.side === 'buy' ? ' gold' : '')}><${Icon} n=${t.side === 'buy' ? 'plus' : 'minus'} c="sm"/></span>
             <div class="rt"><b class="mono" style="font-size:13px">${t.ref}</b><span>${t.side === 'buy' ? 'Bought' : 'Sold'} ${fmtG(t.grams)} · ${fmt(t.amount)} · ${rel(t.ts, S.now)}</span></div>
-            <span class=${'tag ' + (MICRO_STATUS[t.status] || ['', ''])[0]}>${(MICRO_STATUS[t.status] || ['', t.status])[1]}</span></button>`)}</div>`}
+            <span class=${'tag ' + (MICRO_STATUS[t.status] || ['', ''])[0]}>${(MICRO_STATUS[t.status] || ['', t.status])[1]}</span></button>`)}</div>`} />`}
         ${m.txns.length > 100 && html`<p class="foot">Showing your latest 100 transactions. The full list is in your statement from PGBX.</p>`}
       </section>
       <p class="foot">Your gold is pooled with other customers’ in whole 1-tola bars PGBX buys and holds; each bar’s record lists every transaction ID in it. ${LIVE ? '' : 'Demo: transactions are simulated on this phone.'}</p>
@@ -1449,7 +1504,8 @@ function ProfileScreen({ S, A }) {
 function WalletScreen({ S, A }) {
   const { holdings, reserved, walletValue: wv } = S;
   const held = PRODUCTS.filter(p => holdings[p.id] > 0);
-  const history = [...S.ledger].reverse();
+  const history = useMemo(() => [...S.ledger].reverse(), [S.ledger]);
+  const [shown, moreRows] = useGrowing(history);
   const pending = S.orders.filter(o => o.status === 'flagged');
   return html`<div class="scroll">
     <${TabHead} title="Wallet" sub="Every bar is backed one-to-one by metal PGBX holds" />
@@ -1503,8 +1559,8 @@ function WalletScreen({ S, A }) {
     <section class="sec">
       <div class="sec-h"><h3>Activity</h3></div>
       ${!history.length && html`<p class="foot" style="margin-top:0">Purchases and collections appear here.</p>`}
-      <div class="group inset">
-        ${history.map(e => { const p = P[e.pid]; const kind = e.reason === 'purchase' ? 'plus' : e.reason === 'redemption' ? 'minus' : 'open';
+      <${Keep} deps=${[shown, minuteOf(S.now)]} render=${() => html`<div class="group inset">
+        ${shown.map(e => { const p = P[e.pid]; const kind = e.reason === 'purchase' ? 'plus' : e.reason === 'redemption' ? 'minus' : 'open';
           const title = kind === 'plus' ? 'Bought' : kind === 'minus' ? 'Collected' : 'Opening balance';
           return html`<div class="row" style="align-items:flex-start">
             <span class=${'ri' + (kind === 'minus' ? ' gold' : '')}><${Icon} n=${kind === 'minus' ? 'store' : kind === 'plus' ? 'buy' : 'box'} c="sm"/></span>
@@ -1514,7 +1570,7 @@ function WalletScreen({ S, A }) {
               ${e.serials && html`<span>Serial ${e.serials.join(', ')}</span>`}</div>
             <b class=${e.delta > 0 ? 'up' : ''} style="font-size:15px;white-space:nowrap">${e.delta > 0 ? '+' : '−'}${Math.abs(e.delta)}</b>
           </div>`; })}
-      </div>
+      </div>`} />${moreRows}
     </section>
     <p class="foot">Your balance is calculated from this activity record, which can’t be edited.</p>
   </div>`;
@@ -1791,12 +1847,12 @@ function InboxScreen({ S, A }) {
     <${TopBar} title="Notifications" onBack=${A.back} right=${html`<button class="iconbtn" onClick=${() => A.push({ name: 'notifsettings' })} aria-label="Notification settings"><${Icon} n="sliders"/></button>`} />
     <div class="scroll">
       ${S.notifications.length === 0 ? html`<${Empty} icon="bell" title="No notifications yet" body="Purchases, collections, price alerts and security notices will appear here." />`
-        : html`<div class="group inset">${S.notifications.map(n => { const inner = html`
+        : html`<${Keep} deps=${[S.notifications, minuteOf(S.now), unreadAtOpen]} render=${() => html`<div class="group inset">${S.notifications.map(n => { const inner = html`
           <span class=${'ri' + (N_TONE[n.kind] || '')}><${Icon} n=${N_ICON[n.kind] || 'bell'} c="sm"/></span>
           <div class="rt"><b>${n.title}</b><span>${n.body}</span><span class="tiny" style="margin-top:4px">${rel(n.ts, S.now)}</span></div>
           ${unreadAtOpen.has(n.id) && html`<span class="ldot unread" aria-label="Unread"></span>`}
           ${n.link && html`<${Icon} n="chev" c="sm chev"/>`}`;
-          return n.link ? html`<button class="row" style="align-items:flex-start" onClick=${() => A.openLink(n.link)}>${inner}</button>` : html`<div class="row" style="align-items:flex-start">${inner}</div>`; })}</div>`}
+          return n.link ? html`<button class="row" style="align-items:flex-start" onClick=${() => ACT.openLink(n.link)}>${inner}</button>` : html`<div class="row" style="align-items:flex-start">${inner}</div>`; })}</div>`} />`}
     </div>
   </div>`;
 }
@@ -2096,7 +2152,7 @@ const DESIGNS = [['plain', 'Plain', ''], ['eid', 'Eid Mubarak', 'EID MUBARAK'], 
 const MASHA = TOLA / 12, RATTI = TOLA / 96;            // 1 tola = 12 masha = 96 ratti
 const num = v => { const n = Number(String(v || '').replace(/[^\d.]/g, '')); return Number.isFinite(n) ? n : 0; };
 const ymd = d => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
-const dayName = s => new Date(s + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+const dayName = s => F.wdDayMonUtc.format(new Date(s + 'T12:00:00Z'));
 // Visits and deliveries are in Pakistan (UTC+5, no daylight saving), like the server, wherever the phone's clock is set
 // After a form is checked, bring its first message into view (it may be above or below the screen)
 const showFirstError = () => setTimeout(() => { const e = document.querySelector('.page .hint.err'); if (e) e.scrollIntoView({ block: 'center', behavior: 'smooth' }); }, 50);
@@ -2526,8 +2582,9 @@ function sanitizeSaved(s) {
   if (LIVE && !out.pinSet) out.loggedIn = false;                      // no PIN chosen on this phone: log in again
   return out;
 }
-function saveState(st) { try { localStorage.setItem(STORE_KEY, JSON.stringify({ v: 1, s: Object.fromEntries(KEEP.map(k => [k, st[k]])) })); } catch (e) { } }
-function clearSaved() { try { localStorage.removeItem(STORE_KEY); } catch (e) { } }
+let saveOff = false;                       // set once the phone's data is cleared: a late save must not bring it back
+function saveState(st) { if (saveOff) return; try { localStorage.setItem(STORE_KEY, JSON.stringify({ v: 1, s: Object.fromEntries(KEEP.map(k => [k, st[k]])) })); } catch (e) { } }
+function clearSaved() { saveOff = true; try { localStorage.removeItem(STORE_KEY); } catch (e) { } }
 const SAVED = loadSaved();
 // A one-off message carried across a reload (for example after closing an account)
 const CARRY_NOTE = (() => { try { const n = sessionStorage.getItem('pgbx-note'); sessionStorage.removeItem('pgbx-note'); return n || ''; } catch (e) { return ''; } })();
@@ -2646,6 +2703,7 @@ function App() {
   const syncSeq = useRef(0);              // only the newest sync's answer is applied
   const readAt = useRef(0);
   const lastSync = useRef(null);          // the newest complete answer, for actions that need what the server now says               // when the customer last marked all notifications read
+  const unchanged = (s, d) => { const out = {}; for (const k in d) out[k] = s[k] !== undefined && JSON.stringify(s[k]) === JSON.stringify(d[k]) ? s[k] : d[k]; return out; };
   const sessionEnded = note => { Live.forget(); knownNotes.current = null; syncSeq.current++;
     set({ ...ACCOUNT_BLANK, loggedIn: false, guest: false, stack: [], pinSet: false, pin: null, pinFails: 0, pinLockUntil: 0, biometric: false, loginIntent: null, loginNote: note || 'Your session has ended. Log in again to continue.' }); setPhase('login'); };
   const endedNote = e => (e.code === 'ACCOUNT_INACTIVE' || e.code === 'PIN_LOCKED_OUT' ? e.message : undefined);
@@ -2662,7 +2720,8 @@ function App() {
       if (d.notifications) knownNotes.current = new Set(d.notifications.map(n => n.id));
       // A mark-all-read made while this sync was on its way wins over the older unread flags
       if (d.notifications && readAt.current > n0) d.notifications = d.notifications.map(x => ({ ...x, read: true }));
-      set(s => ({ ...d, synced: s.synced || !d.missing.length, banner: fresh.length && s.notifPrefs.push && !(fresh[0].kind === 'alert' && s.notifPrefs.alerts === false) ? fresh[0] : s.banner }));
+      // Parts that didn't change keep their old objects, so screens (and Keep lists) don't redraw for nothing
+      set(s => ({ ...unchanged(s, d), synced: s.synced || !d.missing.length, banner: fresh.length && s.notifPrefs.push && !(fresh[0].kind === 'alert' && s.notifPrefs.alerts === false) ? fresh[0] : s.banner }));
       return !d.missing.length;
     } catch (e) { if (Live.signedOut(e)) sessionEnded(endedNote(e)); return false; }
   };
@@ -2787,7 +2846,21 @@ function App() {
     fired.forEach(a => notify('alert', `${metalName(a.metal)} is ${a.dir} ${fmt(a.target)}`, `Buy rate is now ${fmt(st.rates[a.metal].buy)} per tola.`, false, { name: 'history', metal: a.metal }));
   }, [st.rates.tick, st.rates.updatedAt, st.alerts.length]);
 
-  useEffect(() => { saveState(st); }, KEEP.map(k => st[k]));
+  // Saving serialises everything kept on the phone (in the demo, every record), so it never runs inside a tap or a
+  // screen change: it waits for an idle moment, and is flushed at once if the app is closed or hidden.
+  const saveLater = useRef(null);
+  useEffect(() => {
+    saveLater.current && saveLater.current.cancel();
+    const go = () => { saveLater.current = null; saveState(st); };
+    const idle = window.requestIdleCallback ? requestIdleCallback(go, { timeout: 1000 }) : setTimeout(go, 300);
+    saveLater.current = { go, cancel: () => (window.cancelIdleCallback && window.requestIdleCallback ? cancelIdleCallback(idle) : clearTimeout(idle)) };
+  }, KEEP.map(k => st[k]));
+  useEffect(() => {
+    const flush = () => { const w = saveLater.current; if (w) { w.cancel(); w.go(); } };
+    const hide = () => { if (document.visibilityState === 'hidden') flush(); };
+    addEventListener('pagehide', flush); document.addEventListener('visibilitychange', hide);
+    return () => { removeEventListener('pagehide', flush); document.removeEventListener('visibilitychange', hide); };
+  }, []);
 
   useEffect(() => { if (!st.toast) return; const t = setTimeout(() => set({ toast: null }), st.toast.action ? 5000 : 2800); return () => clearTimeout(t); }, [st.toast]);
   useEffect(() => { if (!st.banner) return; const t = setTimeout(() => set({ banner: null }), 3800); return () => clearTimeout(t); }, [st.banner]);
@@ -3215,7 +3288,7 @@ function App() {
   };
 
   // A guest (including someone who chose "Browse as guest" on the lock screen) sees none of the account's data.
-  aRef.current = A;
+  aRef.current = A; ACT = A;
   const S = { ...st, ...(st.guest ? GUEST_VIEW : {}), now, stale, holdings: st.guest ? {} : holdings, reserved, dealerFree, walletValue, statusOf, spentToday, unread: st.guest ? 0 : unread };
   const framed = !Live.NATIVE && !matchMedia('(max-width:500px), (hover:none) and (pointer:coarse) and (max-height:600px)').matches;   // same rule as the CSS
   const enterApp = () => {
@@ -3362,8 +3435,19 @@ function App() {
     addEventListener('popstate', onPop); return () => removeEventListener('popstate', onPop);
   }, []);
 
-  const active = () => { lastActive.current = Date.now(); };
-  return html`<div class="device" onPointerDown=${active} onKeyDown=${active} onWheel=${active} onTouchMove=${active} onScrollCapture=${active} onInput=${active}>
+  // Activity (for auto-lock) is noted with passive listeners: a non-passive touchmove or wheel listener on the app's
+  // root would make every scroll wait for JavaScript before it can move.
+  const deviceRef = useRef(null);
+  useEffect(() => {
+    const el = deviceRef.current; if (!el) return;
+    const active = () => { lastActive.current = Date.now(); };
+    const opts = { passive: true, capture: true };
+    // (a touchstart listener also makes iOS show :active pressed states the moment a finger lands)
+    const evs = ['pointerdown', 'touchstart', 'keydown', 'wheel', 'touchmove', 'scroll', 'input'];
+    evs.forEach(e => el.addEventListener(e, active, opts));
+    return () => evs.forEach(e => el.removeEventListener(e, active, opts));
+  }, []);
+  return html`<div class="device" ref=${deviceRef}>
     <div class="device-inner">
       <${StatusBar} light=${darkTop} />
       ${phase === 'splash' && html`<${Splash} rates=${st.rates} quick=${returning} onDone=${() => {  setPhase(returning ? 'pin' : 'login'); }} />`}
