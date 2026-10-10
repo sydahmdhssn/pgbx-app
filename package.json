@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "node dev/server.mjs",
     "test": "node --test tests/*.test.mjs",
+    "test:pg": "node --test --test-concurrency=1 tests/*.test.mjs",
     "staff:create": "node dev/create-staff.mjs",
     "build:app": "node scripts/build.mjs"
   },

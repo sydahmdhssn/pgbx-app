@@ -153,10 +153,12 @@ export function Act({ run, children, cls = 'btn', confirm, disabled, done, onErr
   const go = async e => {
     if (confirm && !(await ask({ title: confirm, confirm: 'Yes, continue', danger: /deactivate|reset|hide|suspend/i.test(confirm) }))) return;
     const box = e && e.currentTarget && e.currentTarget.closest('.modal');
-    setBusy(true); setErr(null); if (box) box.setAttribute('data-busy', '');
+    // the dialog's other buttons are disabled for real (not only for the mouse), so Enter on another one can't send a second action
+    const others = box ? [...box.querySelectorAll('button:not([disabled])')].filter(b => b !== e.currentTarget) : [];
+    setBusy(true); setErr(null); if (box) box.setAttribute('data-busy', ''); others.forEach(b => { b.disabled = true; });
     try { const r = await run(); done && done(r); }
-    catch (x) { onError ? onError(x) : setErr(x.message); }      // shown next to the button, not in a browser alert
-    finally { setBusy(false); if (box) box.removeAttribute('data-busy'); }
+    catch (x) { if (!onError || onError(x) === false) setErr(x.message); }   // shown next to the button, not in a browser alert; onError returns false to leave it to the button
+    finally { setBusy(false); if (box) box.removeAttribute('data-busy'); others.forEach(b => { b.disabled = false; }); }
   };
   return html`<button class=${cls} onClick=${go} disabled=${busy || disabled} aria-busy=${busy}>${busy ? 'Working…' : children}</button>${err && html`<span class="act-err" role="alert">${err}</span>`}`;
 }

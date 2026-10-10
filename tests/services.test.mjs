@@ -163,6 +163,17 @@ test('gift orders and purchases share one daily limit', async () => {
 });
 
 test('the public Supabase roles can read nothing, views included', async () => {
+  if (process.env.TEST_POSTGRES_URL) {
+    // A real server pools connections, so `set role` can't be relied on across queries: check the same guarantees in the catalog
+    await db.query(`do $$ begin if not exists (select 1 from pg_roles where rolname = 'anon') then create role anon; end if; end $$`);
+    await db.query('grant usage on schema public to anon'); await db.query('grant select on all tables in schema public to anon');
+    const open = await db.query(`select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity`);
+    assert.equal(open.length, 0, 'every table has row-level security: ' + open.map(r => r.relname).join());
+    assert.equal((await db.query(`select 1 from pg_policies where schemaname = 'public'`)).length, 0, 'no policies let anyone in');
+    assert.equal((await db.one(`select has_function_privilege('anon', 'fn_close_account(uuid)', 'execute') ok`)).ok, false);
+    assert.equal((await db.one(`select (select relrowsecurity from pg_class where relname = 'ledger') and (select reloptions::text like '%security_invoker%' from pg_class where relname = 'v_holdings') ok`)).ok, true, 'views run as the caller');
+    return;
+  }
   for (const q of ['create role anon', 'grant usage on schema public to anon', 'grant select on all tables in schema public to anon']) await db.query(q);   // as Supabase's defaults would
   const c = await customer('3100000023');
   await db.query(`insert into ledger (customer_id, product_id, delta, reason, ref, created_by) values ($1, 'g-1g', 1, 'purchase', 'x', 'test')`, [c]);

@@ -153,6 +153,11 @@ function Customer({ id, me, toast }) {
         <td>${productName(r.product_id)}</td><td class="r num">${r.units}</td><td>${r.dealer_name || r.dealer_id}</td><td><${Tag} s=${r.status} /></td><td class="small">${when(r.created_at)}</td></tr>`)} /></${Card}>
       <${Card} title="Identity checks"><${Table} head=${['Provider', 'Status', 'Reason', 'Decided']} empty="No checks." rows=${d.kyc.map(k => html`<tr>
         <td>${k.provider}</td><td><${Tag} s=${k.status} /></td><td class="small">${k.reason || '—'}</td><td class="small">${k.decided_at ? when(k.decided_at) + ' · ' + (k.decided_by || '') : '—'}</td></tr>`)} /></${Card}>
+      ${d.bar_sales && html`<${Card} title="Bars sold back"><${Table} head=${['Sale', '#Amount', 'Status', 'Date']} empty="No sell-backs." rows=${d.bar_sales.map(b => html`<tr>
+        <td class="mono small">${b.ref}</td><td class="r num">${pkr(b.total_pkr)}</td><td><${Tag} s=${b.status} /></td><td class="small">${when(b.created_at)}</td></tr>`)} /></${Card}>`}
+      ${d.chats && html`<${Card} title="Rate chats"><${Table} head=${['Chat', 'Request', 'Status', 'Last message']} empty="No rate chats." rows=${d.chats.map(c => html`<tr>
+        <td class="mono small">${['admin', 'support'].includes(me.role) ? html`<a href=${'#chats/' + c.id}>${c.ref}</a>` : c.ref}</td><td class="small">${c.summary}</td>
+        <td><span class=${'tag ' + (CHAT_TAG[c.status] || '')}>${CHAT_LABEL[c.status] || c.status}</span></td><td class="small">${when(c.last_message_at)}</td></tr>`)} /></${Card}>`}
     </div>`}</${Screen}>`;
 }
 
@@ -326,11 +331,13 @@ function MicroLot({ ref_ }) {
         <td class="mono small">${t.ref}${t.grams < t.txn_grams && html` <span class="tag" title="Split between two lots">split</span>`}</td><td>${t.name || '—'}<div class="muted small">+92 ${t.phone || '—'}</div></td>
         <td class="r num">${Number(t.grams).toFixed(6)}</td><td class="r num">${pkr(t.amount_pkr)}</td><td class="small">${when(t.created_at)}</td></tr>`)} /></${Card}>`}</${Screen}>`;
 }
+// A payment another staff member recorded meanwhile (409): say so, close the dialog and show the list as it is now
+const settled = (req, ok, setOpen, load, toast) => req.then(ok, e => { if (e.status !== 409) throw e; toast(e.message, true); setOpen(null); load.reload(); });
 function MicroPayouts({ done, toast }) {
   const load = useLoad('/admin/micro/payouts?status=' + (done ? 'paid_out' : 'pending_payout'));
   const [paying, setPaying] = useState(null);
   const [ref, setRef] = useState('');
-  const pay = async () => { await api(`/admin/micro/payouts/${paying.id}`, { method: 'POST', body: { ref } }); toast('Payout recorded. The customer has been told.'); setPaying(null); load.reload(); };
+  const pay = () => settled(api(`/admin/micro/payouts/${paying.id}`, { method: 'POST', body: { ref } }), () => { toast('Payout recorded. The customer has been told.'); setPaying(null); load.reload(); }, setPaying, load, toast);
   return html`<${Screen} load=${load}>${d => html`<${Card} title=${done ? 'Payouts sent' : 'Sales to pay out'}><${Table} head=${['Sale', 'Customer', '#Grams', '#Amount', 'Pay to (IBAN)', '']} empty=${done ? 'Nothing paid yet.' : 'No payouts waiting.'} rows=${d.payouts.map(p => html`<tr>
     <td class="mono small">${p.ref}<div class="muted">${when(p.created_at)}</div></td><td><a href=${'#customers/' + p.customer_id}>${p.name || '—'}</a><div class="muted small">+92 ${p.phone || '—'}</div></td>
     <td class="r num">${Number(p.grams).toFixed(4)}</td><td class="r num">${pkr(p.amount_pkr)}</td><td class="mono small">${p.payout_to}${p.sandbox && html`<div><span class="tag bad" title="This customer's gold was bought with test payments">test money: don’t pay</span></div>`}</td>
@@ -348,7 +355,7 @@ function Refunds({ toast }) {
   const load = useLoad('/admin/refunds?status=' + status);
   const [paying, setPaying] = useState(null);
   const [ref, setRef] = useState('');
-  const mark = async () => { await api(`/admin/refunds/${paying.id}`, { method: 'POST', body: { ref } }); toast('Refund recorded.'); setPaying(null); load.reload(); };
+  const mark = () => settled(api(`/admin/refunds/${paying.id}`, { method: 'POST', body: { ref } }), () => { toast('Refund recorded.'); setPaying(null); load.reload(); }, setPaying, load, toast);
   return html`<${Head} title="Refunds" sub="Payments to give back: overpayments, payments for cancelled bookings and gifts, and payments that arrived too late">
       <${Seg} label="Status" value=${status} onChange=${setStatus} options=${[['due', 'To refund'], ['refunded', 'Refunded']]} /></${Head}>
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['What', 'Customer', '#Amount', 'Why', 'Paid with', status === 'due' ? '' : 'Refunded']} empty=${status === 'due' ? 'No refunds due.' : 'Nothing refunded yet.'} rows=${d.refunds.map(r => html`<tr>
@@ -401,7 +408,7 @@ function Attachment({ chatId, a }) {
   return a.mime.startsWith('image/') ? html`<a href=${url} target="_blank" rel="noopener"><img class="chat-img" src=${url} alt=${a.name} /></a>`
     : html`<a class="btn sm sec" href=${url} download=${a.name}>📄 ${a.name}</a>`;
 }
-function Chats({ id, me, toast }) {
+function Chats({ id, me, toast, refreshCounts }) {
   const [status, setStatus] = useState('active');
   const [q, setQ] = useState(''); const [term, setTerm] = useState('');
   useEffect(() => { const t = setTimeout(() => setTerm(q.trim()), 300); return () => clearTimeout(t); }, [q]);
@@ -417,15 +424,15 @@ function Chats({ id, me, toast }) {
           <div class="spread"><b>${c.customer.name || (c.customer.phone ? '+92 ' + c.customer.phone : 'Customer')}</b><span class="small muted">${ago(c.last_message_at)}</span></div>
           <div class="small">${c.summary}</div>
           <div class="small muted mono">${c.ref}${c.customer.name && c.customer.phone ? ' · +92 ' + c.customer.phone : ''}</div>
-          <div class="spread small muted" style="margin-top:2px"><span class="ellipsis">${c.last_body || ''}</span>${c.waiting ? html`<span class="tag warn">reply</span>` : html`<${Tag} s=${c.status} />`}</div>
+          <div class="spread small muted" style="margin-top:2px"><span class="ellipsis">${c.last_body || ''}</span>${c.waiting ? html`<span class="tag warn">reply</span>` : html`<span class=${'tag ' + (CHAT_TAG[c.status] || '')}>${CHAT_LABEL[c.status] || c.status}</span>`}</div>
         </a>`)}
     ${list.data && html`<${Shown} n=${rows.length} total=${list.data.total} />`}
   </div>`;
-  return html`<${Head} title="Rate chats" sub="Customers ask here for the final rate before buying or selling. Confirm a rate to let them place the order at it." />
+  return html`<div class=${'chats-page' + (id ? ' has-thread' : '')}><${Head} title="Rate chats" sub="Customers ask here for the final rate before buying or selling. Confirm a rate to let them place the order at it." />
     <div class=${'chat-shell' + (id ? ' has-thread' : '')}>
       ${listView}
-      ${id ? html`<${ChatThread} key=${id} id=${id} me=${me} toast=${toast} onChange=${list.reload} />` : html`<div class="chat-thread card empty-thread"><div class="empty">Choose a chat on the left.</div></div>`}
-    </div>`;
+      ${id ? html`<${ChatThread} key=${id} id=${id} me=${me} toast=${toast} onChange=${() => { list.reload(); refreshCounts && refreshCounts(); }} />` : html`<div class="chat-thread card empty-thread"><div class="empty">Choose a chat on the left.</div></div>`}
+    </div></div>`;
 }
 function ChatThread({ id, me, toast, onChange }) {
   const [d, setD] = useState(null);
@@ -435,43 +442,54 @@ function ChatThread({ id, me, toast, onChange }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [rate, setRate] = useState(null);                 // the confirm form: { prices, minutes, note }
+  const load = useRef(() => {});
   const last = useRef(0), box = useRef(null), fileRef = useRef(null);
+  const changed = useRef(onChange); changed.current = onChange;   // the list's reload for its current filter, not the first one
   const add = list => { if (!list.length) return; last.current = list[list.length - 1].id; setMsgs(m => [...m, ...list.filter(x => !m.some(y => y.id === x.id))]); };
   useEffect(() => {
     let live = true;
-    api(`/support/chats/${id}`).then(r => { if (!live) return; setD(r); setConf(r.confirmation); last.current = 0; setMsgs([]); add(r.messages); }, e => live && setErr(e));
+    const first = () => api(`/support/chats/${id}`).then(r => { if (!live) return; setErr(null); setD(r); setConf(r.confirmation); last.current = 0; setMsgs([]); add(r.messages); changed.current(); }, e => live && setErr(e));
+    load.current = first; first();
+    // New messages, the confirmation and the chat's status (the customer may close it or place the order meanwhile)
     const t = setInterval(() => { if (document.visibilityState !== 'visible' || !last.current) return;
-      api(`/support/chats/${id}?after=${last.current}`).then(r => { if (!live) return; add(r.messages); setConf(r.confirmation); if (r.messages.length) onChange(); }).catch(() => {}); }, 3000);
+      api(`/support/chats/${id}?after=${last.current}`).then(r => { if (!live) return; add(r.messages); setConf(r.confirmation);
+        setD(x => (x && x.chat.status !== r.chat.status ? { ...x, chat: r.chat } : x)); if (r.messages.length) changed.current(); }).catch(() => {}); }, 3000);
     return () => { live = false; clearInterval(t); };
   }, [id]);
   useEffect(() => { if (box.current) box.current.scrollTop = box.current.scrollHeight; }, [msgs.length]);
-  if (err) return html`<div class="chat-thread"><${Failed} error=${err} /></div>`;
+  if (err) return html`<div class="chat-thread card"><a class="btn sm ghost back-link" href="#chats">‹ All chats</a><${Failed} error=${err} retry=${() => load.current()} /></div>`;
   if (!d) return html`<div class="chat-thread card"><${Loading} /></div>`;
   const c = d.chat, closed = c.status === 'closed', u = d.customer;
   const send = async () => {
     if (!text.trim() || busy) return; setBusy(true);
-    try { const r = await api(`/support/chats/${id}/messages`, { method: 'POST', body: { body: text.trim() } }); add([r.message]); setText(''); onChange(); }
-    catch (e) { toast(e.message, true); } finally { setBusy(false); }
+    try { const r = await api(`/support/chats/${id}/messages`, { method: 'POST', body: { body: text.trim() } }); add([r.message]); setText(''); changed.current(); }
+    catch (e) { staffFail(e); } finally { setBusy(false); }
   };
   const attach = async e => {
     const f = e.target.files && e.target.files[0]; e.target.value = ''; if (!f) return;
     setBusy(true);
     try { const up = await fileForUpload(f); const r = await api(`/support/chats/${id}/attachments`, { method: 'POST', body: { ...up, caption: text.trim() } }); add([r.message]); setText(''); }
-    catch (x) { toast(x.message, true); } finally { setBusy(false); }
+    catch (x) { staffFail(x); } finally { setBusy(false); }
+  };
+  // The customer-facing wording for a closed chat doesn't fit staff; a closed or finished chat is reloaded so the screen shows it
+  const staffFail = e => {
+    if (e.code === 'CHAT_CLOSED' || e.code === 'CHAT_NOT_FOUND') { toast('This chat was closed or finished meanwhile. Showing its latest state.', true); load.current(); changed.current(); return; }
+    toast(e.message, true);
   };
   const sg = d.suggested && d.suggested.prices;
   const openRate = () => setRate({ prices: JSON.parse(JSON.stringify(sg || (c.kind === 'buy_bars' || c.kind === 'sell_bars' ? { unit: {} } : {}))), minutes: d.minutes, note: '' });
   const total = rate && rateTotal(c, rate.prices);
   const confirm = async () => {
     const r = await api(`/support/chats/${id}/confirm`, { method: 'POST', body: { prices: rate.prices, minutes: Number(rate.minutes), note: rate.note } });
-    setConf(r.confirmation); setRate(null); toast('Rate confirmed. The customer has been told.'); onChange();
+    setConf(r.confirmation); setRate(null); toast('Rate confirmed. The customer has been told.'); changed.current();
     const m = await api(`/support/chats/${id}?after=${last.current}`); add(m.messages);
   };
   const closeChat = async () => {
     const note = await ask({ title: 'Close this chat?', body: 'The customer can still read it but can’t reply or use its rate. They can start a new request any time.', input: 'Note to the customer (optional)', required: false, confirm: 'Close chat', danger: true });
     if (note === null) return;
-    await api(`/support/chats/${id}/close`, { method: 'POST', body: { note } }); toast('Chat closed.'); onChange();
-    const r = await api(`/support/chats/${id}`); setD(r); setConf(r.confirmation); last.current = 0; setMsgs([]); add(r.messages);
+    try { await api(`/support/chats/${id}/close`, { method: 'POST', body: { note } }); toast('Chat closed.'); }
+    catch (e) { if (e.code !== 'CHAT_CLOSED') { toast(e.message, true); return; } }
+    load.current(); changed.current();
   };
   const confLive = conf && conf.status === 'valid' && new Date(conf.expires_at) > new Date();
   return html`<div class="chat-thread">
@@ -479,13 +497,13 @@ function ChatThread({ id, me, toast, onChange }) {
       <div class="spread"><div><a class="btn sm ghost back-link" href="#chats">‹ All chats</a><h2 style="margin:0">${u.name || 'Customer'} <span class="muted small">+92 ${u.phone || '—'}</span></h2>
         <div class="small muted">${KIND_LABEL[c.kind]} · <span class="mono">${c.ref}</span> · started ${when(c.created_at)}</div></div>
         <span class=${'tag ' + (CHAT_TAG[c.status] || '')}>${CHAT_LABEL[c.status]}</span></div>
-      <div class="chat-ctx">
+      <details class="chat-ctx-box" open=${matchMedia('(min-width: 861px) and (min-height: 700px)').matches}><summary>Customer and request</summary><div class="chat-ctx">
         <div><span class="k">Request</span><b>${c.summary}</b>${c.indicative_pkr ? html`<div class="small muted">App price when asked: ${pkr(c.indicative_pkr)} (indicative)</div>` : ''}</div>
         <div><span class="k">Market now</span><b>${d.suggested && d.suggested.total_pkr ? pkr(d.suggested.total_pkr) : '—'}</b><div class="small muted">${d.suggested ? 'PGBX prices from ' + ago(d.suggested.at) : 'No recent prices'}</div></div>
         <div><span class="k">Identity</span><${Tag} s=${u.kyc_status} /> ${u.status !== 'active' ? html`<${Tag} s=${u.status} />` : ''}</div>
         <div><span class="k">Bought today</span><b>${pkr(u.spent_today_pkr)}</b><div class="small muted">of ${pkr(u.daily_limit_pkr)} daily limit</div></div>
         <div><span class="k">Holds</span><b class="small">${u.holdings.length ? u.holdings.map(h => `${h.units} × ${productName(h.product_id)}`).join(', ') : 'No bars'}${u.micro_grams > 0 ? ` · ${u.micro_grams.toFixed(4)} g $1 gold` : ''}</b></div>
-      </div>
+      </div></details>
       ${conf && html`<div class=${'note ' + (confLive ? 'ok' : '')} style="margin-top:10px">${conf.status === 'used' ? html`Rate used for <span class="mono">${conf.used_ref}</span>.`
         : confLive ? html`Confirmed ${pkr(conf.total_pkr)}, valid until ${timeShort(conf.expires_at)}.` : conf.status === 'withdrawn' ? 'The last confirmed rate was withdrawn.' : html`The confirmed ${pkr(conf.total_pkr)} expired at ${timeShort(conf.expires_at)}.`}</div>`}
     </div>
@@ -521,10 +539,10 @@ function ChatThread({ id, me, toast, onChange }) {
       ${c.kind === 'gift' && [['metal_pkr', 'Metal (PKR)'], ['making_pkr', 'Making and engraving (PKR)'], ['packaging_pkr', 'Packaging (PKR)'], ['delivery_pkr', 'Insured delivery (PKR)']].map(([k, l]) => html`
         <label class="f"><span>${l}</span><input class="in num" inputmode="numeric" value=${rate.prices[k] ?? ''} onInput=${e => setRate({ ...rate, prices: { ...rate.prices, [k]: num(e.target.value) } })} /></label>`)}
       <div class="grid g2" style="gap:12px"><label class="f"><span>Valid for (minutes)</span><input class="in" inputmode="numeric" value=${rate.minutes} onInput=${e => setRate({ ...rate, minutes: e.target.value.replace(/\D/g, '') })} /></label>
-        <div class="f"><span class="small" style="font-weight:600">Customer pays${c.kind.startsWith('sell') ? ' / receives' : ''}</span><div style="font:600 22px var(--serif);margin-top:6px">${total ? pkr(total) : '—'}</div></div></div>
+        <div class="f"><span class="small" style="font-weight:600">${c.kind.startsWith('sell') ? 'Customer receives' : 'Customer pays'}</span><div style="font:600 22px var(--serif);margin-top:6px">${total ? pkr(total) : '—'}</div></div></div>
       <label class="f"><span>Note to the customer (optional)</span><input class="in" value=${rate.note} maxlength="300" onInput=${e => setRate({ ...rate, note: e.target.value })} placeholder="e.g. Includes today’s premium" /></label>
       <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setRate(null)}>Cancel</button>
-        <${Act} disabled=${!total || !Number(rate.minutes)} run=${confirm}>Confirm ${total ? pkr(total) : ''}</${Act}></div>
+        <${Act} disabled=${!total || !Number(rate.minutes)} run=${confirm} onError=${e => { if (e.code === 'CHAT_CLOSED' || e.code === 'CHAT_NOT_FOUND') { setRate(null); staffFail(e); return true; } return false; }}>Confirm ${total ? pkr(total) : ''}</${Act}></div>
     </${Modal}>`}
   </div>`;
 }
@@ -544,13 +562,13 @@ function BarSales({ toast }) {
   const load = useLoad('/admin/bar-sales?status=' + (done ? 'paid_out' : 'pending_payout'));
   const [paying, setPaying] = useState(null);
   const [ref, setRef] = useState('');
-  const pay = async () => { await api(`/admin/bar-sales/${paying.id}`, { method: 'POST', body: { ref } }); toast('Payment recorded. The customer has been told.'); setPaying(null); load.reload(); };
+  const pay = () => settled(api(`/admin/bar-sales/${paying.id}`, { method: 'POST', body: { ref } }), () => { toast('Payment recorded. The customer has been told.'); setPaying(null); load.reload(); }, setPaying, load, toast);
   return html`<${Head} title="Bar sell-backs" sub="Bars customers sold back to PGBX at a rate confirmed in chat. The bars have left their wallet; pay the amount to their bank account.">
       <${Seg} label="Status" value=${done ? 'paid' : 'due'} onChange=${v => setDone(v === 'paid')} options=${[['due', 'To pay'], ['paid', 'Paid']]} /></${Head}>
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Sale', 'Customer', 'Bars', '#Amount', 'Pay to (IBAN)', '']} empty=${done ? 'Nothing paid yet.' : 'No payments waiting.'} rows=${d.sales.map(b => html`<tr>
       <td class="mono small">${b.ref}<div class="muted">${when(b.created_at)}</div></td><td><a href=${'#customers/' + b.customer.id}>${b.customer.name || '—'}</a><div class="muted small">+92 ${b.customer.phone || '—'}</div></td>
-      <td class="small">${b.lines.map(l => `${l.units} × ${productName(l.product_id)} @ ${pkr(l.unit_price_pkr)}`).join(', ')}</td><td class="r num">${pkr(b.total_pkr)}</td><td class="mono small">${b.payout_to}</td>
-      <td class="r">${done ? html`<span class="small mono">${b.payout_ref}</span><div class="muted small">${when(b.paid_out_at)}</div>` : html`<button class="btn sm" onClick=${() => { setRef(''); setPaying(b); }}>Mark paid</button>`}</td></tr>`)} />
+      <td class="small">${b.lines.map(l => `${l.units} × ${productName(l.product_id)} @ ${pkr(l.unit_price_pkr)}`).join(', ')}</td><td class="r num">${pkr(b.total_pkr)}</td><td class="mono small">${b.payout_to}${b.sandbox && html`<div><span class="tag bad" title="These bars were bought with test payments">test money: don’t pay</span></div>`}</td>
+      <td class="r">${done ? html`<span class="small mono">${b.payout_ref}</span><div class="muted small">${when(b.paid_out_at)}${b.paid_out_by ? ' · ' + b.paid_out_by : ''}</div>` : html`<button class="btn sm" onClick=${() => { setRef(''); setPaying(b); }}>Mark paid</button>`}</td></tr>`)} />
       <${Shown} n=${d.sales.length} total=${d.total} /></${Card}>`}</${Screen}>
     ${paying && html`<${Modal} title="Record the bank transfer" onClose=${() => setPaying(null)}>
       <p>Send <b>${pkr(paying.total_pkr)}</b> to <span class="mono">${paying.payout_to}</span> (${paying.customer.name || 'customer'}), then enter the transfer reference.</p>
@@ -681,6 +699,8 @@ function Reconciliation({ toast }) {
             </div>
             <p class="muted small" style="margin:12px 0 0">The open lot is always partly filled, so bars held is normally a little below what customers own (less than 1 tola) until it fills. ${gap < -11.664 ? html`<b style="color:var(--danger)">More than a tola short: buy the bars for the full lots.</b>` : ''}</p>
           </${Card}>`; })()}
+        ${r.bar_sales && html`<a class=${'card stat' + (r.bar_sales.pending ? ' attn' : '')} href="#barsales" style="text-decoration:none;color:inherit"><div class="k">Bar sell-backs to pay</div><div class="v">${r.bar_sales.pending}</div>
+          <div class="muted small">${pkr(r.bar_sales.pending_pkr)} owed · ${pkr(r.bar_sales.bought_back_pkr)} bought back this day</div></a>`}
         ${r.refunds_due && html`<a class=${'card stat' + (r.refunds_due.count ? ' attn' : '')} href="#refunds" style="text-decoration:none;color:inherit"><div class="k">Refunds to pay</div><div class="v">${r.refunds_due.count}</div><div class="muted small">${pkr(r.refunds_due.pkr)}</div></a>`}
       </div>`;
     }}</${Screen}>
@@ -738,7 +758,7 @@ function Audit() {
   return html`<${Head} title="Audit log" sub="Every important action, by whom and when. Entries can’t be edited or deleted." />
     <${Card}><div class="grid g4" style="gap:12px">
       <label class="f" style="margin:0"><span>Item</span><select class="in" value=${f.entity} onChange=${e => ent(e.target.value)}>
-        ${[['', 'Everything'], ['customer', 'Customers'], ['order', 'Orders'], ['redemption', 'Collections'], ['kyc', 'Identity checks'], ['appraisal', 'Appraisals'], ['gift', 'Gift orders'], ['micro', '$1 gold'], ['lot', 'Tola lots'], ['refund', 'Refunds'], ['support', 'Support'], ['staff', 'Staff'], ['setting', 'Settings'], ['dealer', 'Dealers'], ['product', 'Products']].map(([v, l]) => html`<option value=${v}>${l}</option>`)}
+        ${[['', 'Everything'], ['customer', 'Customers'], ['order', 'Orders'], ['redemption', 'Collections'], ['kyc', 'Identity checks'], ['appraisal', 'Appraisals'], ['gift', 'Gift orders'], ['micro', '$1 gold'], ['lot', 'Tola lots'], ['refund', 'Refunds'], ['chat', 'Rate chats'], ['bar_sale', 'Bar sell-backs'], ['support', 'Support'], ['staff', 'Staff'], ['setting', 'Settings'], ['dealer', 'Dealers'], ['product', 'Products']].map(([v, l]) => html`<option value=${v}>${l}</option>`)}
       </select></label>
       <label class="f" style="margin:0"><span>Action starts with</span><input class="in mono" placeholder="e.g. payment. or login" value=${f.action} onInput=${e => setF({ ...f, action: e.target.value })} /></label>
       <label class="f" style="margin:0"><span>Done by</span><input class="in mono" placeholder="e.g. staff:… or customer:…" value=${f.actor} onInput=${e => setF({ ...f, actor: e.target.value })} /></label>
@@ -800,12 +820,21 @@ function Admin() {
   const [narrow, setNarrow] = useState(() => matchMedia('(max-width:860px)').matches);
   // nothing is asked before sign-in; support staff only have the chat counts
   const counts = useLoad(me && !me.mustChangePassword ? (me.role === 'support' ? '/support/counts' : '/admin/overview') : null, [section]);
-  useEffect(() => { if (!me || me.mustChangePassword) return; const t = setInterval(counts.reload, 20000); return () => clearInterval(t); }, [me && me.role]);
+  useEffect(() => { if (!me || me.mustChangePassword) return; const t = setInterval(counts.reload, 20000); return () => clearInterval(t); }, [me && me.role, me && me.mustChangePassword]);
   const sideRef = useRef();
   useEffect(() => { if (menu && sideRef.current) (sideRef.current.querySelector('[aria-current=page]') || sideRef.current.querySelector('a'))?.focus(); }, [menu]);
   useEffect(() => { setMenu(false); window.scrollTo(0, 0); }, [section, id]);
   useEffect(() => { const m = matchMedia('(max-width:860px)'); const f = () => setNarrow(m.matches); m.addEventListener('change', f); return () => m.removeEventListener('change', f); }, []);
   useEffect(() => { if (!menu) return; const k = e => e.key === 'Escape' && setMenu(false); addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, [menu]);
+  // closing the drawer puts focus back on the button that opened it
+  const menuBtn = useRef(); const wasOpen = useRef(false);
+  useEffect(() => { if (wasOpen.current && !menu && narrow) menuBtn.current?.focus(); wasOpen.current = menu; }, [menu]);
+  // a section this role can't open (an old link, or a chat link for someone else's section) goes to the role's home
+  useEffect(() => {
+    if (!me || me.mustChangePassword) return;
+    const ok = !section || (section === 'customers' && id ? canOpen(SECTIONS.find(x => x[0] === 'customers'), me.role) : SECTIONS.some(x => x[0] === section && canOpen(x, me.role)));
+    if (!ok || (!section && me.role === 'support')) location.replace(me.role === 'support' ? '#chats' : '#overview');
+  }, [me && me.role, me && me.mustChangePassword, section, id]);
   if (me === undefined) return html`<div class="signin"></div>`;
   if (!me) return html`<${SignIn} tool="Admin panel" roles=${['admin', 'ops', 'support']} onIn=${signIn} notice=${notice} />`;
   if (me.mustChangePassword) return html`<${ChangePassword} forced=${true} onDone=${passwordChanged} onSignOut=${signOut} />`;
@@ -813,7 +842,7 @@ function Admin() {
   const show = (text, err) => { showToast(text, err); if (!err) counts.reload(); };
   const badge = { kyc: counts.data?.kyc_review, orders: counts.data?.flagged_orders, support: counts.data?.support_open, appraisals: counts.data?.appraisals_to_assign,
     micro: (counts.data?.lots_to_settle || 0) + (counts.data?.payouts_pending || 0), refunds: counts.data?.refunds_due, chats: counts.data?.chats_waiting, barsales: counts.data?.bar_sales_pending };
-  const props = { me, toast: show };
+  const props = { me, toast: show, refreshCounts: counts.reload };
   const views = { overview: Overview, kyc: Kyc, orders: Orders, appraisals: Appraisals, gifts: Gifts, micro: Micro, chats: Chats, barsales: BarSales, refunds: Refunds, customers: Customers, support: Support, dealers: Dealers, products: Products, reconciliation: Reconciliation, settings: Settings, audit: Audit, staff: Staff };
   const allowed = k => { const s = SECTIONS.find(x => x[0] === k); return s && canOpen(s, me.role); };
   const home = me.role === 'support' ? Chats : Overview;
@@ -824,13 +853,13 @@ function Admin() {
       <${Brand} sub="Admin panel" />
       ${SECTIONS.filter(s => canOpen(s, me.role)).map(([k, l]) => html`<a href=${'#' + k} aria-current=${section === k ? 'page' : undefined}>${l}${badge[k] > 0 && html`<span class="badge">${badge[k]}</span>`}</a>`)}
       <div class="who"><b>${me.name}</b>${ROLE_NAME[me.role] || me.role}<div class="row" style="margin-top:8px;gap:12px">
-        <button class="btn sm ghost" style="color:#fff;padding:0" onClick=${() => setPw(true)}>Change password</button>
+        <button class="btn sm ghost" style="color:#fff;padding:0" onClick=${() => { setMenu(false); setPw(true); }}>Change password</button>
         <button class="btn sm ghost" style="color:#fff;padding:0" onClick=${signOut}>Sign out</button></div></div>
     </nav>
     ${menu && html`<div class="modal-bg" style="z-index:15" onClick=${() => setMenu(false)}></div>`}
     ${pw && html`<${ChangePassword} onDone=${() => { setPw(false); show('Password changed. Other devices were signed out.'); }} onCancel=${() => setPw(false)} />`}
-    <main class="main">
-      <button class="btn sm sec menu" style="margin-bottom:12px" onClick=${() => setMenu(true)} aria-label="Open menu" aria-expanded=${menu} aria-controls="side">☰ Menu</button>
+    <main class="main" inert=${narrow && menu ? true : undefined}>
+      <button class="btn sm sec menu" ref=${menuBtn} style="margin-bottom:12px" onClick=${() => setMenu(true)} aria-label="Open menu" aria-expanded=${menu} aria-controls="side">☰ Menu</button>
       ${View ? html`<${View} ...${props} id=${id} />` : html`<${Customer} id=${id} ...${props} />`}
     </main>
     <${Toast} toast=${toast} /><${Asker} />

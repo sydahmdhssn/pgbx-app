@@ -13,6 +13,7 @@ const DAYS = 30;
 const OPEN = [
   /^\/__gate(\.js)?$/,                       // the screen itself
   /^\/api\/v1\/payments\/webhook\/?$/,       // provider callbacks, verified by HMAC signature
+  /^\/api\/v1\/kyc\/webhook\/?$/,            // identity provider callbacks, verified by signature
   /^\/api\/v1\/cron\//,                      // Vercel Cron, verified by CRON_SECRET
   /^\/(favicon\.svg|favicon\.ico|robots\.txt)$/,
 ];

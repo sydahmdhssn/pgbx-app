@@ -319,19 +319,30 @@ route('POST', '/auth/pin', { auth: 'customer', allowLocked: false }, async ({ db
   if (!/^\d{4}$/.test(pin)) fail(400, 'BAD_PIN', 'Choose a 4-digit PIN.');
   if (SERVER_WEAK_PINS.has(pin)) fail(400, 'WEAK_PIN', 'That PIN is easy to guess. Choose a different one.');
   if (customer.pin_hash) {                                        // changing it: the current PIN is required, and wrong ones count
-    if (!sec.verifyPassword(str(body.current, 4), customer.pin_hash)) return wrongPin(db, customer);
+    const fails = await pinAttempt(db, customer);
+    if (!sec.verifyPassword(str(body.current, 4), customer.pin_hash)) return wrongPin(db, customer, fails);
   }
-  await db.query(`update sessions set pin_hash = $2, pin_fails = 0, pin_wait_until = null, unlocked_until = now() + make_interval(mins => $3) where token_hash = $1`,
-    [customer.token_hash, sec.hashPassword(pin), UNLOCK_MIN]);
+  const ok = await db.one(`update sessions set pin_hash = $2, pin_fails = 0, pin_wait_until = null, unlocked_until = now() + make_interval(mins => $3)
+    where token_hash = $1 and revoked_at is null returning 1 as ok`, [customer.token_hash, sec.hashPassword(pin), UNLOCK_MIN]);
+  if (!ok) fail(401, 'SESSION_EXPIRED', 'Your session has ended. Log in again.');
   await audit(db, 'customer:' + customer.id, customer.pin_hash ? 'pin.changed' : 'pin.set', 'customer', customer.id, {});
   return { ok: true };
 });
-async function wrongPin(db, customer) {
+// Each PIN check first takes one attempt from the session's allowance in a single update, so checks sent in parallel
+// can't get past the limit (the count is checked and raised together). A right PIN gives the attempt back.
+async function pinAttempt(db, customer) {
   const r = await db.one(`update sessions set pin_fails = pin_fails + 1,
-      pin_wait_until = case when pin_fails + 1 = 3 then now() + interval '30 seconds' else pin_wait_until end,
-      revoked_at = case when pin_fails + 1 >= 5 then now() end
-    where token_hash = $1 returning pin_fails`, [customer.token_hash]);
+      pin_wait_until = case when pin_fails + 1 = 3 then now() + interval '30 seconds' else pin_wait_until end
+    where token_hash = $1 and revoked_at is null and pin_fails < 5 and (pin_wait_until is null or pin_wait_until <= now()) returning pin_fails, pin_wait_until`, [customer.token_hash]);
+  if (r) return r.pin_fails;
+  const now = await db.one(`select pin_fails, pin_wait_until, revoked_at from sessions where token_hash = $1`, [customer.token_hash]);
+  if (!now || now.revoked_at || now.pin_fails >= 5) fail(401, 'PIN_LOCKED_OUT', '5 wrong PINs. For your security, log in again with your mobile number, then choose a new PIN.');
+  fail(429, 'PIN_WAIT', 'Too many wrong PINs. Try again in a few seconds.', { retryIn: Math.max(1, Math.ceil((new Date(now.pin_wait_until) - Date.now()) / 1000)) });
+}
+async function wrongPin(db, customer, fails) {
+  const r = { pin_fails: fails };
   if (r.pin_fails >= 5) {
+    await db.query(`update sessions set revoked_at = coalesce(revoked_at, now()) where token_hash = $1`, [customer.token_hash]);   // never clears a revocation
     await audit(db, 'customer:' + customer.id, 'pin.locked_out', 'customer', customer.id, {});
     await db.query(`select notify_customer($1, 'security', 'Session ended after wrong PINs', '5 wrong PIN attempts on a device. If this wasn’t you, contact PGBX.', null, true)`, [customer.id]);
     fail(401, 'PIN_LOCKED_OUT', '5 wrong PINs. For your security, log in again with your mobile number, then choose a new PIN.');
@@ -340,12 +351,13 @@ async function wrongPin(db, customer) {
 }
 route('POST', '/auth/unlock', { auth: 'customer', allowLocked: true }, async ({ db, customer, body }) => {
   if (!customer.pin_hash) return { ok: true, noPin: true };     // a session from before server PINs: the app asks for one
-  if (customer.pin_wait_until && new Date(customer.pin_wait_until) > new Date())
-    fail(429, 'PIN_WAIT', 'Too many wrong PINs. Try again in a few seconds.', { retryIn: Math.ceil((new Date(customer.pin_wait_until) - Date.now()) / 1000) });
+  const fails = await pinAttempt(db, customer);
   const bio = str(body.bioKey, 100);
   const good = bio ? !!customer.bio_hash && sec.hashToken(bio) === customer.bio_hash : sec.verifyPassword(str(body.pin, 4), customer.pin_hash);
-  if (!good) return wrongPin(db, customer);
-  await db.query(`update sessions set pin_fails = 0, pin_wait_until = null, unlocked_until = now() + make_interval(mins => $2) where token_hash = $1`, [customer.token_hash, UNLOCK_MIN]);
+  if (!good) return wrongPin(db, customer, fails);
+  const ok = await db.one(`update sessions set pin_fails = 0, pin_wait_until = null, unlocked_until = now() + make_interval(mins => $2)
+    where token_hash = $1 and revoked_at is null returning 1 as ok`, [customer.token_hash, UNLOCK_MIN]);
+  if (!ok) fail(401, 'SESSION_EXPIRED', 'Your session has ended. Log in again.');
   return { ok: true };
 });
 route('POST', '/auth/lock', { auth: 'customer', allowLocked: true }, async ({ db, customer }) => {
@@ -886,6 +898,15 @@ function attachmentFrom(body) {
   if (!MAGIC[mime](buf)) fail(400, 'BAD_FILE', 'That file isn’t the type it says it is.');
   return { mime, buf, name: str(body.name, 120).replace(/[^\w .()-]/g, '_') || 'file' };
 }
+// Files are kept in the database for now, so each customer has a daily allowance and each chat a total
+const FILE_DAY_BYTES = 15 * 1024 * 1024, FILES_PER_CHAT = 30;
+async function attachmentQuota(db, customerId, chatId, size) {
+  const q = await db.one(`select coalesce(sum(a.size) filter (where a.created_at > now() - interval '24 hours'), 0)::bigint as day,
+      count(*) filter (where a.chat_id = $2)::int as here
+    from chat_attachments a join rate_chats c on c.id = a.chat_id where c.customer_id = $1`, [customerId, chatId]);
+  if (q.here >= FILES_PER_CHAT) fail(429, 'TOO_MANY_FILES', 'This chat already has many files. Describe the rest in a message.');
+  if (Number(q.day) + size > FILE_DAY_BYTES) fail(429, 'TOO_MANY_FILES', 'You’ve sent a lot of files today. Try again tomorrow, or describe it in a message.');
+}
 async function storeAttachment(db, chatId, uploader, a) {
   return (await db.one(`insert into chat_attachments (chat_id, uploaded_by, name, mime, size, data) values ($1, $2, $3, $4, $5, decode($6, 'base64')) returning id`,
     [chatId, uploader, a.name, a.mime, a.buf.length, a.buf.toString('base64')])).id;
@@ -900,7 +921,8 @@ route('POST', '/chats', { auth: 'customer' }, async ({ db, customer, body }) => 
   const kind = CHAT_KINDS.includes(body.kind) ? body.kind : fail(400, 'BAD_REQUEST', MESSAGES.BAD_REQUEST[1]);
   const details = body.details && typeof body.details === 'object' && !Array.isArray(body.details) ? body.details : fail(400, 'BAD_REQUEST', MESSAGES.BAD_REQUEST[1]);
   await limit(db, 'chat-open:' + customer.id, 86400, 30, 'You’ve started many rate requests today. Continue in one of your open chats.');
-  const indicative = int(body.indicativePkr);
+  // the "app price" shown to support is worked out here from PGBX's own prices, never taken from the request
+  const indicative = await suggestedRate(db, { kind, details }).then(r => r && r.total_pkr, () => null);
   const c = await db.one(`select * from fn_chat_open($1, $2, $3::jsonb, $4)`, [customer.id, kind, JSON.stringify(details), Number.isSafeInteger(indicative) && indicative > 0 ? indicative : null]);
   return { chat: chatDto(c) };
 });
@@ -925,7 +947,9 @@ route('POST', '/chats/:id/attachments', { auth: 'customer', maxBody: 3800000 }, 
   const c = await chatOf(db, params.id, customer.id);
   if (c.status === 'closed') fail(409, 'CHAT_CLOSED', MESSAGES.CHAT_CLOSED[1]);
   await limit(db, 'chat-file:' + customer.id, 3600, 20, 'You’ve sent many files this hour. Try again later.');
-  const id = await storeAttachment(db, c.id, 'customer:' + customer.id, attachmentFrom(body));
+  const a = attachmentFrom(body);
+  await attachmentQuota(db, customer.id, c.id, a.buf.length);
+  const id = await storeAttachment(db, c.id, 'customer:' + customer.id, a);
   return msgOut(db, await db.one(`select * from fn_chat_post($1, 'customer', $2, null, $3, $4)`, [c.id, customer.id, str(body.caption, 2000), id]));
 });
 route('GET', '/chats/:id/attachments/:aid', { auth: 'customer' }, async ({ db, customer, params }) =>
@@ -994,6 +1018,9 @@ route('GET', '/support/chats/:id', support, async ({ db, staff, params, query })
   const after = Math.max(0, int(query.after) || 0);
   const messages = (await db.query(MSG_SQL, [c.id, after])).map(msgDto);
   if (messages.length || !after) await db.query(`update rate_chats set staff_read_at = now() where id = $1`, [c.id]);
+  // any read is recorded (the first one by each staff member in a shift), however the messages were asked for
+  if (after && !(await db.one(`select 1 from audit_log where actor = $1 and action = 'chat.viewed' and entity = 'chat' and entity_id = $2 and at > now() - interval '12 hours' limit 1`, ['staff:' + staff.id, c.ref])))
+    await audit(db, 'staff:' + staff.id, 'chat.viewed', 'chat', c.ref, { via: 'poll' });
   if (after) return { chat: chatDto(c), messages, confirmation: confDto(await db.one(CONF_SQL, [c.id])) };
   // first open: the customer's context, and the opening is recorded (staff looking at a customer's details)
   await audit(db, 'staff:' + staff.id, 'chat.viewed', 'chat', c.ref, {});
@@ -1153,7 +1180,7 @@ const SETTING_RULES = {
   appraisal_free_cancel_hours: isInt(0, 720), gift_making_pkr: objOf(['plain', 'themed', 'engraving'], isInt(0, 1e7)), gift_packaging_pkr: objOf(['standard', 'premium'], isInt(0, 1e7)),
   gift_delivery_pkr: isInt(0, 1e6), gift_lead_days: isInt(1, 60), gift_cities: listOf(isName, 60),
   micro_usd: frac(0.5, 100), micro_max_units: isInt(1, 1000), micro_min_sell_g: frac(0.0001, 11.664),
-  rate_chat_required: v => typeof v === 'boolean', rate_confirm_minutes: isInt(1, 240), rate_confirm_max_move_pct: isInt(1, 50),
+  rate_chat_required: v => typeof v === 'boolean', rate_confirm_minutes: isInt(1, 240), rate_confirm_max_move_pct: isInt(1, 50), rate_confirm_sell_over_pct: isInt(0, 20),
 };
 
 route('GET', '/admin/settings', ops, async ({ db }) => ({ settings: await db.query(`select key, value, updated_at, updated_by from settings order by key`) }));
@@ -1229,6 +1256,8 @@ route('GET', '/admin/customers/:id', ops, async ({ db, params, staff }) => {
     orders: await db.query(`select id, receipt_no, status, total_pkr, created_at from orders where customer_id = $1 order by created_at desc limit 50`, [c.id]),
     redemptions: await db.query(`select r.id, r.product_id, r.units, r.dealer_id, d.name as dealer_name, r.status, r.created_at from redemptions r left join dealers d on d.id = r.dealer_id where r.customer_id = $1 order by r.created_at desc limit 50`, [c.id]),
     kyc: await db.query(`select id, provider, status, reason, created_at, decided_at, decided_by from kyc_checks where customer_id = $1 order by created_at desc`, [c.id]),
+    bar_sales: await db.query(`select id, ref, total_pkr, status, created_at, paid_out_at from bar_sales where customer_id = $1 order by created_at desc limit 50`, [c.id]),
+    chats: await db.query(`select id, ref, kind, summary, status, last_message_at from rate_chats where customer_id = $1 order by last_message_at desc limit 50`, [c.id]),
   };
 });
 route('POST', '/admin/customers/:id/status', adminOnly, async ({ db, staff, params, body }) => {
@@ -1397,13 +1426,20 @@ route('POST', '/admin/micro/payouts/:id', ops, async ({ db, staff, params, body 
 // Bars customers sold back to PGBX, to pay to their bank accounts
 route('GET', '/admin/bar-sales', ops, async ({ db, query }) => {
   const status = query.status === 'paid_out' ? 'paid_out' : 'pending_payout';
-  const rows = await db.query(`select b.*, c.name, c.phone from bar_sales b join customers c on c.id = b.customer_id where b.status = $1
+  // sandbox: the customer's bars were bought with test payments, so nothing real is owed; paid_out_by shows the staff member's name
+  const rows = await db.query(`select b.*, c.name, c.phone, s.name as paid_by_name,
+      exists (select 1 from payments p join orders o on o.id = p.order_id where o.customer_id = b.customer_id and p.provider = 'sandbox') as sandbox
+    from bar_sales b join customers c on c.id = b.customer_id left join staff s on 'staff:' || s.id = b.paid_out_by where b.status = $1
     order by ${status === 'pending_payout' ? 'b.created_at' : 'b.paid_out_at desc'} limit 300`, [status]);
-  return { sales: rows.map(b => ({ ...b, customer: { id: b.customer_id, name: b.name, phone: b.phone } })),
+  return { sales: rows.map(({ paid_by_name, ...b }) => ({ ...b, paid_out_by: paid_by_name || undefined, customer: { id: b.customer_id, name: b.name, phone: b.phone } })),
     total: (await db.one(`select count(*)::int n from bar_sales where status = $1`, [status])).n };
 });
-route('POST', '/admin/bar-sales/:id', ops, async ({ db, staff, params, body }) =>
-  ({ sale: await db.one(`select * from fn_bar_sale_payout($1, $2, $3)`, [staff.id, params.id, str(body.ref, 80)]) }));
+route('POST', '/admin/bar-sales/:id', ops, async ({ db, staff, params, body }) => {
+  const b = await db.one(`select customer_id from bar_sales where id = $1`, [params.id]);
+  if (b && process.env.VERCEL_ENV === 'production' && await sandboxFunds(db, b.customer_id))
+    fail(409, 'SANDBOX_FUNDS', 'These bars came from test (sandbox) payments. Don’t send money; check with an administrator.');
+  return { sale: await db.one(`select * from fn_bar_sale_payout($1, $2, $3)`, [staff.id, params.id, str(body.ref, 80)]) };
+});
 route('GET', '/admin/refunds', ops, async ({ db, query }) => {
   const status = query.status === 'refunded' ? 'refunded' : 'due';
   const rows = await db.query(`select r.*, c.name, c.phone from refunds r left join customers c on c.id = r.customer_id where r.status = $1
@@ -1548,11 +1584,13 @@ export async function handle(req, res, opts = {}) {
     const hasBody = Number(req.headers['content-length'] || 0) > 0 || !!req.headers['transfer-encoding'];
     if (hasBody && !String(req.headers['content-type'] || '').includes('application/json'))
       fail(415, 'JSON_ONLY', 'Send JSON.');
-    const { raw, json } = await readBody(req, match.opts.maxBody || 65536);
-    const ctx = { req, res, db, raw, body: json && typeof json === 'object' ? json : {}, params, query, fetchRates };
+    const ctx = { req, res, db, raw: '', body: {}, params, query, fetchRates };
     if (!match.opts.auth && !match.opts.staff && req.method === 'GET') publicLimit(req);
+    // who is asking is settled before the body is read, so nobody can make the server read a large upload without a session
     if (match.opts.auth === 'customer') { ctx.allowLocked = !!match.opts.allowLocked; ctx.customer = await customerFrom(ctx); }
     if (match.opts.staff) ctx.staff = await staffFrom(ctx, match.opts.staff);
+    const { raw, json } = await readBody(req, match.opts.maxBody || 65536);
+    ctx.raw = raw; ctx.body = json && typeof json === 'object' ? json : {};
     send(200, await match.handler(ctx));
   } catch (e) {
     if (e instanceof HttpError) return send(e.status, { error: e.code, message: e.message, ...(e.extra || {}) });
