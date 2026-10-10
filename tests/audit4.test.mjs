@@ -145,3 +145,54 @@ test('refunding a flagged order goes through the refunds queue; phone notificati
   const [a, b] = await Promise.all([db.query(`select * from fn_claim_push(500)`), db.query(`select * from fn_claim_push(500)`)]);
   assert.equal([...a, ...b].filter(n => n.customer_id === cid && n.title === 'x').length, 1);
 });
+
+// Staff-tools audit: conflicts read as "already done" (409), awaiting-payment lists, audit filters, assay weights
+test('two staff recording the same refund or payout: the second gets 409 already recorded, an unknown ID 404', async () => {
+  const t = await verified(); const cid = await cidOf(t);
+  await db.query(`select record_refund('order', gen_random_uuid(), 'PGBX-R-DOUBLE', $1, 'sandbox', $2, 1200, 'Test')`, [cid, 'sbx-' + key()]);
+  const r = await db.one(`select id from refunds where entity_ref = 'PGBX-R-DOUBLE'`);
+  const res = await Promise.all([1, 2].map(() => call('POST', `/api/v1/admin/refunds/${r.id}`, { token: adm, body: { ref: 'BANK-1234' } })));
+  assert.deepEqual(res.map(x => x.status).sort(), [200, 409]);
+  assert.equal(res.find(x => x.status === 409).data.error, 'ALREADY_REFUNDED');
+  err(await call('POST', '/api/v1/admin/refunds/00000000-0000-4000-8000-000000000000', { token: adm, body: { ref: 'BANK-1234' } }), 404, 'NOT_FOUND');
+  const m = await db.one(`insert into micro_txns (ref, side, customer_id, amount_pkr, grams, price_gram, status, payout_to) values ('PGBX-MS-DOUBLE', 'sell', $1, 900, 0.03, 30000, 'pending_payout', $2) returning id`, [cid, IBAN]);
+  ok(await call('POST', `/api/v1/admin/micro/payouts/${m.id}`, { token: adm, body: { ref: 'BANK-5678' } }));
+  err(await call('POST', `/api/v1/admin/micro/payouts/${m.id}`, { token: adm, body: { ref: 'BANK-5678' } }), 409, 'ALREADY_PAID');
+});
+
+test('the "Awaiting payment" tabs list unpaid appraisals and gifts; a weight like 9.6.5 is refused', async () => {
+  const t = await verified(); const cid = await cidOf(t);
+  const appr = (status, ref) => db.one(`insert into appraisals (ref, customer_id, city, area, address, phone, visit_date, slot, items, fee_pkr, visit_code, status)
+    values ($1, $2, 'Lahore', 'Gulberg', 'House 1, Street 2', '3001234567', current_date + 3, '10:00-12:00', '[{"metal":"gold"}]', 2500, '4821', $3) returning id`, [ref, cid, status]);
+  await appr('pending_payment', 'PGBX-A-UNPAID');
+  assert.ok(ok(await call('GET', '/api/v1/admin/appraisals?status=pending_payment', { token: adm })).appraisals.some(a => a.ref === 'PGBX-A-UNPAID'));
+  assert.ok(!ok(await call('GET', '/api/v1/admin/appraisals?status=booked', { token: adm })).appraisals.some(a => a.ref === 'PGBX-A-UNPAID'));
+  await db.query(`insert into gift_orders (ref, customer_id, item_id, shape, design, packaging, recipient_name, recipient_phone, recipient_city, recipient_address, deliver_by,
+      metal_pkr, making_pkr, packaging_pkr, delivery_pkr, total_pkr, rate_snapshot)
+    select 'PGBX-G-UNPAID', $1, i.id, i.shapes[1], 'plain', 'standard', 'Sara Khan', '3001234567', 'Lahore', 'House 1, Street 2', current_date + 10, 1000, 100, 100, 100, 1300,
+      (select max(id) from rate_snapshots) from gift_items i limit 1`, [cid]);
+  assert.ok(ok(await call('GET', '/api/v1/admin/gifts?status=pending_payment', { token: adm })).gifts.some(g => g.ref === 'PGBX-G-UNPAID'));
+  const a = await appr('confirmed', 'PGBX-A-WEIGH');
+  const done = body => call('POST', `/api/v1/admin/appraisals/${a.id}`, { token: adm, body: { action: 'complete', summary: '21K, as described', ...body } });
+  err(await done({ net_g: '9.6.5' }), 400, 'BAD_WEIGHT');
+  err(await done({ net_g: 'abc' }), 400, 'BAD_WEIGHT');
+  assert.equal(ok(await done({ net_g: '9.65' })).appraisal.status, 'completed');
+  assert.equal(Number((await db.one(`select result ->> 'net_g' g from appraisals where id = $1`, [a.id])).g), 9.65);
+  err(await done({ net_g: '9.65' }), 409, 'STATUS_CHANGED');                      // recorded meanwhile by someone else
+});
+
+test('audit log: refunds and lists viewed can be filtered, "done by" matches part of a name, staff are named', async () => {
+  const t = await verified(); const cid = await cidOf(t);
+  await db.query(`select record_refund('gift', gen_random_uuid(), 'PGBX-G-AUDIT', $1, 'sandbox', $2, 700, 'Test')`, [cid, 'sbx-' + key()]);
+  ok(await call('POST', `/api/v1/admin/refunds/${(await db.one(`select id from refunds where entity_ref = 'PGBX-G-AUDIT'`)).id}`, { token: adm, body: { ref: 'BANK-AUD1' } }));
+  const refunds = ok(await call('GET', '/api/v1/admin/audit?entity=refund', { token: adm })).entries;
+  assert.ok(refunds.some(e => e.action === 'refund.paid' && e.entity_id === 'PGBX-G-AUDIT'));
+  assert.ok(refunds.every(e => e.action.startsWith('refund.') || e.entity === 'refund'));
+  ok(await call('GET', '/api/v1/admin/refunds', { token: adm }));
+  assert.ok(ok(await call('GET', '/api/v1/admin/audit?entity=list', { token: adm })).entries.some(e => e.action === 'list.viewed' && e.entity_id === 'refunds'));
+  const byName = ok(await call('GET', '/api/v1/admin/audit?actor=' + encodeURIComponent('ayesha adm'), { token: adm })).entries;
+  assert.ok(byName.length && byName.every(e => e.actor_name === 'Ayesha admin'));
+  const byPart = ok(await call('GET', '/api/v1/admin/audit?actor=' + encodeURIComponent(byName[0].actor.slice(0, 14)), { token: adm })).entries;
+  assert.ok(byPart.some(e => e.actor === byName[0].actor));
+  assert.equal(ok(await call('GET', '/api/v1/admin/audit?actor=' + encodeURIComponent('%'), { token: adm })).entries.length, 0);   // wildcards are literal
+});

@@ -78,6 +78,7 @@ h3{font-weight:600}
 .page.has-actions>.scroll{scroll-padding-bottom:calc(var(--bot) + 184px)}
 html.kb .tabbar,html.kb .ab-meta,html.kb .toast{display:none}
 html.kb .page.has-actions>.scroll{scroll-padding-bottom:84px}
+@media (max-height:500px){html.kb .actionbar:not(.chat-compose){display:none}html.kb .page.has-actions:not(.chat-page)>.scroll{scroll-padding-bottom:16px}}
 .mono{font-family:var(--mono);font-size:13px;letter-spacing:0}
 .icon{width:22px;height:22px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .icon.sm{width:18px;height:18px}.icon.xs{width:14px;height:14px}
@@ -116,6 +117,8 @@ html.kb .page.has-actions>.scroll{scroll-padding-bottom:84px}
 /* a phone turned sideways (web only; the apps are portrait): one readable column instead of lines across the whole screen */
 @media (hover:none) and (pointer:coarse) and (max-height:500px) and (orientation:landscape){
   .view,.tabbar,.actionbar{left:0;right:0;max-width:560px;margin-inline:auto}
+  .toast{left:0;right:0;max-width:528px;margin-inline:auto}
+  .dialog,.sheet{max-width:560px;margin-inline:auto}
 }
 /* the phone apps (tablets too) always use the whole screen */
 html.native .device{left:0;top:0;width:100%;height:100%;height:100dvh;border:0;border-radius:0;transform:none;box-shadow:none}
@@ -212,7 +215,7 @@ button.brand-card{transition:transform var(--t1)}button.brand-card:active{transf
 .stack-btns{display:grid;gap:8px}
 .linkbtn{display:inline-flex;align-items:center;gap:6px;min-height:44px;font-weight:600;font-size:15px;color:var(--green-700)}
 .linkbtn[disabled]{color:var(--text-3);cursor:default}
-.linkbtn.sm{font-size:14px;min-height:44px}
+.linkbtn.sm{font-size:14px;min-height:44px;min-width:44px;padding-inline:4px}
 .sec-h .linkbtn{margin:-12px 0}
 /* ---------- forms ---------- */
 .field{display:block;margin-top:16px}
@@ -383,7 +386,7 @@ button.notice{transition:transform var(--t1)}button.notice:active{transform:scal
 @keyframes pushIn{from{transform:translateY(-120%)}}
 .push b{display:block;font-size:14px;font-weight:600}
 .push .pt{display:flex;justify-content:space-between;font-size:12px;color:var(--text-2)}
-.offline{position:absolute;left:50%;top:calc(var(--top) + 8px);transform:translateX(-50%);z-index:70;display:flex;align-items:center;gap:8px;padding:8px 14px;border-radius:999px;background:rgba(14,28,20,.94);color:#fff;font-size:13px;max-width:calc(100% - 32px);width:max-content;text-align:center;box-shadow:var(--e2);animation:fade var(--t3) both}
+.offline{position:absolute;left:50%;top:calc(var(--top) + 60px);pointer-events:none;transform:translateX(-50%);z-index:70;display:flex;align-items:center;gap:8px;padding:8px 14px;border-radius:999px;background:rgba(14,28,20,.94);color:#fff;font-size:13px;max-width:calc(100% - 32px);width:max-content;text-align:center;box-shadow:var(--e2);animation:fade var(--t3) both}
 .scrim{position:absolute;inset:0;z-index:90;background:rgba(4,18,10,.42);display:flex;align-items:flex-end;animation:fade var(--t2) var(--ease) both}
 .dialog{width:100%;background:var(--surface);border-radius:var(--r-xl) var(--r-xl) 0 0;padding:24px var(--gutter) calc(var(--bot) + var(--home,0px) + 16px);animation:sheetIn var(--t3) var(--ease) both;box-shadow:var(--e3)}
 .dialog h2{font:600 19px/1.3 var(--sans);color:var(--text);letter-spacing:0}
@@ -454,6 +457,11 @@ button.notice{transition:transform var(--t1)}button.notice:active{transform:scal
   .keypad{grid-template-columns:repeat(3,56px);gap:8px 20px}.key{width:56px;height:56px;font-size:24px}.key .kl{display:none}.lock-links{margin-top:0}
 }
 .lock .linkbtn{color:var(--gold-300)}
+.lock>*{flex-shrink:0}
+@media (max-height:420px){
+  .lock{padding-top:calc(var(--top) + 8px)}.lock h2{font-size:18px}.lock .note{margin-top:4px}.dots4{margin:8px 0}
+  .keypad{grid-template-columns:repeat(3,48px);gap:6px 18px}.key{width:48px;height:48px;font-size:22px}.lock-links{flex-direction:row;gap:16px}
+}
 .lock .linkbtn.dim{color:var(--on-dark-2);font-weight:500;font-size:14px}
 .scan{position:absolute;inset:0;display:grid;place-items:center;background:rgba(4,22,12,.6);animation:fade var(--t2) both;z-index:3}
 .scan-box{width:112px;height:112px;border-radius:28px;box-shadow:inset 0 0 0 2px var(--gold-300);display:grid;place-items:center;color:var(--gold-300);animation:pop var(--t3) var(--ease) both}
@@ -552,7 +560,7 @@ button.notice{transition:transform var(--t1)}button.notice:active{transform:scal
 .chart{display:block;width:100%;height:auto;touch-action:pan-y;cursor:crosshair}
 .ch-line{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
 .ch-grid{stroke:var(--border);stroke-dasharray:3 4}
-.ch-lbl{font-size:11px;fill:var(--text-2);font-family:var(--compact)}
+.ch-lbl{font-size:11px;fill:var(--text-2);font-family:var(--compact);paint-order:stroke;stroke:var(--surface);stroke-width:3px;stroke-linejoin:round}
 .ch-tip{position:absolute;top:-4px;transform:translate(-50%,-100%);background:var(--green-900);color:#fff;font-size:12px;padding:6px 8px;border-radius:var(--r-sm);white-space:nowrap;pointer-events:none;box-shadow:var(--e2)}
 .ch-x{display:flex;justify-content:space-between;font-size:12px;color:var(--text-2);margin-top:4px}
 .stats4{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:4px 16px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
@@ -571,11 +579,13 @@ button.notice{transition:transform var(--t1)}button.notice:active{transform:scal
 .pin.off{opacity:.4;cursor:default}
 .dact{display:flex;gap:8px;margin-top:12px}
 .dact .btn{flex:1;min-width:0;padding:0 10px}
+@media (max-width:359px){.dact .btn .icon{display:none}}
 .code{display:flex;justify-content:center;gap:8px;margin-top:12px}
 .code span{width:44px;height:56px;border-radius:var(--r-md);background:var(--fill);display:grid;place-items:center;font:600 28px var(--mono);color:var(--green-900)}
 .code.dim span{color:var(--text-3)}
 .steps{display:flex;align-items:flex-start;margin-top:20px}
-.step{flex:1;text-align:center;font-size:12px;font-weight:500;color:var(--text-2);position:relative}
+.step{flex:1;text-align:center;font-size:12px;font-weight:500;color:var(--text-2);position:relative;padding:0 2px}
+@media (max-width:359px){.step{font-size:11px}}
 .step .sd{width:24px;height:24px;border-radius:50%;margin:0 auto 6px;display:grid;place-items:center;background:var(--fill);color:var(--text);position:relative;z-index:1;font-size:12px;font-weight:600;transition:background-color var(--t3),color var(--t3)}
 .step .sd .icon{width:13px;height:13px;stroke-width:2.6}
 .step.done .sd{background:var(--green-800);color:#fff}
@@ -784,7 +794,7 @@ button.chat-pdf{border:0;background:none;font:inherit;color:inherit;cursor:point
 .photo-view img{max-width:100%;max-height:calc(100% - 64px);object-fit:contain}
 .chat-pdf{display:inline-flex;align-items:center;gap:6px;font-weight:600;color:inherit;text-decoration:underline;margin-bottom:4px}
 .chat-compose{display:flex;align-items:flex-end;gap:6px}
-.no-tabs .page.chat-page>.scroll{padding-bottom:calc(var(--bot) + var(--home,0px) + 88px)}
+.no-tabs .page.chat-page>.scroll{padding-bottom:calc(var(--bot) + var(--home,0px) + 44px + var(--compose-h,44px))}
 .chat-compose textarea.inp{flex:1;height:44px;min-height:44px;max-height:120px;padding:11px 14px;resize:none;border-radius:22px;line-height:1.35}
 .chat-compose .iconbtn.send{background:var(--green-800);color:#fff}.chat-compose .iconbtn:disabled{opacity:.4}
 .conf-card{margin:8px var(--gutter) 0;padding:14px 16px;border-radius:var(--r-lg);background:var(--surface);box-shadow:var(--e1),inset 0 0 0 1.5px var(--gold-500)}

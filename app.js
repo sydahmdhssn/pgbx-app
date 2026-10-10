@@ -1114,7 +1114,7 @@ function MicroSell({ S, A }) {
       <div class="chips" style="margin-top:8px">${[[0.25, '¼'], [0.5, '½'], [1, 'All']].map(([f, l]) => html`<button class="chipb" onClick=${() => setG(String(Math.floor(m.grams * f * 1e6) / 1e6))}>${l}</button>`)}</div>
       ${tooMuch && html`<div class="hint err">That’s more than you have.</div>`}
       ${tooSmall && html`<div class="hint err">The smallest sale is ${q.minSellGrams || 0.001} g.</div>`}
-      <div class="card" style="margin-top:16px"><div class="between"><span class="muted">You receive${RATE_CHAT ? ' (indicative)' : ''}</span><b style="font-size:20px">${fmt(amount)}</b></div>
+      <div class="card" style="margin-top:16px"><div class="between"><span class="muted">You receive${RATE_CHAT ? ' (indicative)' : ''}</span><b style="font-size:20px;white-space:nowrap">${fmt(amount)}</b></div>
         <div class="small muted" style="margin-top:4px">At ${q.sellGram ? fmt(q.sellGram) : '—'} per gram, today’s PGBX sell price</div></div>
       <label class="field"><span class="lbl">Pay to (your bank IBAN)</span>
         <input class=${'inp mono' + (iban && !ibanOk ? ' bad' : '')} autocapitalize="characters" autocorrect="off" autocomplete="off" spellcheck=${false} placeholder="PK36 SCBL 0000 0011 2345 6702" value=${iban} onInput=${e => setIban(e.target.value.slice(0, 34))} /></label>
@@ -1188,7 +1188,7 @@ async function fileForUpload(file) {
 const FILE_URLS = new Map();                 // attachment id -> object URL, oldest first
 const FILE_KEEP = 40;
 function keepFile(id, blob) {
-  if (FILE_URLS.has(id)) return FILE_URLS.get(id);
+  if (FILE_URLS.has(id)) { const u = FILE_URLS.get(id); FILE_URLS.delete(id); FILE_URLS.set(id, u); return u; }
   const url = URL.createObjectURL(blob); FILE_URLS.set(id, url);
   while (FILE_URLS.size > FILE_KEEP) { const [k, u] = FILE_URLS.entries().next().value; FILE_URLS.delete(k); URL.revokeObjectURL(u); }
   return url;
@@ -1199,7 +1199,7 @@ function b64Blob(data, mime) {               // a plain loop: several times fast
   return new Blob([out], { type: mime });
 }
 function ChatFile({ chatId, a, onLoad }) {
-  const [url, setUrl] = useState(a.url || FILE_URLS.get(a.id) || null);
+  const [url, setUrl] = useState(a.url || (FILE_URLS.has(a.id) ? keepFile(a.id) : null));
   const [err, setErr] = useState(false);
   const [big, setBig] = useState(false);
   const box = useRef(null);
@@ -1302,7 +1302,12 @@ function ChatScreen({ S, A, id }) {
   if (!c && th.loading) return html`<div class="page"><${TopBar} title="Final rate" onBack=${A.back} /><div class="scroll"><div class="pad"><span class="sk" style="height:200px"></span></div></div></div>`;
   if (!c) return html`<div class="page"><${TopBar} title="Final rate" onBack=${A.back} /><div class="scroll"><${Empty} icon="chat" title="Chat not found" body=${th.error ? th.error.message : 'It may have been removed from this phone.'} /></div></div>`;
   const closed = c.status === 'closed';
-  const fit = () => { const el = box.current; if (el) { el.style.height = 'auto'; el.style.height = Math.min(120, el.scrollHeight) + 'px'; } };
+  const fit = () => {                       // the message box grows to 120px; the chat keeps its last message above it
+    const el = box.current; if (!el) return;
+    el.style.height = 'auto'; const h = Math.min(120, el.scrollHeight); el.style.height = h + 'px';
+    const page = el.closest('.chat-page'); if (page) page.style.setProperty('--compose-h', h + 'px');
+    toEnd();
+  };
   const sent = body => { setText(v => (v.trim() === body ? '' : v)); requestAnimationFrame(fit); stick.current = true; };   // text typed meanwhile is kept
   const send = async () => {
     const body = text.trim(); if (!body || busy) return;
@@ -1343,7 +1348,7 @@ function ChatScreen({ S, A, id }) {
         <button class="iconbtn" onClick=${() => fileRef.current.click()} disabled=${busy || S.offline} aria-label="Attach a photo or PDF"><${Icon} n="clip"/></button>
         <textarea class="inp" rows="1" ref=${box} placeholder="Message" value=${text} maxlength="2000" aria-label="Message to PGBX support"
           onInput=${e => { setText(e.target.value); fit(); }}
-          onKeyDown=${e => { if (e.key === 'Enter' && !e.shiftKey && innerWidth > 500) { e.preventDefault(); send(); } }}></textarea>
+          onKeyDown=${e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && matchMedia('(hover:hover) and (pointer:fine)').matches) { e.preventDefault(); send(); } }}></textarea>
         <button class="iconbtn send" onClick=${send} disabled=${busy || !text.trim() || S.offline} aria-label="Send"><${Icon} n="send"/></button>
       </div>`}
   </div>`;
@@ -2399,9 +2404,9 @@ function InfoScreen({ S, A, kind }) {
 function Faqs() {
   const [open, setOpen] = useState(0);
   const qs = [
-    ['What do I own when I buy?', 'A whole bar, for example a 1 gram gold bar, held for you by PGBX. Every bar in your wallet is backed one-to-one by metal PGBX holds.'],
+    ['What do I own when I buy?', 'A whole bar, for example a 1 gram gold bar, held for you by PGBX. Every bar in your wallet is backed one-to-one by metal PGBX holds. With $1 gold you own grams of gold in whole 1-tola bars PGBX holds for its customers.'],
     ['What purity are the bars?', 'All eleven products are 999.0 purity.'],
-    ['Can I buy part of a bar?', 'No. You always buy whole bars, and smaller bars can’t be combined into a larger one.'],
+    ['Can I buy part of a bar?', 'Bars are always whole, and smaller bars can’t be combined into a larger one. To buy a small amount, use $1 gold: from US$1 at a time, recorded in grams.'],
     ['Can I buy gold and silver together?', 'Yes. Add bars to your cart and pay for them in one order.'],
     ['Why can’t I buy larger bars?', 'Larger bars are sold at PGBX offline only.'],
     ['How is the final price set?', 'Prices in the app are indicative. Before you buy or sell, PGBX support confirms the final rate in a private chat about your request. It’s valid for a few minutes and can be used once.'],
@@ -2969,10 +2974,21 @@ function App() {
   // On-screen keyboard: when it takes the bottom of the screen, the tab bar and the action bar's summary step aside so the
   // field being typed in stays visible above the buttons
   useEffect(() => {
+    // Some phones shrink only the visible area, others (the Android app) the whole page: the second is caught by
+    // comparing with the tallest page seen in this orientation while a text field has focus
     const vv = window.visualViewport; if (!vv) return;
-    const f = () => document.documentElement.classList.toggle('kb', innerHeight - vv.height > 150);
-    vv.addEventListener('resize', f, { passive: true });
-    return () => vv.removeEventListener('resize', f);
+    const tall = {};
+    const typing = () => { const e = document.activeElement; return !!e && (e.tagName === 'TEXTAREA' || (e.tagName === 'INPUT' && !/^(checkbox|radio|button|submit|file|range|color)$/.test(e.type))); };
+    const f = () => {
+      const o = innerWidth > innerHeight ? 'l' : 'p';
+      if (!typing()) tall[o] = Math.max(tall[o] || 0, innerHeight);
+      document.documentElement.classList.toggle('kb', innerHeight - vv.height > 150 || (typing() && (tall[o] || innerHeight) - innerHeight > 150));
+    };
+    f();
+    vv.addEventListener('resize', f, { passive: true }); addEventListener('resize', f, { passive: true });
+    const out = () => setTimeout(f, 50);
+    addEventListener('focusin', f); addEventListener('focusout', out);
+    return () => { vv.removeEventListener('resize', f); removeEventListener('resize', f); removeEventListener('focusin', f); removeEventListener('focusout', out); };
   }, []);
   // The clock behind countdowns and "x min ago"; it stops while the app is in the background
   useEffect(() => {
@@ -3992,7 +4008,7 @@ function App() {
           ${TABS.map(([k, l]) => html`<button class=${'tab' + (st.tab === k ? ' on' : '')} onClick=${() => A.tab(k)} aria-current=${st.tab === k ? 'page' : null}>
             <${Icon} n=${k}/>${l}${st.guest && !OPEN_TABS.includes(k) ? html`<span class="lk" aria-label="Log in required"><${Icon} n="lock" c="xs"/></span>` : ''}</button>`)}
         </div></nav>`}
-        ${st.offline && html`<div class="offline" role="status"><${Icon} n="wifiOff" c="sm"/> You’re offline. Prices will update when you reconnect.</div>`}
+        ${st.offline && html`<div class="offline" role="status"><${Icon} n="wifiOff" c="sm"/> Offline. Prices update when you reconnect.</div>`}
         ${st.banner && html`<${PushBanner} n=${st.banner} onOpen=${() => (st.banner.link ? A.openLink(st.banner.link) : set(s => ({ banner: null, stack: [...s.stack, { name: 'inbox' }], navDir: 'fwd' })))} />`}
         ${st.toast && html`<div class="toast" key=${st.toast.id} role="status"><${Icon} n="check" c="sm"/><span class="grow">${st.toast.msg}</span>
           ${st.toast.action && html`<button class="toast-act" onClick=${() => { st.toast.action.fn(); set({ toast: null }); }}>${st.toast.action.label}</button>`}</div>`}
