@@ -28,8 +28,9 @@ function Lookup({ toast, openRedemption }) {
   </form>`;
 }
 
-function Handover({ r, onDone, onBack, toast }) {
-  const [status, setStatus] = useState(r.status);
+// The collection's status lives with the parent (onStatus), so switching tabs and back shows it as it is now
+function Handover({ r, onDone, onBack, onStatus, toast }) {
+  const status = r.status, setStatus = onStatus;
   const [cnic, setCnic] = useState(false);
   const [serials, setSerials] = useState(Array.from({ length: r.units }, () => ''));
   const [busy, setBusy] = useState(false);
@@ -38,23 +39,33 @@ function Handover({ r, onDone, onBack, toast }) {
   const dupes = clean.filter((s, i) => s && clean.indexOf(s) !== i);
   const complete = clean.every(Boolean) && !dupes.length && cnic;
 
+  // Changed elsewhere meanwhile (another counter, the customer cancelled, or the code ran out): fetch its real state and
+  // show that, with the server's reason while it's still active here. Returns the collection as it is now (null: gone).
+  const recheck = async e => {
+    const now = await api('/dealer/redemptions').then(d => d.redemptions.find(x => x.id === r.id) || null, () => undefined);
+    if (now === undefined) { setErr(e.message); return undefined; }                 // couldn't check: say what the server said
+    if (!now || !['requested', 'ready'].includes(now.status)) {
+      setStatus(now ? now.status : new Date(r.expires_at) < new Date() ? 'expired' : 'cancelled');
+      setErr(now && now.status === 'completed' ? 'This collection was already handed over.' : 'This collection was cancelled or has expired. Look up the code again.');
+      return null;
+    }
+    setStatus(now.status); setErr(e.message); return now;
+  };
+  const conflict = e => [404, 409, 410].includes(e.status);
   const ready = async () => {
     setBusy(true); setErr(null);
     try { await api(`/dealer/redemptions/${r.id}/ready`, { method: 'POST', body: {} }); setStatus('ready'); toast('Marked ready. The customer has been told.'); }
     catch (e) {
-      // Already changed elsewhere (another counter marked it ready, or the customer cancelled): show its real state
-      if (e.status === 409) {
-        const now = await api('/dealer/redemptions').then(d => d.redemptions.find(x => x.id === r.id), () => null);
-        if (now && now.status === 'ready') { setStatus('ready'); toast('This collection was already marked ready.'); return; }
-        setErr(now ? e.message : 'This collection is no longer active. Look up the code again.');
-      } else setErr(e.message);
+      if (!conflict(e)) { setErr(e.message); return; }
+      if ((await recheck(e))?.status === 'ready') { setErr(null); toast('This collection was already marked ready.'); }
     } finally { setBusy(false); }
   };
   const handover = async () => {
     setBusy(true); setErr(null);
     try { await api(`/dealer/redemptions/${r.id}/handover`, { method: 'POST', body: { serials: clean, cnicChecked: cnic, code: r.code } }); onDone(); }
-    catch (e) { setErr(e.message); } finally { setBusy(false); }
+    catch (e) { if (conflict(e) && e.code !== 'SANDBOX_FUNDS') await recheck(e); else setErr(e.message); } finally { setBusy(false); }
   };
+  const over = !['requested', 'ready'].includes(status);
 
   return html`<div class="stack">
     <button class="btn ghost sm" onClick=${onBack}>‹ Back</button>
@@ -69,6 +80,7 @@ function Handover({ r, onDone, onBack, toast }) {
       </dl>
     </div>
     ${err && html`<div class="note err" role="alert">${err}</div>`}
+    ${over && html`<button class="btn block" onClick=${onBack}>Look up a code</button>`}
     ${status === 'requested' && html`<div class="card">
       <h2>1. Prepare the bars</h2>
       <p class="muted">Take ${r.units} sealed ${productName(r.product_id)} ${r.units === 1 ? 'bar' : 'bars'} from stock, then mark ready.</p>
@@ -93,6 +105,12 @@ function Queue({ toast }) {
   useEffect(() => { const t = setInterval(() => document.visibilityState === 'visible' && reload(), 30000); return () => clearInterval(t); }, []);
   if (error) return html`<${Failed} error=${error} retry=${reload} />`;
   if (!data) return html`<div class="card"><${Loading} /></div>`;
+  // marked ready at another counter, cancelled or expired meanwhile: say so and show the list as it is now
+  const markReady = async r => {
+    try { await api(`/dealer/redemptions/${r.id}/ready`, { method: 'POST', body: {} }); toast('Marked ready. The customer has been told.'); }
+    catch (e) { if (![404, 409, 410].includes(e.status)) throw e; toast('This collection changed meanwhile (marked ready, cancelled or expired). The list is up to date now.', true); }
+    reload();
+  };
   const active = data.redemptions.filter(r => r.status === 'requested' || r.status === 'ready');
   const done = data.redemptions.filter(r => r.status === 'completed');
   return html`<div class="stack">
@@ -101,7 +119,7 @@ function Queue({ toast }) {
       ${active.length ? html`<div class="tbl-wrap"><table><tbody>${active.map(r => html`<tr>
         <td><b>${r.units} × ${productName(r.product_id)}</b><div class="muted small">${r.customer_name || 'Customer'} · ${left(r.expires_at)}</div></td>
         <td class="r">${r.status === 'requested'
-          ? html`<${Act} cls="btn sm" run=${async () => { await api(`/dealer/redemptions/${r.id}/ready`, { method: 'POST', body: {} }); toast('Marked ready. The customer has been told.'); reload(); }}>Mark ready</${Act}>`
+          ? html`<${Act} cls="btn sm" run=${() => markReady(r)}>Mark ready</${Act}>`
           : html`<${Tag} s=${r.status} />`}</td></tr>`)}</tbody></table></div>
         <p class="muted small" style="margin:12px 0 0">Prepare the bars and mark them ready so the customer knows to come. To hand over, ask for the customer’s code on the Collect tab.</p>`
       : html`<div class="empty">No collections waiting. New reservations appear here.</div>`}
@@ -146,7 +164,7 @@ function Dealer() {
     ${pw && html`<${ChangePassword} onDone=${() => { setPw(false); show('Password changed. Other devices were signed out.'); }} onCancel=${() => setPw(false)} />`}
     <main class="dl-body">
       ${tab === 'collect' && (current
-        ? html`<${Handover} r=${current} toast=${show} onBack=${() => setCurrent(null)} onDone=${() => { setCurrent(null); show('Handover recorded. The customer’s wallet is updated.'); }} />`
+        ? html`<${Handover} r=${current} toast=${show} onBack=${() => setCurrent(null)} onStatus=${s => setCurrent(c => (c ? { ...c, status: s } : c))} onDone=${() => { setCurrent(null); show('Handover recorded. The customer’s wallet is updated.'); }} />`
         : html`<${Lookup} toast=${show} openRedemption=${setCurrent} />`)}
       ${tab === 'queue' && html`<${Queue} toast=${show} />`}
       ${tab === 'stock' && html`<${Stock} />`}

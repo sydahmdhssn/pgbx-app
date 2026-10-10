@@ -101,10 +101,12 @@ export function Failed({ error, retry }) {
   return html`<div class="note err" role="alert"><div class="spread"><span>${error.message}</span>${retry && html`<button class="btn sm sec" onClick=${retry}>Try again</button>`}</div></div>`;
 }
 const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
-// Dialog: focus moves into it, Tab stays inside, Escape closes, and focus returns to what opened it.
+// Dialog: focus moves into it, Tab stays inside, Escape closes, and focus returns to what opened it. While an action in
+// it runs (Act marks it data-busy), Escape and the backdrop don't close it: the result has somewhere to be shown.
 export function Modal({ title, children, onClose }) {
   const box = useRef();
-  const close = useRef(onClose); close.current = onClose;
+  const busy = () => !!(box.current && box.current.hasAttribute('data-busy'));
+  const close = useRef(onClose); close.current = () => { if (!busy()) onClose(); };
   useEffect(() => {
     const opener = document.activeElement;
     const first = box.current && (box.current.querySelector('input,select,textarea') || box.current.querySelector(FOCUSABLE));
@@ -122,7 +124,7 @@ export function Modal({ title, children, onClose }) {
     addEventListener('keydown', k);
     return () => { removeEventListener('keydown', k); if (opener && opener.isConnected) opener.focus(); };
   }, []);
-  return html`<div class="modal-bg" onClick=${e => e.target === e.currentTarget && onClose()}>
+  return html`<div class="modal-bg" onClick=${e => e.target === e.currentTarget && close.current()}>
     <div class="modal" role="dialog" aria-modal="true" aria-label=${title} ref=${box} tabindex="-1"><h2>${title}</h2>${children}</div></div>`;
 }
 // In-page questions instead of the browser's confirm()/prompt(): ask({ title, body, input, confirm, danger })

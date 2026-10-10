@@ -29,8 +29,18 @@ const Card = ({ title, children, action }) => html`<section class="card">${(titl
 const Table = ({ head, rows, empty }) => rows.length
   ? html`<div class="tbl-wrap"><table><thead><tr>${head.map(h => html`<th class=${h.startsWith('#') ? 'r' : ''}>${h.replace(/^#/, '')}</th>`)}</tr></thead><tbody>${rows}</tbody></table></div>`
   : html`<div class="empty">${empty}</div>`;
-const Screen = ({ load, children }) => load.error ? html`<${Failed} error=${load.error} retry=${load.reload} />` : !load.data ? html`<div class="card"><${Loading} /></div>` : children(load.data);
+// A bad or old link (400/404) can't be fixed by trying again: say what wasn't found and offer the way back
+const gone = e => e && (e.status === 400 || e.status === 404);
+const Screen = ({ load, children, back }) => load.error ? (back && gone(load.error)
+  ? html`<${Head} title=${back.title}><a class="btn sm sec" href=${back.href}>${back.label}</a></${Head}><div class="note err" role="alert">${load.error.message}</div>`
+  : html`<${Failed} error=${load.error} retry=${gone(load.error) ? null : load.reload} />`) : !load.data ? html`<div class="card"><${Loading} /></div>` : children(load.data);
+// After a confirm dialog closes, focus goes back to the field that was being edited (if it went nowhere else)
+const refocus = el => setTimeout(() => { if (el && el.isConnected && (!document.activeElement || document.activeElement === document.body)) el.focus(); }, 0);
 const Seg = ({ value, options, onChange, label }) => html`<div class="seg" role="group" aria-label=${label}>${options.map(([v, l]) => html`<button aria-pressed=${value === v} onClick=${() => onChange(v)}>${l}</button>`)}</div>`;
+// Handled meanwhile by another staff member or the customer (already paid, refunded, decided, closed or moved on), or
+// gone (404): say so, close the dialog and show the list as it is now. Other refusals stay in the dialog.
+const CHANGED = ['ALREADY_PAID', 'ALREADY_REFUNDED', 'ORDER_NOT_FLAGGED', 'STATUS_CHANGED', 'LOT_NOT_FULL'];
+const settled = (req, ok, setOpen, load, toast) => req.then(ok, e => { if (e.status !== 404 && !CHANGED.includes(e.code)) throw e; toast(e.message, true); setOpen(null); load.reload(); });
 
 // ---------- overview ----------
 function Overview({ me }) {
@@ -65,11 +75,10 @@ function Kyc({ toast }) {
   const load = useLoad('/admin/kyc?status=' + status);
   const [deciding, setDeciding] = useState(null);
   const [reason, setReason] = useState('');
-  const decide = async decision => {
-    await api(`/admin/kyc/${deciding.id}/decide`, { method: 'POST', body: { decision, reason } });
+  const decide = decision => settled(api(`/admin/kyc/${deciding.id}/decide`, { method: 'POST', body: { decision, reason } }), () => {
     toast(decision === 'passed' ? 'Verified. The customer has been told.' : 'Marked as failed. The customer has been told.');
     setDeciding(null); setReason(''); load.reload();
-  };
+  }, setDeciding, load, toast);
   return html`<${Head} title="Identity checks" sub="Checks the provider sent for a person to decide">
       <${Seg} label="Status" value=${status} onChange=${setStatus} options=${[['review', 'To review'], ['submitted', 'Waiting on provider'], ['failed', 'Failed'], ['passed', 'Passed']]} /></${Head}>
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Customer', 'CNIC', 'Reason', 'Since', '']} empty="Nothing here." rows=${d.checks.map(k => html`<tr>
@@ -91,11 +100,10 @@ function Orders({ toast }) {
   const load = useLoad('/admin/orders?status=' + status);
   const [resolving, setResolving] = useState(null);
   const [note, setNote] = useState('');
-  const resolve = async action => {
-    await api(`/admin/orders/${resolving.id}/resolve`, { method: 'POST', body: { action, note } });
+  const resolve = action => settled(api(`/admin/orders/${resolving.id}/resolve`, { method: 'POST', body: { action, note } }), () => {
     toast(action === 'credit' ? 'Credited to the customer’s wallet.' : 'Marked for refund.');
     setResolving(null); setNote(''); load.reload();
-  };
+  }, setResolving, load, toast);
   return html`<${Head} title="Orders" sub="Flagged orders are paid but not credited automatically (amount mismatch, late payment or a failure)">
       <${Seg} label="Status" value=${status} onChange=${setStatus} options=${[['flagged', 'Needs operations'], ['pending_payment', 'Awaiting payment'], ['credited', 'Credited'], ['refunded', 'Refunded'], ['failed', 'Failed'], ['expired', 'Expired']]} /></${Head}>
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Receipt', 'Customer', '#Total', 'Note', 'Created', '']} empty="No orders with this status." rows=${d.orders.map(o => html`<tr>
@@ -124,7 +132,7 @@ function Customers() {
       <td><${Tag} s=${c.kyc_status} /></td><td><${Tag} s=${c.status} /></td><td class="small">${day(c.created_at)}</td></tr>`)} /><${Shown} n=${d.customers.length} total=${d.total} />`}</${Screen}></${Card}>`;
 }
 function Customer({ id, me, toast }) {
-  const load = useLoad('/admin/customers/' + id);
+  const load = useLoad('/admin/customers/' + encodeURIComponent(id));
   const setStatus = async status => {
     const reason = await ask({ title: status === 'suspended' ? 'Suspend this account?' : 'Reactivate this account?', body: status === 'suspended' ? 'The customer is signed out everywhere and can’t log in until reactivated.' : null,
       input: status === 'suspended' ? 'Why? (kept in the audit log)' : 'Why? (kept in the audit log)', confirm: status === 'suspended' ? 'Suspend' : 'Reactivate', danger: status === 'suspended' });
@@ -133,7 +141,7 @@ function Customer({ id, me, toast }) {
     toast(status === 'suspended' ? 'Suspended. The customer has been signed out.' : 'Account reactivated.');
     load.reload();
   };
-  return html`<${Screen} load=${load}>${d => html`
+  return html`<${Screen} load=${load} back=${{ title: 'Customer not found', href: '#customers', label: 'All customers' }}>${d => html`
     <${Head} title=${d.customer.name || 'Customer'} sub=${d.customer.phone ? '+92 ' + d.customer.phone : 'Closed account'}>
       <a class="btn sm sec" href="#customers">All customers</a>
       ${me.role === 'admin' && d.customer.status === 'active' && html`<${Act} cls="btn sm danger" run=${() => setStatus('suspended')}>Suspend</${Act}>`}
@@ -162,17 +170,18 @@ function Customer({ id, me, toast }) {
 }
 
 // ---------- doorstep appraisals ----------
+const NET_G = /^\d{1,6}(\.\d{1,4})?$/;                         // grams, e.g. 9.65 (the server refuses anything else)
 const SLOT_DAY = d => new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 function Appraisals({ toast }) {
   const [status, setStatus] = useState('booked');
   const load = useLoad('/admin/appraisals?status=' + status);
   const [act, setAct] = useState(null);                       // { a, action }
   const [f, setF] = useState({});
-  const run = async () => {
-    await api(`/admin/appraisals/${act.a.id}`, { method: 'POST', body: { action: act.action, ...f } });
+  const run = () => settled(api(`/admin/appraisals/${act.a.id}`, { method: 'POST', body: { action: act.action, ...f } }), () => {
     toast({ assign: 'Goldsmith assigned. The customer has been told.', complete: 'Result sent to the customer.', cancel: 'Visit cancelled. The customer has been told.' }[act.action]);
     setAct(null); setF({}); load.reload();
-  };
+  }, setAct, load, toast);
+  const badNet = act && act.action === 'complete' && !!f.net_g && !NET_G.test(String(f.net_g).trim());
   // Each visit starts with an empty form: nothing typed for one customer can be sent to another
   const open = (a, action) => { setF({}); setAct({ a, action }); };
   const close = () => { setAct(null); setF({}); };
@@ -200,13 +209,14 @@ function Appraisals({ toast }) {
           <small>Give the goldsmith the visit code <b class="mono">${act.a.visit_code}</b>. The customer opens the door only to someone who says it.</small></label>`}
       ${act.action === 'complete' && html`
         <div class="grid g2" style="gap:12px"><label class="f"><span>Karat found</span><input class="in" value=${f.karat || ''} placeholder="e.g. 21K" onInput=${e => setF({ ...f, karat: e.target.value })} /></label>
-          <label class="f"><span>Net metal weight (g)</span><input class="in" inputmode="decimal" value=${f.net_g || ''} onInput=${e => setF({ ...f, net_g: e.target.value })} /></label></div>
+          <label class="f"><span>Net metal weight (g)</span><input class="in" inputmode="decimal" value=${f.net_g || ''} aria-invalid=${badNet} onInput=${e => setF({ ...f, net_g: e.target.value })} />
+            ${badNet && html`<small style="color:var(--danger)">Enter a number, e.g. 9.65</small>`}</label></div>
         <label class="f"><span>Value offered (PKR, optional)</span><input class="in" inputmode="numeric" value=${f.value_pkr || ''} onInput=${e => setF({ ...f, value_pkr: e.target.value.replace(/\D/g, '') })} /></label>
         <label class="f"><span>Result for the customer</span><textarea class="in" rows="4" value=${f.summary || ''} onInput=${e => setF({ ...f, summary: e.target.value })}></textarea></label>`}
       ${act.action === 'cancel' && html`<label class="f"><span>Reason (sent to the customer)</span><input class="in" value=${f.reason || ''} onInput=${e => setF({ ...f, reason: e.target.value })} />
         <small>A paid visit cancelled by PGBX is marked for refund.</small></label>`}
       <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${close}>Close</button>
-        <${Act} cls=${act.action === 'cancel' ? 'btn danger' : 'btn'} run=${run}>${{ assign: 'Assign', complete: 'Send result', cancel: 'Cancel visit' }[act.action]}</${Act}></div>
+        <${Act} cls=${act.action === 'cancel' ? 'btn danger' : 'btn'} disabled=${badNet} run=${run}>${{ assign: 'Assign', complete: 'Send result', cancel: 'Cancel visit' }[act.action]}</${Act}></div>
     </${Modal}>`}`;
 }
 
@@ -217,10 +227,9 @@ function Gifts({ toast }) {
   const load = useLoad('/admin/gifts?status=' + status);
   const [act, setAct] = useState(null);
   const [f, setF] = useState({});
-  const run = async () => {
-    await api(`/admin/gifts/${act.g.id}`, { method: 'POST', body: { action: act.action, ...f } });
+  const run = () => settled(api(`/admin/gifts/${act.g.id}`, { method: 'POST', body: { action: act.action, ...f } }), () => {
     toast('Updated. The customer has been told.'); setAct(null); setF({}); load.reload();
-  };
+  }, setAct, load, toast);
   const NEXT = { placed: ['produce', 'Start production'], in_production: ['dispatch', 'Dispatch'], dispatched: ['deliver', 'Mark delivered'] };
   return html`<${Head} title="Gift orders" sub="Bullion and coins made to order and delivered by insured courier">
       <${Seg} label="Status" value=${status} onChange=${setStatus} options=${[['placed', 'New'], ['in_production', 'In production'], ['dispatched', 'Dispatched'], ['delivered', 'Delivered'], ['cancelled', 'Cancelled'], ['pending_payment', 'Awaiting payment']]} /></${Head}>
@@ -262,7 +271,7 @@ function Micro({ id, toast }) {
       <input class="in mono" placeholder="Find a transaction, order or lot ID, e.g. PGBX-M-261006-1A2B3C4D" value=${q} onInput=${e => setQ(e.target.value)} /></label>
       <button class="btn">Find</button></form>
       ${found && html`<div style="margin-top:14px">${found.error ? html`<div class="note err" role="alert">${found.error}</div>`
-        : found.lot ? html`<div class="spread"><span>Lot <b class="mono">${found.lot.ref}</b> · ${grams(found.lot.grams_filled)} · <${Tag} s=${found.lot.status} /></span><a class="btn sm" href=${'#micro/' + found.lot.ref}>Open lot</a></div>`
+        : found.lot ? html`<div class="spread"><span>Lot <b class="mono nowrap">${found.lot.ref}</b> · ${grams(found.lot.grams_filled)} · <${Tag} s=${found.lot.status} /></span><a class="btn sm" href=${'#micro/' + found.lot.ref}>Open lot</a></div>`
         : found.order ? html`<dl class="kv"><dt>Order</dt><dd class="mono">${found.order.ref}</dd><dt>Customer</dt><dd><a href=${'#customers/' + found.order.customer.id}>${found.order.customer.name || '—'}</a></dd>
             <dt>Paid</dt><dd>${found.order.units} × $1 · ${pkr(found.order.total_pkr)} · <${Tag} s=${found.order.status} /></dd>${found.order.note && html`<dt>Note</dt><dd>${found.order.note}</dd>`}
             <dt>Transactions</dt><dd class="mono small" style="overflow-wrap:anywhere">${found.order.transactions.join(', ')}</dd></dl>`
@@ -272,7 +281,7 @@ function Micro({ id, toast }) {
             <dt>Status</dt><dd><${Tag} s=${found.transaction.status} /> ${when(found.transaction.created_at)}</dd>
             ${found.transaction.order_ref && html`<dt>Order</dt><dd class="mono">${found.transaction.order_ref}</dd>`}
             ${found.transaction.payout_to && found.transaction.side === 'sell' && html`<dt>Pay to</dt><dd class="mono">${found.transaction.payout_to}</dd>`}
-            <dt>In lot</dt><dd>${found.transaction.lots.length ? found.transaction.lots.map(l => html`<a class="mono" style="margin-right:10px" href=${'#micro/' + l.ref}>${l.ref}</a><span class="small muted" style="margin-right:12px">${grams(l.grams)}</span>`) : 'Not in a lot yet (unpaid)'}</dd></dl>`}</div>`}
+            <dt>In lot</dt><dd>${found.transaction.lots.length ? found.transaction.lots.map(l => html`<a class="mono nowrap" style="margin-right:10px" href=${'#micro/' + l.ref}>${l.ref}</a><span class="small muted" style="margin-right:12px">${grams(l.grams)}</span>`) : 'Not in a lot yet (unpaid)'}</dd></dl>`}</div>`}
     </${Card}>
     <div style="margin:16px 0"><${Seg} label="View" value=${tab} onChange=${setTab} options=${[['buy', 'Buy lots'], ['sell', 'Sell lots'], ['payouts', 'Payouts to send'], ['paid', 'Payouts sent']]} /></div>
     ${(tab === 'buy' || tab === 'sell') && html`<${MicroLots} side=${tab} toast=${toast} />`}
@@ -283,17 +292,16 @@ function MicroLots({ side, toast }) {
   const load = useLoad('/admin/micro/lots?side=' + side);
   const [settling, setSettling] = useState(null);
   const [f, setF] = useState({ serial: '', note: '' });
-  const settle = async () => {
-    await api(`/admin/micro/lots/${settling.id}/settle`, { method: 'POST', body: f });
+  const settle = () => settled(api(`/admin/micro/lots/${settling.id}/settle`, { method: 'POST', body: f }), () => {
     toast(side === 'buy' ? 'Recorded: tola bar bought for this lot.' : 'Recorded: tola sold for this lot.'); setSettling(null); load.reload();
-  };
+  }, setSettling, load, toast);
   return html`<${Screen} load=${load}>${d => html`<div class="stack">
     <div class="grid g4">
       <div class="card stat"><div class="k">Gold customers hold</div><div class="v">${grams(d.totals.held)}</div><div class="muted small">bought ${grams(d.totals.bought)} · sold ${grams(d.totals.sold)}</div></div>
       <div class=${'card stat' + (d.lots.some(l => l.status === 'full') ? ' attn' : '')}><div class="k">${side === 'buy' ? 'Full lots: buy a tola bar' : 'Full lots: sell a tola'}</div><div class="v">${d.lots.filter(l => l.status === 'full').length}</div></div>
     </div>
     <${Card} title=${side === 'buy' ? 'Buy lots (1 tola each)' : 'Sell lots (1 tola each)'}><${Table} head=${['Lot', 'Filled', '#Transactions', '#Value at trade', 'Status', '']} empty="No lots yet. The first paid transaction starts lot 1." rows=${d.lots.map(l => html`<tr>
-      <td><a class="mono" href=${'#micro/' + l.ref}>${l.ref}</a></td>
+      <td><a class="mono nowrap" href=${'#micro/' + l.ref}>${l.ref}</a></td>
       <td style="min-width:160px"><div class="small">${grams(l.grams_filled)} of 1 tola (${Math.floor(l.grams_filled / l.grams_target * 100)}%)</div><div class="bar" role="img" aria-label=${Math.floor(l.grams_filled / l.grams_target * 100) + '% full'}><i style=${`width:${Math.min(100, l.grams_filled / l.grams_target * 100)}%`}></i></div></td>
       <td class="r num">${l.transactions}</td><td class="r num">${pkr(l.amount_pkr)}</td>
       <td><${Tag} s=${l.status} />${l.bar_serial && html`<div class="small mono">${l.bar_serial}</div>`}</td>
@@ -316,7 +324,7 @@ function MicroLot({ ref_ }) {
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' })); a.download = d.lot + '-transactions.txt'; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   };
-  return html`<${Screen} load=${load}>${d => html`
+  return html`<${Screen} load=${load} back=${{ title: 'Lot not found', href: '#micro', label: 'All lots' }}>${d => html`
     <${Head} title=${'Lot ' + d.lot.ref} sub=${`${d.lot.side === 'buy' ? 'Buy' : 'Sell'} lot · ${grams(d.lot.grams_filled)} of 11.664 g · ${d.lot.transactions} transactions`}>
       <a class="btn sm sec" href="#micro">All lots</a><${Act} cls="btn sm" run=${download}>Download all IDs</${Act}></${Head}>
     <div class="grid g2">
@@ -331,8 +339,6 @@ function MicroLot({ ref_ }) {
         <td class="mono small">${t.ref}${t.grams < t.txn_grams && html` <span class="tag" title="Split between two lots">split</span>`}</td><td>${t.name || '—'}<div class="muted small">+92 ${t.phone || '—'}</div></td>
         <td class="r num">${Number(t.grams).toFixed(6)}</td><td class="r num">${pkr(t.amount_pkr)}</td><td class="small">${when(t.created_at)}</td></tr>`)} /></${Card}>`}</${Screen}>`;
 }
-// A payment another staff member recorded meanwhile (409): say so, close the dialog and show the list as it is now
-const settled = (req, ok, setOpen, load, toast) => req.then(ok, e => { if (e.status !== 409) throw e; toast(e.message, true); setOpen(null); load.reload(); });
 function MicroPayouts({ done, toast }) {
   const load = useLoad('/admin/micro/payouts?status=' + (done ? 'paid_out' : 'pending_payout'));
   const [paying, setPaying] = useState(null);
@@ -463,7 +469,7 @@ function ChatThread({ id, me, toast, onChange }) {
   const stick = useRef(true);
   const toEnd = () => { if (box.current && stick.current) box.current.scrollTop = box.current.scrollHeight; };
   useEffect(toEnd, [msgs.length]);
-  if (err) return html`<div class="chat-thread card"><a class="btn sm ghost back-link" href="#chats">‹ All chats</a><${Failed} error=${err} retry=${() => load.current()} /></div>`;
+  if (err) return html`<div class="chat-thread card"><a class="btn sm ghost back-link" href="#chats">‹ All chats</a><${Failed} error=${err} retry=${gone(err) ? null : () => load.current()} /></div>`;
   if (!d) return html`<div class="chat-thread card"><${Loading} /></div>`;
   const c = d.chat, closed = c.status === 'closed', u = d.customer;
   const send = async () => {
@@ -485,9 +491,12 @@ function ChatThread({ id, me, toast, onChange }) {
   const sg = d.suggested && d.suggested.prices;
   const openRate = () => setRate({ prices: JSON.parse(JSON.stringify(sg || (c.kind === 'buy_bars' || c.kind === 'sell_bars' ? { unit: {} } : {}))), minutes: d.minutes, note: '' });
   const total = rate && rateTotal(c, rate.prices);
+  const maxMin = d.minutes;                               // rate_confirm_minutes: the default and the longest allowed
+  const overMax = rate && Number(rate.minutes) > maxMin;
   const confirm = async () => {
-    const r = await api(`/support/chats/${id}/confirm`, { method: 'POST', body: { prices: rate.prices, minutes: Number(rate.minutes), note: rate.note } });
-    setConf(r.confirmation); setRate(null); toast('Rate confirmed. The customer has been told.'); changed.current();
+    const r = await api(`/support/chats/${id}/confirm`, { method: 'POST', body: { prices: rate.prices, minutes: Math.min(Number(rate.minutes), maxMin), note: rate.note } });
+    setConf(r.confirmation); setRate(null); changed.current();
+    toast(overMax ? `Rate confirmed for ${maxMin} minutes, the longest allowed. The customer has been told.` : 'Rate confirmed. The customer has been told.');
     const m = await api(`/support/chats/${id}?after=${last.current}`); add(m.messages);
   };
   const closeChat = async () => {
@@ -503,7 +512,7 @@ function ChatThread({ id, me, toast, onChange }) {
       <div class="spread"><div><a class="btn sm ghost back-link" href="#chats">‹ All chats</a><h2 style="margin:0">${u.name || 'Customer'} <span class="muted small">+92 ${u.phone || '—'}</span></h2>
         <div class="small muted">${KIND_LABEL[c.kind]} · <span class="mono">${c.ref}</span> · started ${when(c.created_at)}</div></div>
         <span class=${'tag ' + (CHAT_TAG[c.status] || '')}>${CHAT_LABEL[c.status]}</span></div>
-      <details class="chat-ctx-box" open=${matchMedia('(min-width: 861px) and (min-height: 700px)').matches}><summary>Customer and request</summary><div class="chat-ctx">
+      <details class="chat-ctx-box" open=${matchMedia('(min-width: 861px) and (min-height: 900px)').matches}><summary>Customer and request</summary><div class="chat-ctx">
         <div><span class="k">Request</span><b>${c.summary}</b>${c.indicative_pkr ? html`<div class="small muted">App price when asked: ${pkr(c.indicative_pkr)} (indicative)</div>` : ''}</div>
         <div><span class="k">Market now</span><b>${d.suggested && d.suggested.total_pkr ? pkr(d.suggested.total_pkr) : '—'}</b><div class="small muted">${d.suggested ? 'PGBX prices from ' + ago(d.suggested.at) : 'No recent prices'}</div></div>
         <div><span class="k">Identity</span><${Tag} s=${u.kyc_status} /> ${u.status !== 'active' ? html`<${Tag} s=${u.status} />` : ''}</div>
@@ -544,7 +553,8 @@ function ChatThread({ id, me, toast, onChange }) {
         <small>${Number(c.details.grams).toFixed(4)} g</small></label>`}
       ${c.kind === 'gift' && [['metal_pkr', 'Metal (PKR)'], ['making_pkr', 'Making and engraving (PKR)'], ['packaging_pkr', 'Packaging (PKR)'], ['delivery_pkr', 'Insured delivery (PKR)']].map(([k, l]) => html`
         <label class="f"><span>${l}</span><input class="in num" inputmode="numeric" value=${rate.prices[k] ?? ''} onInput=${e => setRate({ ...rate, prices: { ...rate.prices, [k]: num(e.target.value) } })} /></label>`)}
-      <div class="grid g2" style="gap:12px"><label class="f"><span>Valid for (minutes)</span><input class="in" inputmode="numeric" value=${rate.minutes} onInput=${e => setRate({ ...rate, minutes: e.target.value.replace(/\D/g, '') })} /></label>
+      <div class="grid g2" style="gap:12px"><label class="f"><span>Valid for (minutes)</span><input class="in" type="number" inputmode="numeric" min="1" max=${maxMin} value=${rate.minutes} aria-invalid=${overMax} onInput=${e => setRate({ ...rate, minutes: e.target.value.replace(/\D/g, '') })} />
+        <small style=${overMax ? 'color:var(--warning)' : ''}>${overMax ? `Longest allowed is ${maxMin}; it will be confirmed for ${maxMin}.` : `Up to ${maxMin} minutes.`}</small></label>
         <div class="f"><span class="small" style="font-weight:600">${c.kind.startsWith('sell') ? 'Customer receives' : 'Customer pays'}</span><div style="font:600 22px var(--serif);margin-top:6px">${total ? pkr(total) : '—'}</div></div></div>
       <label class="f"><span>Note to the customer (optional)</span><input class="in" value=${rate.note} maxlength="300" onInput=${e => setRate({ ...rate, note: e.target.value })} placeholder="e.g. Includes today’s premium" /></label>
       <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setRate(null)}>Cancel</button>
@@ -589,7 +599,7 @@ function Support({ toast }) {
   const load = useLoad('/admin/support?status=' + status);
   const [open, setOpen] = useState(null);
   const [reply, setReply] = useState('');
-  const close = async () => { await api(`/admin/support/${open.id}/close`, { method: 'POST', body: { reply } }); toast(reply ? 'Reply sent and request closed.' : 'Request closed.'); setOpen(null); setReply(''); load.reload(); };
+  const close = () => settled(api(`/admin/support/${open.id}/close`, { method: 'POST', body: { reply } }), () => { toast(reply ? 'Reply sent and request closed.' : 'Request closed.'); setOpen(null); setReply(''); load.reload(); }, setOpen, load, toast);
   return html`<${Head} title="Support" sub="Problems customers report from the app">
       <${Seg} label="Status" value=${status} onChange=${setStatus} options=${[['open', 'Open'], ['closed', 'Closed']]} /></${Head}>
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Customer', 'Topic', 'Message', 'Sent', '']} empty=${status === 'open' ? 'No open requests.' : 'Nothing closed yet.'} rows=${d.requests.map(r => html`<tr>
@@ -610,15 +620,15 @@ function Dealers({ me, toast }) {
   const products = useLoad('/admin/products');
   const [adding, setAdding] = useState(false);
   const [f, setF] = useState({ id: '', name: '', area: '', address: '', phone: '', hours: '' });
-  const setStock = async (dealer, product, value) => {
-    const v = String(value).trim();
+  const setStock = async (dealer, product, el) => {
+    const v = String(el.value).trim();
     if (!/^\d+$/.test(v)) { toast('Enter a whole number of 0 or more. An empty field isn’t saved.', true); load.reload(); return; }
     const units = Number(v);
     const note = await ask({ title: `Set ${productName(product)} at ${dealer.name} to ${units}?`, input: 'Reason (e.g. delivery, count correction)', confirm: 'Save stock' });
-    if (note === null) { load.reload(); return; }
+    if (note === null) { load.reload(); refocus(el); return; }
     try { await api(`/admin/dealers/${dealer.id}/stock`, { method: 'PUT', body: { product_id: product, units, note } }); toast('Stock updated.'); }
     catch (e) { toast(e.message, true); }
-    load.reload();
+    load.reload(); refocus(el);
   };
   const add = async () => { await api('/admin/dealers', { method: 'POST', body: f }); toast('Dealer added with zero stock.'); setAdding(false); setF({ id: '', name: '', area: '', address: '', phone: '', hours: '' }); load.reload(); };
   const toggle = async d => { await api(`/admin/dealers/${d.id}`, { method: 'PATCH', body: { active: !d.active } }); toast(d.active ? 'Dealer hidden from customers.' : 'Dealer visible to customers.'); load.reload(); };
@@ -631,7 +641,7 @@ function Dealers({ me, toast }) {
       <div class="tbl-wrap"><table><thead><tr>${products.data.products.map(p => html`<th class="r">${productName(p.id).replace(/^(Gold|Silver) /, m => m[0] + ' ')}</th>`)}</tr></thead>
         <tbody><tr>${products.data.products.map(p => html`<td class="r"><input class="in sm num" style="width:64px;text-align:right" inputmode="numeric" aria-label=${`${productName(p.id)} at ${dl.name}`}
           value=${dl.stock[p.id] ?? 0} onKeyDown=${e => e.key === 'Enter' && e.target.blur()}
-          onChange=${e => setStock(dl, p.id, e.target.value)} /></td>`)}</tr></tbody></table></div>
+          onChange=${e => setStock(dl, p.id, e.target)} /></td>`)}</tr></tbody></table></div>
     </${Card}>`)}</div>`}</${Screen}>
     ${adding && html`<${Modal} title="Add dealer" onClose=${() => setAdding(false)}>
       ${[['id', 'Short ID', 'Letters, numbers and dashes, e.g. lhr-gulberg'], ['name', 'Name'], ['area', 'Area and city'], ['address', 'Address'], ['phone', 'Phone'], ['hours', 'Opening hours', 'e.g. 10:00 – 20:00']].map(([k, l, hint]) => html`
@@ -643,32 +653,32 @@ function Dealers({ me, toast }) {
 // ---------- products ----------
 function Products({ me, toast }) {
   const load = useLoad('/admin/products');
-  const save = async (p, body) => { try { await api(`/admin/products/${p.id}`, { method: 'PATCH', body }); toast('Saved. New price locks use it straight away.'); } catch (e) { toast(e.message, true); } load.reload(); };
+  const save = async (p, body, el) => { try { await api(`/admin/products/${p.id}`, { method: 'PATCH', body }); toast('Saved. New price locks use it straight away.'); } catch (e) { toast(e.message, true); } load.reload(); refocus(el); };
   const admin = me.role === 'admin';
   return html`<${Head} title="Products & premiums" sub="Price = metal rate for the weight + the premium below (rounded to the nearest rupee)" />
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Product', '#Weight (g)', '#Premium per unit', 'Sold']} empty="No products." rows=${d.products.map(p => html`<tr>
       <td>${productName(p.id)}</td><td class="r num">${p.grams}</td>
       <td class="r">${admin ? html`<input class="in sm num" style="width:110px;text-align:right" inputmode="numeric" aria-label=${'Premium for ' + productName(p.id)} value=${p.premium_pkr}
         onKeyDown=${e => e.key === 'Enter' && e.target.blur()} onChange=${e => {
-          const v = e.target.value.trim().replace(/,/g, '');
+          const el = e.target, v = el.value.trim().replace(/,/g, '');
           if (!/^\d+$/.test(v)) { toast('Enter the premium as a whole number of rupees (0 or more).', true); load.reload(); return; }
           ask({ title: `Change the premium for ${productName(p.id)}?`, body: `From ${pkr(p.premium_pkr)} to ${pkr(Number(v))}. New price locks use it straight away.`, confirm: 'Change premium' })
-            .then(okd => (okd ? save(p, { premium_pkr: Number(v) }) : load.reload()));
+            .then(okd => (okd ? save(p, { premium_pkr: Number(v) }, el) : (load.reload(), refocus(el))));
         }} />` : pkr(p.premium_pkr)}</td>
-      <td>${admin ? html`<label class="row small"><input type="checkbox" checked=${p.active} onChange=${e => { const on = e.target.checked; e.target.checked = p.active;
+      <td>${admin ? html`<label class="row small"><input type="checkbox" checked=${p.active} onChange=${e => { const el = e.target, on = el.checked; el.checked = p.active;
           ask({ title: on ? `Put ${productName(p.id)} on sale?` : `Hide ${productName(p.id)} from customers?`, body: on ? 'Customers can buy it straight away.' : 'Customers can’t buy it until it’s put back on sale. What they hold isn’t affected.', confirm: on ? 'Put on sale' : 'Hide product', danger: !on })
-            .then(okd => okd && save(p, { active: on })); }} /> ${p.active ? 'On sale' : 'Hidden'}</label>` : html`<${Tag} s=${p.active ? 'active' : 'closed'} />`}</td></tr>`)} />
+            .then(okd => (okd ? save(p, { active: on }, el) : refocus(el))); }} /> ${p.active ? 'On sale' : 'Hidden'}</label>` : html`<${Tag} s=${p.active ? 'active' : 'closed'} />`}</td></tr>`)} />
       <p class="muted small" style="margin:12px 0 0">Sample premiums until PGBX confirms the real ones.</p></${Card}>`}</${Screen}>`;
 }
 
 // ---------- reconciliation ----------
 function Reconciliation({ toast }) {
   const [dayV, setDay] = useState(pkToday());
-  const load = useLoad('/admin/reconciliation?day=' + dayV);
+  const load = useLoad('/admin/reconciliation' + (dayV ? '?day=' + dayV : ''));
   const [count, setCount] = useState(null);
   const saveCount = async () => { await api('/admin/vault', { method: 'POST', body: count }); toast('Vault count recorded.'); setCount(null); load.reload(); };
   return html`<${Head} title="Reconciliation" sub="Money received against orders credited, and metal owed against metal held">
-      <input class="in" type="date" style="width:auto" value=${dayV} max=${pkToday()} onChange=${e => setDay(e.target.value)} aria-label="Day" /></${Head}>
+      <input class="in" type="date" style="width:auto" value=${dayV} max=${pkToday()} onChange=${e => { if (!e.target.value) e.target.value = pkToday(); setDay(e.target.value); }} aria-label="Day" /></${Head}>
     <${Screen} load=${load}>${({ reconciliation: r }) => {
       const money = r.payments_succeeded_pkr === r.orders_credited_pkr;
       return html`<div class="stack">
@@ -680,7 +690,7 @@ function Reconciliation({ toast }) {
         </div>
         ${r.paid_not_credited.length > 0 && html`<div class="note warn">Paid but not credited: ${r.paid_not_credited.map(o => o.receipt || o.order.slice(0, 8)).join(', ')}</div>`}
         ${r.credited_without_payment.length > 0 && html`<div class="note err">Credited without a recorded payment: ${r.credited_without_payment.map(o => o.receipt).join(', ')}. Investigate now.</div>`}
-        <${Card} title="Metal" action=${html`<button class="btn sm" onClick=${() => setCount({ product_id: r.metal[0]?.product_id, units: '', note: '' })}>Record vault count</button>`}>
+        <${Card} title="Metal" action=${html`<button class="btn sm" onClick=${() => setCount({ product_id: [...r.metal].sort(byProduct)[0]?.product_id, units: '', note: '' })}>Record vault count</button>`}>
           <${Table} head=${['Product', '#Owed to customers', '#Reserved', '#At dealers', '#In vault (last count)', '#Cover']} empty="No products." rows=${[...r.metal].sort(byProduct).map(m => {
             const cover = (m.vault_units ?? 0) + m.dealer_units - m.customer_units;
             return html`<tr><td>${productName(m.product_id)}</td><td class="r num">${m.customer_units}</td><td class="r num">${m.reserved_units}</td><td class="r num">${m.dealer_units}</td>
@@ -712,7 +722,7 @@ function Reconciliation({ toast }) {
     }}</${Screen}>
     ${count && html`<${Modal} title="Record vault count" onClose=${() => setCount(null)}>
       <label class="f"><span>Product</span><select class="in" value=${count.product_id} onChange=${e => setCount({ ...count, product_id: e.target.value })}>
-        ${(load.data?.reconciliation.metal || []).map(m => html`<option value=${m.product_id}>${productName(m.product_id)}</option>`)}</select></label>
+        ${[...(load.data?.reconciliation.metal || [])].sort(byProduct).map(m => html`<option value=${m.product_id}>${productName(m.product_id)}</option>`)}</select></label>
       <label class="f"><span>Units counted</span><input class="in" inputmode="numeric" value=${count.units} onInput=${e => setCount({ ...count, units: e.target.value.replace(/\D/g, '') })} /></label>
       <label class="f"><span>Note</span><input class="in" value=${count.note} onInput=${e => setCount({ ...count, note: e.target.value })} placeholder="e.g. Monthly count, counted with auditor" /></label>
       <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setCount(null)}>Cancel</button><${Act} disabled=${count.units === ''} run=${() => saveCount()}>Save count</${Act}></div>
@@ -732,27 +742,31 @@ const SETTING_HELP = {
   gift_cities: ['Gift delivery cities', 'JSON list'],
   micro_usd: ['$1 gold: dollars per transaction', 'US$, converted at the live USD/PKR rate'], micro_max_units: ['$1 gold: most transactions per payment', 'count'],
   micro_min_sell_g: ['$1 gold: smallest sale', 'grams'],
+  rate_chat_required: ['Final rate must be confirmed in chat', 'true or false'], rate_confirm_minutes: ['Confirmed rate valid for (longest)', 'minutes'],
+  rate_confirm_max_move_pct: ['Confirmed rate: most it can differ from market', '% either way'],
+  rate_confirm_sell_over_pct: ['Paying a customer above market: at most', '% over market'], rate_confirm_buy_under_pct: ['Selling to a customer below market: at most', '% under market'],
 };
 function Settings({ me, toast }) {
   const load = useLoad('/admin/settings');
   const admin = me.role === 'admin';
-  const save = async (key, text) => {
-    let value;
+  const save = async (key, el) => {
+    let value; const text = el.value;
     try { value = text.trim() === '' ? null : JSON.parse(text); } catch { toast('Enter a number, or valid JSON.', true); load.reload(); return; }
-    if (!(await ask({ title: `Change “${SETTING_HELP[key]?.[0] || key}”?`, body: `New value: ${JSON.stringify(value)}. This applies to all customers straight away.`, confirm: 'Change setting' }))) { load.reload(); return; }
+    if (!(await ask({ title: `Change “${SETTING_HELP[key]?.[0] || key}”?`, body: `New value: ${JSON.stringify(value)}. This applies to all customers straight away.`, confirm: 'Change setting' }))) { load.reload(); refocus(el); return; }
     try { await api('/admin/settings', { method: 'PATCH', body: { [key]: value } }); toast('Setting saved.'); } catch (e) { toast(e.message, true); }
-    load.reload();
+    load.reload(); refocus(el);
   };
   return html`<${Head} title="Settings" sub=${admin ? 'Business rules the app and server follow. Changes are recorded in the audit log.' : 'Only administrators can change settings.'} />
     <${Screen} load=${load}>${d => html`<${Card}><${Table} head=${['Setting', 'Value', 'Last changed']} empty="No settings." rows=${d.settings.map(s => html`<tr>
       <td>${SETTING_HELP[s.key]?.[0] || s.key}<div class="muted small mono">${s.key}${SETTING_HELP[s.key] ? ' · ' + SETTING_HELP[s.key][1] : ''}</div></td>
       <td>${admin ? html`<input class="in mono" style="min-width:140px" value=${s.value === null ? '' : JSON.stringify(s.value)} aria-label=${SETTING_HELP[s.key]?.[0] || s.key}
-        onKeyDown=${e => e.key === 'Enter' && e.target.blur()} onChange=${e => save(s.key, e.target.value)} />` : html`<span class="mono">${s.value === null ? '— (not set)' : JSON.stringify(s.value)}</span>`}</td>
+        onKeyDown=${e => e.key === 'Enter' && e.target.blur()} onChange=${e => save(s.key, e.target)} />` : html`<span class="mono">${s.value === null ? '— (not set)' : JSON.stringify(s.value)}</span>`}</td>
       <td class="small">${s.updated_by ? when(s.updated_at) + ' · ' + s.updated_by : 'Sample default'}</td></tr>`)} /></${Card}>`}</${Screen}>`;
 }
 
 // ---------- audit ----------
-// Filters by kind of item, action (prefix, e.g. "payment." or "pin.locked"), who did it and the item's ID; pages back in time.
+// Filters by kind of item, action (prefix, e.g. "payment." or "pin.locked"), who did it (part of a name or ID) and the
+// item's ID; pages back in time.
 function Audit() {
   const [f, setF] = useState({ entity: '', action: '', actor: '', id: '' });
   const [q, setQ] = useState(f);
@@ -764,17 +778,17 @@ function Audit() {
   return html`<${Head} title="Audit log" sub="Every important action, by whom and when. Entries can’t be edited or deleted." />
     <${Card}><div class="grid g4" style="gap:12px">
       <label class="f" style="margin:0"><span>Item</span><select class="in" value=${f.entity} onChange=${e => ent(e.target.value)}>
-        ${[['', 'Everything'], ['customer', 'Customers'], ['order', 'Orders'], ['redemption', 'Collections'], ['kyc', 'Identity checks'], ['appraisal', 'Appraisals'], ['gift', 'Gift orders'], ['micro', '$1 gold'], ['lot', 'Tola lots'], ['refund', 'Refunds'], ['chat', 'Rate chats'], ['bar_sale', 'Bar sell-backs'], ['support', 'Support'], ['staff', 'Staff'], ['setting', 'Settings'], ['dealer', 'Dealers'], ['product', 'Products']].map(([v, l]) => html`<option value=${v}>${l}</option>`)}
+        ${[['', 'Everything'], ['customer', 'Customers'], ['order', 'Orders'], ['redemption', 'Collections'], ['kyc', 'Identity checks'], ['appraisal', 'Appraisals'], ['gift', 'Gift orders'], ['micro', '$1 gold'], ['lot', 'Tola lots'], ['refund', 'Refunds'], ['chat', 'Rate chats'], ['bar_sale', 'Bar sell-backs'], ['support', 'Support'], ['staff', 'Staff'], ['setting', 'Settings'], ['dealer', 'Dealers'], ['product', 'Products'], ['list', 'Lists viewed']].map(([v, l]) => html`<option value=${v}>${l}</option>`)}
       </select></label>
       <label class="f" style="margin:0"><span>Action starts with</span><input class="in mono" placeholder="e.g. payment. or login" value=${f.action} onInput=${e => setF({ ...f, action: e.target.value })} /></label>
-      <label class="f" style="margin:0"><span>Done by</span><input class="in mono" placeholder="e.g. staff:… or customer:…" value=${f.actor} onInput=${e => setF({ ...f, actor: e.target.value })} /></label>
+      <label class="f" style="margin:0"><span>Done by</span><input class="in" placeholder="Staff name, or part of an ID" value=${f.actor} onInput=${e => setF({ ...f, actor: e.target.value })} /></label>
       <label class="f" style="margin:0"><span>Item ID</span><input class="in mono" placeholder="Full ID" value=${f.id} onInput=${e => setF({ ...f, id: e.target.value })} /></label>
     </div></${Card}>
     <div style="height:16px"></div>
     <${Screen} load=${load}>${d => html`<${Card} action=${html`<div class="row"><button class="btn sm sec" disabled=${!before.length} onClick=${() => setBefore(before.slice(0, -1))}>Newer</button>
         <button class="btn sm sec" disabled=${!d.more} onClick=${() => setBefore([...before, d.entries[d.entries.length - 1].id])}>Older</button></div>`}>
       <${Table} head=${['When', 'Who', 'Action', 'Item', 'Details']} empty="No entries match." rows=${d.entries.map(a => html`<tr>
-      <td class="small" style="white-space:nowrap">${when(a.at)}</td><td class="small mono">${a.actor}</td><td><span class="tag">${a.action}</span></td>
+      <td class="small" style="white-space:nowrap">${when(a.at)}</td><td class="small">${a.actor_name ? html`<span title=${a.actor}>${a.actor_name}</span>` : html`<span class="mono">${a.actor}</span>`}</td><td><span class="tag">${a.action}</span></td>
       <td class="small mono">${a.entity}${a.entity_id ? html` <button class="btn ghost sm mono" style="padding:0;min-height:0" title="Show everything for this item" onClick=${() => { setF({ ...f, id: String(a.entity_id) }); }}>${String(a.entity_id).slice(0, 8)}</button>` : ''}</td><td class="small mono" style="max-width:320px;overflow-wrap:anywhere">${a.data && Object.keys(a.data).length ? JSON.stringify(a.data) : ''}</td></tr>`)} /></${Card}>`}</${Screen}>`;
 }
 
@@ -800,19 +814,19 @@ function Staff({ me, toast }) {
       <label class="f"><span>Role</span><select class="in" value=${f.role} onChange=${e => setF({ ...f, role: e.target.value })}>
         <option value="ops">Operations: daily work, no settings or staff</option><option value="support">Support: rate chats with customers only</option><option value="admin">Administrator: everything</option><option value="dealer">Dealer counter staff</option></select></label>
       ${f.role === 'dealer' && html`<label class="f"><span>Dealer</span><select class="in" value=${f.dealer_id} onChange=${e => setF({ ...f, dealer_id: e.target.value })}>
-        <option value="">Choose…</option>${(dealers.data?.dealers || []).map(d => html`<option value=${d.id}>${d.name}</option>`)}</select></label>`}
+        <option value="">Choose…</option>${(dealers.data?.dealers || []).filter(d => d.active).map(d => html`<option value=${d.id}>${d.name}</option>`)}</select></label>`}
       <div class="row" style="justify-content:flex-end"><button class="btn sec" onClick=${() => setAdding(false)}>Cancel</button>
         <${Act} disabled=${!f.name || !f.email || (f.role === 'dealer' && !f.dealer_id)} run=${add}>Create account</${Act}></div>
     </${Modal}>`}
     ${setup && html`<${Modal} title="Share these once" onClose=${() => ask({ title: 'Close without sharing?', body: 'The password and authenticator secret won’t be shown again.', confirm: 'Close', danger: true }).then(okd => okd && setSetup(null))}>
-      <p>Give these to <b>${setup.email}</b> in person or through a secure channel. They are not stored in readable form and won’t be shown again. They must choose their own password when they first sign in.</p>
+      <div style="overflow-wrap:anywhere;min-width:0"><p>Give these to <b>${setup.email}</b> in person or through a secure channel. They are not stored in readable form and won’t be shown again. They must choose their own password when they first sign in.</p>
       <label class="f"><span>One-time password</span><div class="secret">${setup.password}</div></label>
       <div class="f"><span>Authenticator</span>
         <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
           <div role="img" aria-label="QR code for the authenticator app" style="line-height:0" dangerouslySetInnerHTML=${{ __html: qrSvg(setup.otpauthUrl || `otpauth://totp/${encodeURIComponent('PGBX:' + setup.email)}?secret=${setup.totpSecret}&issuer=PGBX`, 4) }}></div>
           <small style="flex:1;min-width:180px">Scan with Google Authenticator, Microsoft Authenticator or 1Password. Or add the account by entering this key: <span class="secret" style="display:block;margin-top:6px">${setup.totpSecret.replace(/(.{4})/g, '$1 ').trim()}</span></small>
         </div></div>
-      <div class="row" style="justify-content:flex-end"><button class="btn" onClick=${() => setSetup(null)}>I’ve shared them</button></div>
+      </div><div class="row" style="justify-content:flex-end"><button class="btn" onClick=${() => setSetup(null)}>I’ve shared them</button></div>
     </${Modal}>`}`;
 }
 
@@ -834,12 +848,15 @@ function Admin() {
   useEffect(() => { if (!menu) return; const k = e => e.key === 'Escape' && setMenu(false); addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, [menu]);
   // closing the drawer puts focus back on the button that opened it
   const menuBtn = useRef(); const wasOpen = useRef(false);
-  useEffect(() => { if (wasOpen.current && !menu && narrow) menuBtn.current?.focus(); wasOpen.current = menu; }, [menu]);
+  // ... unless it closed to open a dialog (Change password), which has focus; that dialog's closing returns it here too
+  useEffect(() => { if (wasOpen.current && !menu && narrow && !document.querySelector('.modal')) menuBtn.current?.focus(); wasOpen.current = menu; }, [menu]);
+  const pwOpen = useRef(false);
+  useEffect(() => { if (pwOpen.current && !pw && narrow) setTimeout(() => { if (document.activeElement === document.body) menuBtn.current?.focus(); }, 0); pwOpen.current = pw; }, [pw]);
   // a section this role can't open (an old link, or a chat link for someone else's section) goes to the role's home
+  const okFor = m => !section || (section === 'customers' && id ? canOpen(SECTIONS.find(x => x[0] === 'customers'), m.role) : SECTIONS.some(x => x[0] === section && canOpen(x, m.role)));
   useEffect(() => {
     if (!me || me.mustChangePassword) return;
-    const ok = !section || (section === 'customers' && id ? canOpen(SECTIONS.find(x => x[0] === 'customers'), me.role) : SECTIONS.some(x => x[0] === section && canOpen(x, me.role)));
-    if (!ok || (!section && me.role === 'support')) location.replace(me.role === 'support' ? '#chats' : '#overview');
+    if (!okFor(me) || (!section && me.role === 'support')) location.replace(me.role === 'support' ? '#chats' : '#overview');
   }, [me && me.role, me && me.mustChangePassword, section, id]);
   if (me === undefined) return html`<div class="signin"></div>`;
   if (!me) return html`<${SignIn} tool="Admin panel" roles=${['admin', 'ops', 'support']} onIn=${signIn} notice=${notice} />`;
@@ -866,7 +883,7 @@ function Admin() {
     ${pw && html`<${ChangePassword} onDone=${() => { setPw(false); show('Password changed. Other devices were signed out.'); }} onCancel=${() => setPw(false)} />`}
     <main class="main" inert=${narrow && menu ? true : undefined}>
       <button class="btn sm sec menu" ref=${menuBtn} style="margin-bottom:12px" onClick=${() => setMenu(true)} aria-label="Open menu" aria-expanded=${menu} aria-controls="side">☰ Menu</button>
-      ${View ? html`<${View} ...${props} id=${id} />` : html`<${Customer} id=${id} ...${props} />`}
+      ${View ? html`<${View} ...${props} id=${okFor(me) ? id : undefined} />` : html`<${Customer} id=${id} ...${props} />`}
     </main>
     <${Toast} toast=${toast} /><${Asker} />
   </div>`;

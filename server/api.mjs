@@ -87,6 +87,8 @@ const MESSAGES = {
   MESSAGE_TOO_LONG: [400, 'Messages can be up to 2,000 characters.'],
   BAD_REQUEST: [400, 'That request isn’t valid.'],
   ALREADY_PAID: [409, 'This payout is already recorded.'],
+  ALREADY_REFUNDED: [409, 'This refund is already recorded.'],
+  STATUS_CHANGED: [409, 'Someone else updated this meanwhile. Showing it as it is now.'],
 };
 
 class HttpError extends Error {
@@ -954,12 +956,12 @@ const attachmentOut = async (db, chatId, aid) => {
   return { attachment: { ...a, data: a.data.replace(/\s/g, '') } };      // Postgres wraps base64 every 76 characters
 };
 
-route('POST', '/chats', { auth: 'customer' }, async ({ db, customer, body }) => {
+route('POST', '/chats', { auth: 'customer' }, async ({ db, customer, body, fetchRates }) => {
   const kind = CHAT_KINDS.includes(body.kind) ? body.kind : fail(400, 'BAD_REQUEST', MESSAGES.BAD_REQUEST[1]);
   const details = body.details && typeof body.details === 'object' && !Array.isArray(body.details) ? body.details : fail(400, 'BAD_REQUEST', MESSAGES.BAD_REQUEST[1]);
   await limit(db, 'chat-open:' + customer.id, 86400, 30, 'You’ve started many rate requests today. Continue in one of your open chats.');
   // the "app price" shown to support is worked out here from PGBX's own prices, never taken from the request
-  const indicative = await suggestedRate(db, { kind, details }).then(r => r && r.total_pkr, () => null);
+  const indicative = await suggestedRate(db, { kind, details }, fetchRates).then(r => r && r.total_pkr, () => null);
   const c = await db.one(`select * from fn_chat_open_locked($1, $2, $3::jsonb, $4)`, [customer.id, kind, JSON.stringify(details), Number.isSafeInteger(indicative) && indicative > 0 ? indicative : null]);
   return { chat: chatDto(c) };
 });
@@ -1013,7 +1015,9 @@ route('GET', '/bars/sales', { auth: 'customer' }, async ({ db, customer }) =>
 // ---------- rate chat: support side (admins and the support team) ----------
 const support = { staff: { roles: ['admin', 'support'] } };
 // What the market says now, in the form the confirm form takes (so support starts from today's price)
-async function suggestedRate(db, c) {
+async function suggestedRate(db, c, fetchRates) {
+  // a gift quote refuses prices older than rate_stale_seconds, so the snapshot is refreshed first as for any price
+  if (c.kind === 'gift' && fetchRates) await ensureRates(db, fetchRates).catch(() => {});
   const s = await db.one(`select * from rate_snapshots order by id desc limit 1`);
   if (!s) return null;
   const d = c.details;
@@ -1033,7 +1037,7 @@ async function suggestedRate(db, c) {
     const g = Math.round(s.gold_sell_tola / TOLA * 100) / 100;
     return { prices: { price_gram: g }, total_pkr: Math.max(1, Math.floor(Number(d.grams) * g)), at: s.fetched_at };
   }
-  const q = await db.one(`select fn_gift_quote($1, $2, $3, $4, $5) q`, [d.item, d.shape, d.design, d.engraving, d.packaging]).catch(() => null);
+  const q = await db.one(`select fn_gift_quote($1, $2, $3, $4, $5) q`, [d.item, d.shape, d.design, d.engraving, d.packaging]).catch(() => null);   // a bad request or no fresh price: nothing to suggest
   return q && { prices: { metal_pkr: q.q.metal_pkr, making_pkr: q.q.making_pkr, packaging_pkr: q.q.packaging_pkr, delivery_pkr: q.q.delivery_pkr }, total_pkr: q.q.total_pkr, at: s.fetched_at };
 }
 route('GET', '/support/counts', support, async ({ db }) => db.one(`select
@@ -1052,7 +1056,7 @@ route('GET', '/support/chats', support, async ({ db, query }) => {
   return { chats: rows.map(c => ({ ...chatDto(c), customer: { id: c.customer_id, name: c.customer_name, phone: c.customer_phone, kyc_status: c.kyc_status },
     waiting: c.waiting, assigned_to: c.assigned_name || null })), total };
 });
-route('GET', '/support/chats/:id', support, async ({ db, staff, params, query }) => {
+route('GET', '/support/chats/:id', support, async ({ db, staff, params, query, fetchRates }) => {
   const c = await chatOf(db, params.id, null);
   const after = Math.max(0, int(query.after) || 0);
   const messages = await messagesOf(db, c.id, after);
@@ -1073,7 +1077,7 @@ route('GET', '/support/chats/:id', support, async ({ db, staff, params, query })
     confirmations: (await db.query(`select r.*, s.name as by_name from rate_confirmations r join staff s on s.id = r.confirmed_by where r.chat_id = $1 order by r.created_at desc`, [c.id]))
       .map(r => ({ ...confDto(r), by: r.by_name, created_at: r.created_at })),
     customer: { ...u, holdings, micro_grams: micro, spent_today_pkr: spent, daily_limit_pkr: limitPkr }, others: others.map(chatDto),
-    suggested: await suggestedRate(db, c), minutes: Number((await db.one(`select setting_int('rate_confirm_minutes') as v`)).v) || 15 };
+    suggested: await suggestedRate(db, c, fetchRates), minutes: Number((await db.one(`select setting_int('rate_confirm_minutes') as v`)).v) || 15 };   // the longest a rate may be held, and the default
 });
 route('POST', '/support/chats/:id/messages', support, async ({ db, staff, params, body }) => {
   const c = await chatOf(db, params.id, null);
@@ -1227,7 +1231,7 @@ const SETTING_RULES = {
   appraisal_free_cancel_hours: isInt(0, 720), gift_making_pkr: objOf(['plain', 'themed', 'engraving'], isInt(0, 1e7)), gift_packaging_pkr: objOf(['standard', 'premium'], isInt(0, 1e7)),
   gift_delivery_pkr: isInt(0, 1e6), gift_lead_days: isInt(1, 60), gift_cities: listOf(isName, 60),
   micro_usd: frac(0.5, 100), micro_max_units: isInt(1, 1000), micro_min_sell_g: frac(0.0001, 11.664),
-  rate_chat_required: v => typeof v === 'boolean', rate_confirm_minutes: isInt(1, 240), rate_confirm_max_move_pct: isInt(1, 50), rate_confirm_sell_over_pct: isInt(0, 20),
+  rate_chat_required: v => typeof v === 'boolean', rate_confirm_minutes: isInt(1, 240), rate_confirm_max_move_pct: isInt(1, 50), rate_confirm_sell_over_pct: isInt(0, 20), rate_confirm_buy_under_pct: isInt(0, 20),
 };
 
 route('GET', '/admin/settings', ops, async ({ db }) => ({ settings: await db.query(`select key, value, updated_at, updated_by from settings order by key`) }));
@@ -1386,8 +1390,18 @@ route('POST', '/admin/support/:id/close', ops, async ({ db, staff, params, body 
 });
 
 // Services queues for operations
+// The action is known (checked above), so the function refusing it means the item moved on meanwhile (another staff
+// member, or the customer cancelled): a conflict the screen reloads for, not a bad request
+const changed = e => { if (e.message === 'BAD_ACTION') fail(409, 'STATUS_CHANGED', MESSAGES.STATUS_CHANGED[1]); throw e; };
+// Net metal weight in grams: empty is "not measured"; anything else must be a plain positive number
+const netGrams = v => {
+  if (v === undefined || v === null || String(v).trim() === '') return null;
+  const s = String(v).trim();
+  if (!/^\d{1,6}(\.\d{1,4})?$/.test(s) || !(Number(s) > 0)) fail(400, 'BAD_WEIGHT', 'Enter the net metal weight in grams as a number, e.g. 9.65.');
+  return Number(s);
+};
 route('GET', '/admin/appraisals', ops, async ({ db, query }) => {
-  const status = ['booked', 'confirmed', 'completed', 'cancelled'].includes(query.status) ? query.status : 'booked';
+  const status = ['booked', 'confirmed', 'completed', 'cancelled', 'pending_payment'].includes(query.status) ? query.status : 'booked';
   const open = ['booked', 'confirmed'].includes(status);         // to do: soonest visit first; done: newest first
   return { appraisals: (await db.query(`select a.*, c.name as customer_name from appraisals a join customers c on c.id = a.customer_id where a.status = $1
       order by ${open ? 'a.visit_date, a.slot' : 'a.updated_at desc'} limit 200`, [status]))
@@ -1396,13 +1410,13 @@ route('GET', '/admin/appraisals', ops, async ({ db, query }) => {
 route('POST', '/admin/appraisals/:id', ops, async ({ db, staff, params, body }) => {
   const action = ['assign', 'complete', 'cancel'].includes(body.action) ? body.action : fail(400, 'BAD_ACTION', MESSAGES.BAD_ACTION[1]);
   const data = action === 'assign' ? { name: str(body.name, 80), phone: str(body.phone, 20) }
-    : action === 'complete' ? { summary: str(body.summary, 1000), net_g: Number(body.net_g) || null, karat: str(body.karat, 8) || null, value_pkr: int(body.value_pkr) || null }
+    : action === 'complete' ? { summary: str(body.summary, 1000), net_g: netGrams(body.net_g), karat: str(body.karat, 8) || null, value_pkr: int(body.value_pkr) || null }
     : { reason: str(body.reason, 300) || null };
   if (action === 'complete' && data.summary.length < 5) fail(400, 'BAD_RESULT', 'Write the assay result for the customer.');
-  return { appraisal: appraisalDto(await db.one(`select * from fn_appraisal_update($1, $2, $3, $4::jsonb)`, [staff.id, params.id, action, JSON.stringify(data)])) };
+  return { appraisal: appraisalDto(await db.one(`select * from fn_appraisal_update($1, $2, $3, $4::jsonb)`, [staff.id, params.id, action, JSON.stringify(data)]).catch(changed)) };
 });
 route('GET', '/admin/gifts', ops, async ({ db, query }) => {
-  const status = ['placed', 'in_production', 'dispatched', 'delivered', 'cancelled'].includes(query.status) ? query.status : 'placed';
+  const status = ['placed', 'in_production', 'dispatched', 'delivered', 'cancelled', 'pending_payment'].includes(query.status) ? query.status : 'placed';
   const open = ['placed', 'in_production', 'dispatched'].includes(status);
   return { gifts: (await db.query(`select g.*, c.name as customer_name, i.label as item_label, i.metal,
       exists (select 1 from service_payments sp where sp.kind = 'gift' and sp.entity_id = g.id and sp.provider = 'sandbox') as sandbox
@@ -1416,7 +1430,7 @@ route('POST', '/admin/gifts/:id', ops, async ({ db, staff, params, body }) => {
   if (['produce', 'dispatch'].includes(action) && process.env.VERCEL_ENV === 'production'
       && (await db.one(`select exists (select 1 from service_payments where kind = 'gift' and entity_id = $1 and provider = 'sandbox') t`, [params.id])).t)
     fail(409, 'SANDBOX_FUNDS', 'This gift was paid with test (sandbox) money. Don’t make or send it; check with an administrator.');
-  return { gift: giftDto(await db.one(`select * from fn_gift_update($1, $2, $3, $4::jsonb)`, [staff.id, params.id, action, JSON.stringify(data)])) };
+  return { gift: giftDto(await db.one(`select * from fn_gift_update($1, $2, $3, $4::jsonb)`, [staff.id, params.id, action, JSON.stringify(data)]).catch(changed)) };
 });
 
 // $1 gold: tola lots, finding any transaction ID, and payouts for sales
@@ -1511,9 +1525,14 @@ route('POST', '/admin/refunds/:id', ops, async ({ db, staff, params, body }) =>
 route('GET', '/admin/audit', ops, async ({ db, query }) => {
   const entity = str(query.entity || '', 40), id = str(query.id || '', 80), action = str(query.action || '', 60), actor = str(query.actor || '', 80);
   const before = int(query.before);                               // paging: entries older than this id
-  const rows = await db.query(`select id, at, actor, action, entity, entity_id, data from audit_log
-    where ($1 = '' or entity = $1) and ($2 = '' or entity_id = $2) and ($3 = '' or action like $3 || '%') and ($4 = '' or actor = $4) and ($5::bigint is null or id < $5)
-    order by id desc limit 201`, [entity, id, action, actor, Number.isSafeInteger(before) ? before : null]);
+  // Refunds are logged against what was paid (order, gift, ...), so that filter is by action; "done by" matches part of
+  // the actor or a staff member's name, and staff are shown by name
+  const like = actor.replace(/[\\%_]/g, m => '\\' + m);
+  const rows = await db.query(`select a.id, a.at, a.actor, a.action, a.entity, a.entity_id, a.data, s.name as actor_name from audit_log a
+      left join staff s on a.actor like 'staff:%' and a.actor = 'staff:' || s.id
+    where ($1 = '' or ($1 = 'refund' and (a.action like 'refund.%' or a.entity = 'refund')) or ($1 <> 'refund' and a.entity = $1)) and ($2 = '' or a.entity_id = $2)
+      and ($3 = '' or a.action like $3 || '%') and ($4 = '' or a.actor ilike '%' || $4 || '%' or s.name ilike '%' || $4 || '%') and ($5::bigint is null or a.id < $5)
+    order by a.id desc limit 201`, [entity, id, action, like, Number.isSafeInteger(before) ? before : null]);
   return { entries: rows.slice(0, 200), more: rows.length > 200 };
 });
 

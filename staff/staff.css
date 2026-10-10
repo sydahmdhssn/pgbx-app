@@ -78,7 +78,8 @@ td.r,th.r{text-align:right}
 /* narrow screens: the action column stays in view while the rest of the table scrolls, and a shadow shows there is more */
 @media (max-width:700px){
   .tbl-wrap{background:linear-gradient(90deg,var(--surface) 30%,transparent) left/24px 100% no-repeat local,radial-gradient(farthest-side at 0 50%,rgba(0,0,0,.14),transparent) left/10px 100% no-repeat scroll}
-  .tbl-wrap table:has(td:last-child .btn) :is(td,th):last-child{position:sticky;right:0;background:var(--surface);box-shadow:-10px 0 10px -10px rgba(17,32,22,.3)}
+  /* the second shadow paints over the wrapper's 20px right padding, where scrolled text would otherwise show */
+  .tbl-wrap table:has(td:last-child .btn) :is(td,th):last-child{position:sticky;right:0;background:var(--surface);box-shadow:20px 0 0 var(--surface),-10px 0 10px -10px rgba(17,32,22,.3)}
   td.num{white-space:nowrap}
 }
 
@@ -157,6 +158,8 @@ dl.kv dt{color:var(--text-2)} dl.kv dd{margin:0;min-width:0;overflow-wrap:anywhe
 /* the thread fills the window so the reply box is always on screen; the messages take the space left */
 .chat-shell.has-thread .chat-thread{height:max(480px,calc(100dvh - 150px));position:sticky;top:16px}
 .chat-thread>.card{flex:none}
+/* the header (with the customer's details open) takes at most 40%, scrolling inside, so messages and reply box still fit */
+.chat-shell.has-thread .chat-thread>.chat-head{max-height:40%;overflow:auto}
 .chat-thread>.chat-msgs{flex:1 1 auto;min-height:140px;height:auto}
 .chat-ctx-box>summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--text-2);margin-top:10px;list-style-position:inside}
 .empty-thread{min-height:300px;display:grid;place-items:center}

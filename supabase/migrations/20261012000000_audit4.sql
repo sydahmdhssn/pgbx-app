@@ -240,6 +240,43 @@ create table staff_known_addresses (
 );
 alter table staff_known_addresses enable row level security;
 
+-- 7. Two staff recording the same refund or payout: the second is told it's already recorded (409), not "not found"
+create or replace function fn_mark_refunded(p_staff uuid, p_refund uuid, p_ref text) returns refunds language plpgsql as $$
+declare r refunds;
+begin
+  if length(coalesce(trim(p_ref), '')) < 4 then perform fail('BAD_REF'); end if;
+  update refunds set status = 'refunded', refunded_at = now(), refund_ref = trim(p_ref), refunded_by = 'staff:' || p_staff
+    where id = p_refund and status = 'due' returning * into r;
+  if not found then
+    if exists (select 1 from refunds where id = p_refund) then perform fail('ALREADY_REFUNDED'); end if;
+    perform fail('NOT_FOUND');
+  end if;
+  if r.kind = 'micro' then update micro_orders set status = 'refunded' where id = r.entity_id and status = 'refund_due' and payment_ref is not distinct from r.payment_ref;
+  elsif r.kind = 'appraisal' then update appraisals set refunded_at = now() where id = r.entity_id and payment_ref is not distinct from r.payment_ref;
+  elsif r.kind = 'gift' then update gift_orders set refunded_at = now() where id = r.entity_id and payment_ref is not distinct from r.payment_ref;
+  end if;
+  perform audit('staff:' || p_staff, 'refund.paid', r.kind, coalesce(r.entity_ref, r.entity_id::text), jsonb_build_object('refund', r.id, 'ref', p_ref, 'amount', r.amount_pkr));
+  if r.customer_id is not null then
+    perform notify_customer(r.customer_id, 'account', 'Refund sent', rs(r.amount_pkr) || ' for ' || coalesce(r.entity_ref, 'your payment') || ' was refunded.', null, true);
+  end if;
+  return r;
+end $$;
+
+create or replace function fn_micro_payout(p_staff uuid, p_txn uuid, p_ref text) returns micro_txns language plpgsql as $$
+declare t micro_txns;
+begin
+  if length(coalesce(trim(p_ref), '')) < 4 then perform fail('BAD_REF'); end if;
+  update micro_txns set status = 'paid_out', payout_ref = trim(p_ref), paid_out_at = now(), paid_out_by = 'staff:' || p_staff
+    where id = p_txn and side = 'sell' and status = 'pending_payout' returning * into t;
+  if not found then
+    if exists (select 1 from micro_txns where id = p_txn and side = 'sell') then perform fail('ALREADY_PAID'); end if;
+    perform fail('NOT_FOUND');
+  end if;
+  perform audit('staff:' || p_staff, 'micro.paid_out', 'micro', t.ref, jsonb_build_object('payout_ref', p_ref, 'amount', t.amount_pkr));
+  perform notify_customer(t.customer_id, 'purchase', 'Payment sent', rs(t.amount_pkr) || ' for ' || t.ref || ' was sent to your bank account ending ' || right(t.payout_to, 4) || '.', jsonb_build_object('name', 'micro'), true);
+  return t;
+end $$;
+
 -- ---------- hardening, as for every function ----------
 do $$
 declare f regprocedure;

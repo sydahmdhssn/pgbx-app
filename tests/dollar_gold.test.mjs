@@ -130,7 +130,7 @@ test('selling any amount held: own transaction ID, sell lots, payout, and no ove
   const st = (await db.one(`insert into staff (email, name, role, password_hash, totp_secret) values ('ops-m@pgbx.test', 'Ops', 'ops', 'x', 'x') returning id`)).id;
   const p = await db.one(`select * from fn_micro_payout($1, $2, 'IBFT-778899')`, [st, s.id]);
   assert.equal(p.status, 'paid_out');
-  await rejects(db.one(`select * from fn_micro_payout($1, $2, 'IBFT-778899')`, [st, s.id]), 'NOT_FOUND');
+  await rejects(db.one(`select * from fn_micro_payout($1, $2, 'IBFT-778899')`, [st, s.id]), 'ALREADY_PAID');
 });
 
 test('a full lot is settled with the tola bar’s serial; accounts with gold or money owed can’t close', async () => {
@@ -165,7 +165,7 @@ test('audit fixes: a second payment, a missing amount and a suspended account ar
   const st = (await db.one(`insert into staff (email, name, role, password_hash, totp_secret) values ('ops-r@pgbx.test', 'Ops', 'ops', 'x', 'x') returning id`)).id;
   await rejects(db.one(`select * from fn_mark_refunded($1, $2, '')`, [st, r.id]), 'BAD_REF');
   assert.equal((await db.one(`select * from fn_mark_refunded($1, $2, 'IBFT-REF-1')`, [st, r.id])).status, 'refunded');
-  await rejects(db.one(`select * from fn_mark_refunded($1, $2, 'IBFT-REF-1')`, [st, r.id]), 'NOT_FOUND');
+  await rejects(db.one(`select * from fn_mark_refunded($1, $2, 'IBFT-REF-1')`, [st, r.id]), 'ALREADY_REFUNDED');
   // a suspended customer's payment becomes a refund, not gold
   const o2 = await buy(c, 1);
   await db.query(`update customers set status = 'suspended' where id = $1`, [c]);
