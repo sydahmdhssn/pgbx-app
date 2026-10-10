@@ -758,6 +758,32 @@ button.notice{transition:transform var(--t1)}button.notice:active{transform:scal
   .rc-sheen{display:none}.rc.gold::before,.rc.silver::before{animation:none;left:0;width:auto;right:0;background-size:200% 100%;background-position:0 0}
   .ldot::after,.shine::after,.home-head::after,.brand-card::after,.amb,.logo-stage .sheen{display:none}
 }
+/* rate chat: indicative-price notice, chat thread, confirmed rate */
+.rate-note{display:flex;gap:12px;align-items:flex-start;margin:16px var(--gutter) 0;padding:14px;border-radius:var(--r-lg);background:var(--gold-50);box-shadow:inset 0 0 0 1px rgba(200,150,43,.35)}
+.rate-note .ri{background:var(--surface);color:var(--gold-700)}
+.rate-note .grow{flex:1;min-width:0}
+.rate-note b{display:block;font-size:15px}
+.rate-note span{display:block;font-size:13px;line-height:1.45;color:var(--text-2);margin-top:2px}
+.rate-note.ok{background:var(--success-bg);box-shadow:inset 0 0 0 1px rgba(29,119,68,.25)}.rate-note.ok .ri{color:var(--success)}
+.rate-note-btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.rate-note-btns .btn{width:auto;flex:1 1 auto}
+.chat-req{margin-top:8px}
+.chat-msgs{display:flex;flex-direction:column;gap:8px;padding:16px var(--gutter) 8px}
+.msg{display:flex}.msg.customer{justify-content:flex-end}
+.msg .bubble{max-width:82%;padding:10px 12px;border-radius:16px;font-size:15px;line-height:1.4;overflow-wrap:anywhere;background:var(--surface);box-shadow:var(--e1);border-bottom-left-radius:6px}
+.msg.customer .bubble{background:var(--green-800);color:#fff;border-bottom-left-radius:16px;border-bottom-right-radius:6px}
+.msg.rate .bubble{background:var(--gold-50);box-shadow:inset 0 0 0 1px rgba(200,150,43,.45)}
+.msg .meta{margin-top:4px;font-size:11px;color:var(--text-3)}.msg.customer .meta{color:rgba(255,255,255,.7);text-align:right}
+.msg.system{justify-content:center}.msg.system span{font-size:12px;color:var(--text-2);text-align:center;background:var(--fill);padding:6px 10px;border-radius:var(--r-sm);max-width:90%}
+.chat-img{display:block;max-width:100%;max-height:240px;border-radius:10px;margin-bottom:6px}
+.chat-pdf{display:inline-flex;align-items:center;gap:6px;font-weight:600;color:inherit;text-decoration:underline;margin-bottom:4px}
+.chat-compose{display:flex;align-items:flex-end;gap:6px}
+.chat-compose textarea.inp{flex:1;height:44px;min-height:44px;max-height:120px;padding:11px 14px;resize:none;border-radius:22px;line-height:1.35}
+.chat-compose .iconbtn.send{background:var(--green-800);color:#fff}.chat-compose .iconbtn:disabled{opacity:.4}
+.conf-card{margin:8px var(--gutter) 0;padding:14px 16px;border-radius:var(--r-lg);background:var(--surface);box-shadow:var(--e1),inset 0 0 0 1.5px var(--gold-500)}
+.conf-card.used,.conf-card.expired{display:flex;gap:8px;align-items:center;font-size:14px;box-shadow:var(--e1)}
+.conf-card.used{color:var(--success)}.conf-card.expired{color:var(--warning)}
+.conf-total{font:600 28px/1.2 var(--serif);margin-top:6px;font-variant-numeric:tabular-nums}
+.badge-dot{min-width:22px;height:22px;padding:0 7px;border-radius:11px;background:var(--danger);color:#fff;font:600 12px/22px var(--compact);text-align:center;flex:none}
 </style>
 </head>
 <body>

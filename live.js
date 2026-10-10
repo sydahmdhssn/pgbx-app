@@ -137,14 +137,14 @@ const KYC = { none: 'none', pending: 'pending', review: 'pending', verified: 've
 // (/me) must load; if it fails, so does the whole sync.
 export async function loadAll() {
   const got = await Promise.allSettled([
-    api('/me'), api('/orders'), api('/ledger'), api('/redemptions'), api('/notifications'), api('/alerts'), api('/appraisals'), api('/gifts'), api('/micro'),
+    api('/me'), api('/orders'), api('/ledger'), api('/redemptions'), api('/notifications'), api('/alerts'), api('/appraisals'), api('/gifts'), api('/micro'), api('/chats'), api('/bars/sales'),
   ]);
   const bad = got.find(g => g.status === 'rejected' && (signedOut(g.reason) || isLocked(g.reason)));
   if (bad) throw bad.reason;
   if (got[0].status === 'rejected') throw got[0].reason;
-  const names = ['me', 'orders', 'ledger', 'redemptions', 'notifications', 'alerts', 'appraisals', 'giftOrders', 'micro'];
+  const names = ['me', 'orders', 'ledger', 'redemptions', 'notifications', 'alerts', 'appraisals', 'giftOrders', 'micro', 'chats', 'barSales'];
   const missing = names.filter((n, i) => got[i].status === 'rejected');
-  const [me, orders, ledger, reds, notes, alerts, apprs, gifts, micro] = got.map(g => (g.status === 'fulfilled' ? g.value : null));
+  const [me, orders, ledger, reds, notes, alerts, apprs, gifts, micro, chatList, sales] = got.map(g => (g.status === 'fulfilled' ? g.value : null));
   const redemptions = reds ? reds.redemptions.map(redemption) : null;
   const out = {
     phone: me.profile.phone || '',
@@ -159,6 +159,8 @@ export async function loadAll() {
     appraisals: apprs && apprs.appraisals.map(appraisal),
     giftOrders: gifts && gifts.gifts.map(gift),
     micro: micro && { grams: Number(micro.gold.grams) || 0, txns: micro.transactions.map(microTxn) },
+    chats: chatList && chatList.chats.map(chatRow),
+    barSales: sales && sales.sales.map(barSale),
   };
   for (const k of Object.keys(out)) if (out[k] == null) delete out[k];
   if (!ledger || !redemptions) { delete out.ledger; delete out.redemptions; if (!missing.includes('ledger')) missing.push('ledger'); }
@@ -169,13 +171,30 @@ export async function loadAll() {
 const microTxn = t => ({ ref: t.ref, side: t.side, grams: Number(t.grams), amount: t.amount_pkr, price: t.price_gram, usd: t.usd, status: t.status, ts: ts(t.created_at),
   orderRef: t.order_ref || null, payoutTo: t.payout_to || null, lots: (t.lots || []).map(l => ({ ref: l.ref, grams: Number(l.grams), status: l.status })) });
 export const microQuote = () => api('/micro/quote').then(d => ({ ...d.quote, at: ts(d.quote.at) }));
-export async function microBuy(units, key) {
-  const r = await api('/micro/buy', { method: 'POST', body: { units, idempotencyKey: key } });
+export async function microBuy(units, key, confirmationId) {
+  const r = await api('/micro/buy', { method: 'POST', body: { units, idempotencyKey: key, confirmationId } });
   await payService('micro', r.order, r.payment);
   return r.order;
 }
 // expected: the amount the customer agreed to; if the price has moved since, the server answers PRICE_CHANGED with the new one
-export const microSell = (grams, iban, key, expected) => api('/micro/sell', { method: 'POST', body: { grams, iban, idempotencyKey: key, expectedAmountPkr: expected } }).then(d => microTxn(d.transaction));
+export const microSell = (grams, iban, key, expected, confirmationId) => api('/micro/sell', { method: 'POST', body: { grams, iban, idempotencyKey: key, expectedAmountPkr: expected, confirmationId } }).then(d => microTxn(d.transaction));
+
+// ---------- rate chat: the final rate for a purchase or sale is confirmed by PGBX support ----------
+const chatRow = c => ({ id: c.id, ref: c.ref, kind: c.kind, details: c.details, summary: c.summary, indicative: c.indicative_pkr, status: c.status,
+  createdAt: ts(c.created_at), lastAt: ts(c.last_message_at), unread: c.unread || 0, lastBody: c.last_body || '' });
+const chatMsg = m => ({ id: m.id, sender: m.sender, staffName: m.staff_name, body: m.body, ts: ts(m.created_at), attachment: m.attachment || null, confirmationId: m.confirmation_id || null });
+// expiresAt from the server's "seconds left", so a wrong phone clock can't shorten or stretch the rate
+const confirmation = r => r && ({ id: r.id, kind: r.kind, details: r.details, prices: r.prices, total: r.total_pkr, note: r.note || '', status: r.status,
+  expiresAt: Date.now() + (r.expires_in || 0) * 1000, usedRef: r.used_ref || null, lockId: r.lock_id || null });
+export const openChat = (kind, details, indicativePkr) => api('/chats', { method: 'POST', body: { kind, details, indicativePkr } }).then(d => chatRow(d.chat));
+export const chatThread = (id, after = 0) => api(`/chats/${id}${after ? '?after=' + after : ''}`).then(d => ({ chat: chatRow(d.chat), messages: d.messages.map(chatMsg), confirmation: confirmation(d.confirmation) }));
+export const chatSend = (id, body) => api(`/chats/${id}/messages`, { method: 'POST', body: { body } }).then(d => chatMsg(d.message));
+export const chatAttach = (id, file) => api(`/chats/${id}/attachments`, { method: 'POST', body: file, timeout: 60000 }).then(d => chatMsg(d.message));
+export const chatFile = (id, aid) => api(`/chats/${id}/attachments/${aid}`).then(d => d.attachment);
+export const chatClose = id => api(`/chats/${id}/close`, { method: 'POST', body: {} });
+const barSale = b => ({ id: b.id, ref: b.ref, lines: (b.lines || []).map(l => ({ pid: l.product_id, units: l.units, unit: l.unit_price_pkr })), total: b.total_pkr, status: b.status,
+  payoutTo: b.payout_to, payoutRef: b.payout_ref || null, ts: ts(b.created_at) });
+export const sellBars = (confirmationId, iban, key) => api('/bars/sell', { method: 'POST', body: { confirmationId, iban, idempotencyKey: key } }).then(d => barSale(d.sale));
 
 // ---------- services ----------
 const appraisal = a => ({ id: a.id, ref: a.ref, createdAt: ts(a.created_at), date: a.date, slot: a.slot, city: a.city, area: a.area, address: a.address, phone: a.phone,
@@ -199,7 +218,7 @@ export async function bookAppraisal(d) {
 export const cancelAppraisal = id => api(`/appraisals/${id}/cancel`, { method: 'POST', body: {} });
 export async function placeGift(d) {
   const r = await api('/gifts', { method: 'POST', body: { item: d.item, shape: d.shape, design: d.design, engraving: d.engraving.trim(), message: d.message.trim(), packaging: d.packaging,
-    recipientName: d.name.trim(), recipientPhone: d.phone, recipientCity: d.city, recipientAddress: d.address.trim(), deliverBy: d.deliverBy, idempotencyKey: d.key } });
+    recipientName: d.name.trim(), recipientPhone: d.phone, recipientCity: d.city, recipientAddress: d.address.trim(), deliverBy: d.deliverBy, idempotencyKey: d.key, confirmationId: d.confirmationId } });
   await payService('gift', r.gift, r.payment);
   return gift(r.gift);
 }

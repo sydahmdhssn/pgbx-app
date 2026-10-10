@@ -15,7 +15,7 @@ const gift = (c, over = {}) => db.one(`select * from fn_place_gift($1, $2, $3, $
   [c, over.item || 'gg-1g', over.shape || 'coin', over.design || 'eid', over.engraving ?? 'Eid Mubarak Ammi', 'With love', over.packaging || 'premium',
     'Ayesha Khan', '3009876543', over.city || 'Lahore', 'House 7, Gulberg III, Lahore', over.date || day(7)]);
 
-before(async () => { db = await createMemoryDb(); await db.one(`select fn_record_rates(466560, 460000, 6400, 6240, 'test') as id`); });
+before(async () => { db = await createMemoryDb(); await db.query(`update settings set value = 'false' where key = 'rate_chat_required'`); await db.one(`select fn_record_rates(466560, 460000, 6400, 6240, 'test') as id`); });
 after(async () => db.close());
 
 test('appraisal booking checks city, slot, date, items and address', async () => {

@@ -70,6 +70,20 @@ const MESSAGES = {
   BAD_EVENT: [400, 'The payment event is missing its reference.'],
   BAD_KEY: [400, 'Missing request key.'],
   BAD_REF: [400, 'Enter the bank transfer reference.'],
+  // rate chat
+  RATE_NOT_CONFIRMED: [409, 'Prices in the app are indicative. Ask PGBX support for the final rate in the chat before you continue.'],
+  RATE_EXPIRED: [409, 'The confirmed rate has expired. Ask PGBX support in the chat for a new one.'],
+  RATE_USED: [409, 'That confirmed rate was already used. Ask PGBX support in the chat for a new one.'],
+  RATE_MISMATCH: [409, 'This doesn’t match the request PGBX confirmed. Open a new chat for what you want now.'],
+  RATE_OUT_OF_RANGE: [400, 'That rate is far from today’s market price. Check the figures (a missing or extra zero?).'],
+  BAD_RATE: [400, 'Enter a price for every item.'],
+  CHAT_NOT_FOUND: [404, 'Chat not found.'],
+  CHAT_CLOSED: [409, 'This chat is closed. Start a new one from the product or checkout.'],
+  TOO_MANY_CHATS: [409, 'You have 5 open rate requests. Finish or close one before starting another.'],
+  EMPTY_MESSAGE: [400, 'Type a message.'],
+  MESSAGE_TOO_LONG: [400, 'Messages can be up to 2,000 characters.'],
+  BAD_REQUEST: [400, 'That request isn’t valid.'],
+  ALREADY_PAID: [409, 'This payout is already recorded.'],
 };
 
 class HttpError extends Error {
@@ -97,12 +111,12 @@ function setCookie(res, name, value, maxAgeSec) {
   if (process.env.NODE_ENV !== 'development') parts.push('Secure');
   const prev = res.getHeader('Set-Cookie'); res.setHeader('Set-Cookie', [...(prev ? [].concat(prev) : []), parts.join('; ')]);
 }
-async function readBody(req) {
+async function readBody(req, maxBytes = 65536) {
   if (req.method === 'GET' || req.method === 'HEAD') return { raw: '', json: {} };
   let raw = '';
   if (typeof req.on === 'function' && !req.readableEnded) {
     const parts = []; let size = 0;                            // bytes, so multi-byte characters split across chunks stay intact
-    for await (const chunk of req) { const b = Buffer.from(chunk); size += b.length; if (size > 65536) fail(413, 'TOO_LARGE', 'Request too large.'); parts.push(b); }
+    for await (const chunk of req) { const b = Buffer.from(chunk); size += b.length; if (size > maxBytes) fail(413, 'TOO_LARGE', 'Request too large.'); parts.push(b); }
     raw = Buffer.concat(parts).toString('utf8');
   }
   if (!raw && req.body) raw = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
@@ -215,7 +229,7 @@ function sameOrigin(req) {
 }
 
 // ---------- public ----------
-const PUBLIC_SETTINGS = ['max_units_per_order', 'daily_limit_pkr', 'min_purchase_pkr', 'price_lock_seconds', 'rate_stale_seconds', 'redemption_valid_hours', 'redemption_fee_pkr', 'order_payment_minutes', 'micro_usd', 'micro_max_units', 'micro_min_sell_g'];
+const PUBLIC_SETTINGS = ['max_units_per_order', 'daily_limit_pkr', 'min_purchase_pkr', 'price_lock_seconds', 'rate_stale_seconds', 'redemption_valid_hours', 'redemption_fee_pkr', 'order_payment_minutes', 'micro_usd', 'micro_max_units', 'micro_min_sell_g', 'rate_chat_required', 'rate_confirm_minutes'];
 route('GET', '/config', {}, async ({ db }) => ({
   live: !!db,
   otp: { mode: otp.mode, channels: otp.channels() },
@@ -749,11 +763,12 @@ route('POST', '/gifts', { auth: 'customer' }, async ({ db, customer, body, fetch
   if (!PK_MOBILE.test(phone)) fail(400, 'BAD_RECIPIENT', MESSAGES.BAD_RECIPIENT[1]);
   await limit(db, 'gift:' + customer.id, 86400, 10, 'You’ve placed several gift orders today. Contact PGBX support for more.');
   await expireNow(db);
-  await ensureRates(db, fetchRates);
+  const confirmation = str(body.confirmationId, 40) || null;
+  if (!confirmation) await ensureRates(db, fetchRates);
   const key = str(body.idempotencyKey, 80) || sec.newToken();
-  const g = await db.one(`select * from fn_place_gift_once($13, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::date)`,
+  const g = await db.one(`select * from fn_place_gift_once($13, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::date, $14)`,
     [customer.id, str(body.item, 20), str(body.shape, 10), str(body.design, 20), str(body.engraving, 40), str(body.message, 200), str(body.packaging, 20),
-      str(body.recipientName, 100), phone, str(body.recipientCity, 40), str(body.recipientAddress, 300), str(body.deliverBy, 10), key]);
+      str(body.recipientName, 100), phone, str(body.recipientCity, 40), str(body.recipientAddress, 300), str(body.deliverBy, 10), key, confirmation]);
   return { gift: giftDto(g), payment: g.status === 'pending_payment' ? await startPayment(db, 'gift', g) : null };
 });
 route('GET', '/gifts', { auth: 'customer' }, async ({ db, customer }) =>
@@ -806,8 +821,9 @@ route('POST', '/micro/buy', { auth: 'customer' }, async ({ db, customer, body, f
   const key = str(body.idempotencyKey, 80); if (key.length < 8) fail(400, 'BAD_KEY', 'Missing request key.');
   await limit(db, 'micro-buy:' + customer.id, 600, 60, 'Too many purchases in a few minutes. Wait a moment and try again.');
   await expireNow(db);
-  await ensureRates(db, fetchRates);
-  const o = await db.one(`select * from fn_micro_buy($1, $2, $3)`, [customer.id, units, key]);
+  const confirmation = str(body.confirmationId, 40) || null;
+  if (!confirmation) await ensureRates(db, fetchRates);           // a confirmed rate doesn't need the live feed
+  const o = await db.one(`select * from fn_micro_buy($1, $2, $3, $4)`, [customer.id, units, key, confirmation]);
   const payment = o.status === 'pending_payment' ? await startPayment(db, 'micro', o) : null;
   return { order: { id: o.id, ref: o.ref, units: o.units, unit_pkr: o.unit_pkr, total_pkr: o.total_pkr, usd_pkr: Number(o.usd_pkr), status: o.status }, payment };
 });
@@ -818,15 +834,16 @@ route('POST', '/micro/sell', { auth: 'customer' }, async ({ db, customer, body, 
   const key = str(body.idempotencyKey, 80); if (key.length < 8) fail(400, 'BAD_KEY', 'Missing request key.');
   phoneHold(customer);
   await limit(db, 'micro-sell:' + customer.id, 3600, 30, 'Too many sales in an hour. Try again later.');
-  await ensureRates(db, fetchRates);
-  // The customer confirmed an amount; if the price has since moved down by more than 0.2%, ask them to confirm again
+  const confirmation = str(body.confirmationId, 40) || null;
+  if (!confirmation) await ensureRates(db, fetchRates);
+  // Without a confirmed rate (rule switched off): if the price has since moved down by more than 0.2%, ask to confirm again
   const expected = int(body.expectedAmountPkr);
-  if (Number.isSafeInteger(expected) && expected > 0) {
+  if (!confirmation && Number.isSafeInteger(expected) && expected > 0) {
     const snap = await db.one(`select round(gold_sell_tola / 11.664, 2)::float8 g from rate_snapshots order by id desc limit 1`);
     const now = snap ? Math.max(1, Math.floor(Math.round(grams * 1e6) / 1e6 * snap.g)) : 0;
     if (now < expected - Math.max(1, Math.floor(expected * 0.002))) fail(409, 'PRICE_CHANGED', `The price changed. You would now receive Rs ${now.toLocaleString('en-US')}. Check and confirm again.`, { amountPkr: now });
   }
-  const t = await db.one(`select * from fn_micro_sell($1, $2, $3, $4)`, [customer.id, grams, iban, key]);
+  const t = await db.one(`select * from fn_micro_sell($1, $2, $3, $4, $5)`, [customer.id, grams, iban, key, confirmation]);
   return { transaction: microTxnDto((await db.one(`select t.*, ${lotsOf} as lots from micro_txns t where t.id = $1`, [t.id]))) };
 });
 // One transaction by its ID, with the tola lot(s) it is part of
@@ -834,6 +851,184 @@ route('GET', '/micro/txns/:ref', { auth: 'customer' }, async ({ db, customer, pa
   const t = await db.one(`select t.*, o.ref as order_ref, ${lotsOf} as lots from micro_txns t left join micro_orders o on o.id = t.order_id where t.ref = $1 and t.customer_id = $2`, [params.ref.toUpperCase(), customer.id]);
   if (!t) fail(404, 'NOT_FOUND', 'No transaction with that ID on your account.');
   return { transaction: microTxnDto(t) };
+});
+
+// ---------- rate chat: customer side ----------
+// Every chat is one customer's request (what they want to buy or sell). The customer routes only ever read and
+// write chats where customer_id is the signed-in customer; anything else is "not found", never "forbidden", so a
+// chat's existence isn't revealed either.
+const CHAT_KINDS = ['buy_bars', 'sell_bars', 'buy_micro', 'sell_micro', 'gift'];
+const chatDto = c => ({ id: c.id, ref: c.ref, kind: c.kind, details: c.details, summary: c.summary, indicative_pkr: c.indicative_pkr, status: c.status,
+  created_at: c.created_at, last_message_at: c.last_message_at, unread: c.unread ?? undefined, last_body: c.last_body ?? undefined });
+const msgDto = m => ({ id: m.id, sender: m.sender, staff_name: m.staff_name ? String(m.staff_name).split(' ')[0] : undefined, body: m.body, created_at: m.created_at,
+  attachment: m.attachment_id ? { id: m.attachment_id, name: m.att_name, mime: m.att_mime, size: m.att_size } : undefined, confirmation_id: m.confirmation_id || undefined });
+const confDto = r => r && ({ id: r.id, kind: r.kind, details: r.details, prices: r.prices, total_pkr: r.total_pkr, note: r.note, status: r.status,
+  expires_at: r.expires_at, expires_in: Math.max(0, Math.round((new Date(r.expires_at) - Date.now()) / 1000)), used_ref: r.used_ref, lock_id: r.lock_id || undefined });
+const MSG_SQL = `select m.*, s.name as staff_name, a.name as att_name, a.mime as att_mime, a.size as att_size from chat_messages m
+  left join staff s on s.id = m.staff_id left join chat_attachments a on a.id = m.attachment_id where m.chat_id = $1 and m.id > $2 order by m.id limit 300`;
+const CONF_SQL = `select r.*, (select id from price_locks l where l.confirmation_id = r.id) as lock_id from rate_confirmations r where r.chat_id = $1 order by r.created_at desc limit 1`;
+const msgOut = async (db, m) => ({ message: msgDto((await db.query(MSG_SQL, [m.chat_id, m.id - 1]))[0]) });
+async function chatOf(db, id, customerId) {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) fail(404, 'CHAT_NOT_FOUND', MESSAGES.CHAT_NOT_FOUND[1]);
+  const c = await db.one(`select * from rate_chats where id = $1 and ($2::uuid is null or customer_id = $2)`, [id, customerId]);
+  if (!c) fail(404, 'CHAT_NOT_FOUND', MESSAGES.CHAT_NOT_FOUND[1]);
+  return c;
+}
+// Attachments: JPEG, PNG, WebP or PDF up to 2.5 MB, checked by their first bytes as well as the declared type
+const MAGIC = { 'image/jpeg': b => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff, 'image/png': b => b.subarray(0, 4).toString('hex') === '89504e47',
+  'image/webp': b => b.subarray(0, 4).toString() === 'RIFF' && b.subarray(8, 12).toString() === 'WEBP', 'application/pdf': b => b.subarray(0, 4).toString() === '%PDF' };
+function attachmentFrom(body) {
+  const mime = str(body.mime, 40), data = typeof body.data === 'string' ? body.data : '';
+  if (!MAGIC[mime]) fail(400, 'BAD_FILE', 'Send a photo (JPEG, PNG or WebP) or a PDF.');
+  const buf = Buffer.from(data, 'base64');
+  if (!buf.length) fail(400, 'BAD_FILE', 'The file is empty.');
+  if (buf.length > 2621440) fail(413, 'FILE_TOO_LARGE', 'Files can be up to 2.5 MB.');
+  if (!MAGIC[mime](buf)) fail(400, 'BAD_FILE', 'That file isn’t the type it says it is.');
+  return { mime, buf, name: str(body.name, 120).replace(/[^\w .()-]/g, '_') || 'file' };
+}
+async function storeAttachment(db, chatId, uploader, a) {
+  return (await db.one(`insert into chat_attachments (chat_id, uploaded_by, name, mime, size, data) values ($1, $2, $3, $4, $5, decode($6, 'base64')) returning id`,
+    [chatId, uploader, a.name, a.mime, a.buf.length, a.buf.toString('base64')])).id;
+}
+const attachmentOut = async (db, chatId, aid) => {
+  const a = await db.one(`select name, mime, size, encode(data, 'base64') as data from chat_attachments where id = $1 and chat_id = $2`, [aid, chatId]);
+  if (!a || !a.data) fail(404, 'NOT_FOUND', 'This file is no longer available.');
+  return { attachment: { ...a, data: a.data.replace(/\s/g, '') } };      // Postgres wraps base64 every 76 characters
+};
+
+route('POST', '/chats', { auth: 'customer' }, async ({ db, customer, body }) => {
+  const kind = CHAT_KINDS.includes(body.kind) ? body.kind : fail(400, 'BAD_REQUEST', MESSAGES.BAD_REQUEST[1]);
+  const details = body.details && typeof body.details === 'object' && !Array.isArray(body.details) ? body.details : fail(400, 'BAD_REQUEST', MESSAGES.BAD_REQUEST[1]);
+  await limit(db, 'chat-open:' + customer.id, 86400, 30, 'You’ve started many rate requests today. Continue in one of your open chats.');
+  const indicative = int(body.indicativePkr);
+  const c = await db.one(`select * from fn_chat_open($1, $2, $3::jsonb, $4)`, [customer.id, kind, JSON.stringify(details), Number.isSafeInteger(indicative) && indicative > 0 ? indicative : null]);
+  return { chat: chatDto(c) };
+});
+route('GET', '/chats', { auth: 'customer' }, async ({ db, customer }) => ({ chats: (await db.query(`select c.*,
+    (select count(*)::int from chat_messages m where m.chat_id = c.id and m.sender <> 'customer' and m.created_at > coalesce(c.customer_read_at, 'epoch')) as unread,
+    (select body from chat_messages m where m.chat_id = c.id order by m.id desc limit 1) as last_body
+  from rate_chats c where c.customer_id = $1 order by c.last_message_at desc limit 50`, [customer.id])).map(chatDto) }));
+// The chat with messages after ?after= (the app asks every few seconds while the chat is open) and its newest rate
+route('GET', '/chats/:id', { auth: 'customer' }, async ({ db, customer, params, query }) => {
+  const c = await chatOf(db, params.id, customer.id);
+  const after = Math.max(0, int(query.after) || 0);
+  const messages = (await db.query(MSG_SQL, [c.id, after])).map(msgDto);
+  if (messages.some(m => m.sender !== 'customer') || !after) await db.query(`update rate_chats set customer_read_at = now() where id = $1`, [c.id]);
+  return { chat: chatDto(c), messages, confirmation: confDto(await db.one(CONF_SQL, [c.id])) };
+});
+route('POST', '/chats/:id/messages', { auth: 'customer' }, async ({ db, customer, params, body }) => {
+  const c = await chatOf(db, params.id, customer.id);
+  await limit(db, 'chat-msg:' + customer.id, 600, 60, 'You’re sending messages very fast. Wait a moment.');
+  return msgOut(db, await db.one(`select * from fn_chat_post($1, 'customer', $2, null, $3)`, [c.id, customer.id, str(body.body, 2000)]));
+});
+route('POST', '/chats/:id/attachments', { auth: 'customer', maxBody: 3800000 }, async ({ db, customer, params, body }) => {
+  const c = await chatOf(db, params.id, customer.id);
+  if (c.status === 'closed') fail(409, 'CHAT_CLOSED', MESSAGES.CHAT_CLOSED[1]);
+  await limit(db, 'chat-file:' + customer.id, 3600, 20, 'You’ve sent many files this hour. Try again later.');
+  const id = await storeAttachment(db, c.id, 'customer:' + customer.id, attachmentFrom(body));
+  return msgOut(db, await db.one(`select * from fn_chat_post($1, 'customer', $2, null, $3, $4)`, [c.id, customer.id, str(body.caption, 2000), id]));
+});
+route('GET', '/chats/:id/attachments/:aid', { auth: 'customer' }, async ({ db, customer, params }) =>
+  attachmentOut(db, (await chatOf(db, params.id, customer.id)).id, params.aid));
+route('POST', '/chats/:id/close', { auth: 'customer' }, async ({ db, customer, params }) => {
+  const c = await chatOf(db, params.id, customer.id);
+  return { chat: chatDto(await db.one(`select * from fn_chat_close($1, $2, $3, null)`, [c.id, 'customer:' + customer.id, customer.id])) };
+});
+
+// Selling bars back to PGBX at a confirmed rate: the bars leave the wallet, PGBX pays the bank account
+const barSaleDto = b => ({ id: b.id, ref: b.ref, lines: b.lines, total_pkr: b.total_pkr, status: b.status, payout_to: '•••• ' + String(b.payout_to).slice(-4), payout_ref: b.payout_ref, created_at: b.created_at, paid_out_at: b.paid_out_at });
+route('POST', '/bars/sell', { auth: 'customer' }, async ({ db, customer, body }) => {
+  const iban = str(body.iban, 40).replace(/\s/g, '').toUpperCase();
+  const key = str(body.idempotencyKey, 80); if (key.length < 8) fail(400, 'BAD_KEY', 'Missing request key.');
+  phoneHold(customer);
+  await limit(db, 'bar-sell:' + customer.id, 3600, 20, 'Too many sales in an hour. Try again later.');
+  return { sale: barSaleDto(await db.one(`select * from fn_sell_bars($1, $2, $3, $4)`, [customer.id, str(body.confirmationId, 40) || null, iban, key])) };
+});
+route('GET', '/bars/sales', { auth: 'customer' }, async ({ db, customer }) =>
+  ({ sales: (await db.query(`select * from bar_sales where customer_id = $1 order by created_at desc limit 50`, [customer.id])).map(barSaleDto) }));
+
+// ---------- rate chat: support side (admins and the support team) ----------
+const support = { staff: { roles: ['admin', 'support'] } };
+// What the market says now, in the form the confirm form takes (so support starts from today's price)
+async function suggestedRate(db, c) {
+  const s = await db.one(`select * from rate_snapshots order by id desc limit 1`);
+  if (!s) return null;
+  const d = c.details;
+  if (c.kind === 'buy_bars' || c.kind === 'sell_bars') {
+    const ps = await db.query(`select id, metal, grams::float8 grams, premium_pkr from products where id = any($1::text[])`, [d.lines.map(l => l.product_id)]);
+    const unit = Object.fromEntries(ps.map(p => [p.id, c.kind === 'buy_bars'
+      ? Math.round((p.metal === 'gold' ? s.gold_buy_tola : s.silver_buy_tola) / TOLA * p.grams + Number(p.premium_pkr))
+      : Math.round((p.metal === 'gold' ? s.gold_sell_tola : s.silver_sell_tola) / TOLA * p.grams)]));
+    return { prices: { unit }, total_pkr: d.lines.reduce((a, l) => a + (unit[l.product_id] || 0) * l.units, 0), at: s.fetched_at };
+  }
+  if (c.kind === 'buy_micro') {
+    const usd = Number((await db.one(`select setting('micro_usd') #>> '{}' as v`)).v);
+    const unit = s.usd_pkr ? Math.round(usd * Number(s.usd_pkr)) : null;
+    return { prices: { unit_pkr: unit, price_gram: Math.round(s.gold_buy_tola / TOLA * 100) / 100, usd_pkr: s.usd_pkr ? Number(s.usd_pkr) : null }, total_pkr: unit && unit * d.units, at: s.fetched_at };
+  }
+  if (c.kind === 'sell_micro') {
+    const g = Math.round(s.gold_sell_tola / TOLA * 100) / 100;
+    return { prices: { price_gram: g }, total_pkr: Math.max(1, Math.floor(Number(d.grams) * g)), at: s.fetched_at };
+  }
+  const q = await db.one(`select fn_gift_quote($1, $2, $3, $4, $5) q`, [d.item, d.shape, d.design, d.engraving, d.packaging]).catch(() => null);
+  return q && { prices: { metal_pkr: q.q.metal_pkr, making_pkr: q.q.making_pkr, packaging_pkr: q.q.packaging_pkr, delivery_pkr: q.q.delivery_pkr }, total_pkr: q.q.total_pkr, at: s.fetched_at };
+}
+route('GET', '/support/counts', support, async ({ db }) => db.one(`select
+    (select count(*)::int from rate_chats where status in ('open', 'confirmed') and last_customer_at > coalesce(staff_read_at, 'epoch')) as chats_waiting,
+    (select count(*)::int from rate_chats where status in ('open', 'confirmed')) as chats_active`));
+route('GET', '/support/chats', support, async ({ db, query }) => {
+  const status = { active: ['open', 'confirmed'], completed: ['completed'], closed: ['closed'] }[query.status] || ['open', 'confirmed'];
+  const q = str(query.q, 60);
+  const where = `c.status = any($1::text[]) and ($2 = '' or c.ref ilike '%' || $2 || '%' or u.name ilike '%' || $2 || '%' or u.phone like '%' || $2 || '%')`;
+  const rows = await db.query(`select c.*, u.name as customer_name, u.phone as customer_phone, u.kyc_status, st.name as assigned_name,
+      (c.last_customer_at > coalesce(c.staff_read_at, 'epoch')) as waiting,
+      (select body from chat_messages m where m.chat_id = c.id order by m.id desc limit 1) as last_body
+    from rate_chats c join customers u on u.id = c.customer_id left join staff st on st.id = c.assigned_to where ${where}
+    order by (c.last_customer_at > coalesce(c.staff_read_at, 'epoch')) desc, c.last_message_at desc limit 200`, [status, q]);
+  const total = (await db.one(`select count(*)::int n from rate_chats c join customers u on u.id = c.customer_id where ${where}`, [status, q])).n;
+  return { chats: rows.map(c => ({ ...chatDto(c), customer: { id: c.customer_id, name: c.customer_name, phone: c.customer_phone, kyc_status: c.kyc_status },
+    waiting: c.waiting, assigned_to: c.assigned_name || null })), total };
+});
+route('GET', '/support/chats/:id', support, async ({ db, staff, params, query }) => {
+  const c = await chatOf(db, params.id, null);
+  const after = Math.max(0, int(query.after) || 0);
+  const messages = (await db.query(MSG_SQL, [c.id, after])).map(msgDto);
+  if (messages.length || !after) await db.query(`update rate_chats set staff_read_at = now() where id = $1`, [c.id]);
+  if (after) return { chat: chatDto(c), messages, confirmation: confDto(await db.one(CONF_SQL, [c.id])) };
+  // first open: the customer's context, and the opening is recorded (staff looking at a customer's details)
+  await audit(db, 'staff:' + staff.id, 'chat.viewed', 'chat', c.ref, {});
+  const u = await db.one(`select id, name, phone, kyc_status, status, created_at from customers where id = $1`, [c.customer_id]);
+  const holdings = await db.query(`select product_id, units from v_holdings where customer_id = $1 and units > 0 order by product_id`, [c.customer_id]);
+  const micro = Number((await db.one(`select micro_grams($1)::float8 as g`, [c.customer_id])).g);
+  const spent = Number((await db.one(`select spent_today($1) as s`, [c.customer_id])).s);
+  const limitPkr = Number((await db.one(`select setting_int('daily_limit_pkr') as v`)).v);
+  const others = await db.query(`select id, ref, summary, status, created_at from rate_chats where customer_id = $1 and id <> $2 order by created_at desc limit 5`, [c.customer_id, c.id]);
+  return { chat: chatDto(c), messages, confirmation: confDto(await db.one(CONF_SQL, [c.id])),
+    confirmations: (await db.query(`select r.*, s.name as by_name from rate_confirmations r join staff s on s.id = r.confirmed_by where r.chat_id = $1 order by r.created_at desc`, [c.id]))
+      .map(r => ({ ...confDto(r), by: r.by_name, created_at: r.created_at })),
+    customer: { ...u, holdings, micro_grams: micro, spent_today_pkr: spent, daily_limit_pkr: limitPkr }, others: others.map(chatDto),
+    suggested: await suggestedRate(db, c), minutes: Number((await db.one(`select setting_int('rate_confirm_minutes') as v`)).v) || 15 };
+});
+route('POST', '/support/chats/:id/messages', support, async ({ db, staff, params, body }) => {
+  const c = await chatOf(db, params.id, null);
+  return msgOut(db, await db.one(`select * from fn_chat_post($1, 'staff', null, $2, $3)`, [c.id, staff.id, str(body.body, 2000)]));
+});
+route('POST', '/support/chats/:id/attachments', { ...support, maxBody: 3800000 }, async ({ db, staff, params, body }) => {
+  const c = await chatOf(db, params.id, null);
+  if (c.status === 'closed') fail(409, 'CHAT_CLOSED', MESSAGES.CHAT_CLOSED[1]);
+  const id = await storeAttachment(db, c.id, 'staff:' + staff.id, attachmentFrom(body));
+  return msgOut(db, await db.one(`select * from fn_chat_post($1, 'staff', null, $2, $3, $4)`, [c.id, staff.id, str(body.caption, 2000), id]));
+});
+route('GET', '/support/chats/:id/attachments/:aid', support, async ({ db, params }) => attachmentOut(db, (await chatOf(db, params.id, null)).id, params.aid));
+route('POST', '/support/chats/:id/confirm', support, async ({ db, staff, params, body }) => {
+  const c = await chatOf(db, params.id, null);
+  const minutes = int(body.minutes);
+  const r = await db.one(`select * from fn_chat_confirm($1, $2, $3::jsonb, $4, $5)`, [staff.id, c.id, JSON.stringify(body.prices || {}), Number.isInteger(minutes) ? minutes : null, str(body.note, 300)]);
+  return { confirmation: confDto(await db.one(`select r.*, (select id from price_locks l where l.confirmation_id = r.id) as lock_id from rate_confirmations r where r.id = $1`, [r.id])) };
+});
+route('POST', '/support/chats/:id/close', support, async ({ db, staff, params, body }) => {
+  const c = await chatOf(db, params.id, null);
+  return { chat: chatDto(await db.one(`select * from fn_chat_close($1, $2, null, $3)`, [c.id, 'staff:' + staff.id, str(body.note, 300)])) };
 });
 
 // ---------- closing the account ----------
@@ -933,6 +1128,8 @@ route('GET', '/admin/overview', ops, async ({ db }) => ({
     (select count(*)::int from tola_lots where status = 'full') lots_to_settle,
     (select count(*)::int from micro_txns where status = 'pending_payout') payouts_pending,
     (select count(*)::int from refunds where status = 'due') refunds_due,
+    (select count(*)::int from bar_sales where status = 'pending_payout') bar_sales_pending,
+    (select count(*)::int from rate_chats where status in ('open', 'confirmed') and last_customer_at > coalesce(staff_read_at, 'epoch')) chats_waiting,
     (select count(*)::int from support_requests where status = 'open') support_open`)),
   rates: await db.one(`select gold_buy_tola, gold_sell_tola, silver_buy_tola, silver_sell_tola, source, fetched_at from rate_snapshots order by id desc limit 1`),
   sandbox: payments.sandbox || kyc.sandbox,
@@ -956,6 +1153,7 @@ const SETTING_RULES = {
   appraisal_free_cancel_hours: isInt(0, 720), gift_making_pkr: objOf(['plain', 'themed', 'engraving'], isInt(0, 1e7)), gift_packaging_pkr: objOf(['standard', 'premium'], isInt(0, 1e7)),
   gift_delivery_pkr: isInt(0, 1e6), gift_lead_days: isInt(1, 60), gift_cities: listOf(isName, 60),
   micro_usd: frac(0.5, 100), micro_max_units: isInt(1, 1000), micro_min_sell_g: frac(0.0001, 11.664),
+  rate_chat_required: v => typeof v === 'boolean', rate_confirm_minutes: isInt(1, 240), rate_confirm_max_move_pct: isInt(1, 50),
 };
 
 route('GET', '/admin/settings', ops, async ({ db }) => ({ settings: await db.query(`select key, value, updated_at, updated_by from settings order by key`) }));
@@ -1196,6 +1394,16 @@ route('POST', '/admin/micro/payouts/:id', ops, async ({ db, staff, params, body 
   return { payout: microTxnDto(await db.one(`select * from fn_micro_payout($1, $2, $3)`, [staff.id, params.id, str(body.ref, 80)])) };
 });
 // One queue for every refund owed: orders, $1 gold, appraisals and gifts
+// Bars customers sold back to PGBX, to pay to their bank accounts
+route('GET', '/admin/bar-sales', ops, async ({ db, query }) => {
+  const status = query.status === 'paid_out' ? 'paid_out' : 'pending_payout';
+  const rows = await db.query(`select b.*, c.name, c.phone from bar_sales b join customers c on c.id = b.customer_id where b.status = $1
+    order by ${status === 'pending_payout' ? 'b.created_at' : 'b.paid_out_at desc'} limit 300`, [status]);
+  return { sales: rows.map(b => ({ ...b, customer: { id: b.customer_id, name: b.name, phone: b.phone } })),
+    total: (await db.one(`select count(*)::int n from bar_sales where status = $1`, [status])).n };
+});
+route('POST', '/admin/bar-sales/:id', ops, async ({ db, staff, params, body }) =>
+  ({ sale: await db.one(`select * from fn_bar_sale_payout($1, $2, $3)`, [staff.id, params.id, str(body.ref, 80)]) }));
 route('GET', '/admin/refunds', ops, async ({ db, query }) => {
   const status = query.status === 'refunded' ? 'refunded' : 'due';
   const rows = await db.query(`select r.*, c.name, c.phone from refunds r left join customers c on c.id = r.customer_id where r.status = $1
@@ -1218,7 +1426,7 @@ route('GET', '/admin/audit', ops, async ({ db, query }) => {
 route('GET', '/admin/staff', adminOnly, async ({ db }) => ({ staff: await db.query(`select id, email, name, role, dealer_id, active, must_change_password, created_at from staff order by created_at`) }));
 route('POST', '/admin/staff', adminOnly, async ({ db, staff, body }) => {
   const email = str(body.email, 200).toLowerCase(); const name = str(body.name, 120);
-  const role = ['admin', 'ops', 'dealer'].includes(body.role) ? body.role : fail(400, 'BAD_ROLE', 'Choose a role.');
+  const role = ['admin', 'ops', 'dealer', 'support'].includes(body.role) ? body.role : fail(400, 'BAD_ROLE', 'Choose a role.');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !name) fail(400, 'BAD_STAFF', 'Enter a name and a valid email.');
   if (role === 'dealer' && !body.dealer_id) fail(400, 'BAD_STAFF', 'Choose the dealer this person works for.');
   if (await db.one(`select 1 from staff where email = $1`, [email])) fail(409, 'STAFF_EXISTS', 'A staff account with that email already exists.');
@@ -1340,7 +1548,7 @@ export async function handle(req, res, opts = {}) {
     const hasBody = Number(req.headers['content-length'] || 0) > 0 || !!req.headers['transfer-encoding'];
     if (hasBody && !String(req.headers['content-type'] || '').includes('application/json'))
       fail(415, 'JSON_ONLY', 'Send JSON.');
-    const { raw, json } = await readBody(req);
+    const { raw, json } = await readBody(req, match.opts.maxBody || 65536);
     const ctx = { req, res, db, raw, body: json && typeof json === 'object' ? json : {}, params, query, fetchRates };
     if (!match.opts.auth && !match.opts.staff && req.method === 'GET') publicLimit(req);
     if (match.opts.auth === 'customer') { ctx.allowLocked = !!match.opts.allowLocked; ctx.customer = await customerFrom(ctx); }

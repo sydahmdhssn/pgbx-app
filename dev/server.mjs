@@ -33,7 +33,10 @@ const staff = [
   { email: 'admin@pgbx.test', name: 'Sample Admin', role: 'admin', dealer: null },
   { email: 'ops@pgbx.test', name: 'Sample Operations', role: 'ops', dealer: null },
   { email: 'dealer@pgbx.test', name: 'Sample Dealer (Saddar)', role: 'dealer', dealer: 'd1' },
+  { email: 'support@pgbx.test', name: 'Sample Support', role: 'support', dealer: null },
 ];
+// RATE_CHAT=0: instant prices without the final-rate chat (the PGBX setting rate_chat_required, normally on)
+if (process.env.RATE_CHAT === '0') await db.query(`update settings set value = 'false' where key = 'rate_chat_required'`);
 for (const s of staff) {
   s.password = 'dev-' + s.role;
   s.secret = newTotpSecret();

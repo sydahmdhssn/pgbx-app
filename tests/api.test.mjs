@@ -50,7 +50,7 @@ async function staffLogin(s, ip = '10.9.0.1') {
 }
 
 before(async () => {
-  db = await createMemoryDb();
+  db = await createMemoryDb(); await db.query(`update settings set value = 'false' where key = 'rate_chat_required'`);
   server = http.createServer((req, res) => handle(req, res, { db, fetchRates: fakeRates }));
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${server.address().port}`;

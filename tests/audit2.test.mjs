@@ -41,7 +41,7 @@ async function staffAccount(role, { mustChange = false, dealer = null } = {}) {
 async function staffToken(s, ip) { return ok(await call('POST', '/api/v1/staff/login', { body: { email: s.email, password: s.password, cookie: false }, ip })).token; }
 
 before(async () => {
-  db = await createMemoryDb();
+  db = await createMemoryDb(); await db.query(`update settings set value = 'false' where key = 'rate_chat_required'`);
   server = http.createServer((req, res) => handle(req, res, { db, fetchRates: async () => rates() }));
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${server.address().port}`;

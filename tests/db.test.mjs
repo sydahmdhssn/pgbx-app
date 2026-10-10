@@ -15,7 +15,7 @@ const holdings = async (c, p) => (await db.one(`select holdings_of($1, $2) as n`
 const dealerStaff = async dealer => (await db.one(`insert into staff (email, name, role, dealer_id, password_hash, totp_secret) values ($1, 'Dealer', 'dealer', $2, 'x', 'x') returning id`, [`d-${dealer}-${Math.random()}@pgbx.test`, dealer])).id;
 const buy = async (c, pid, units) => { const l = await lock(c, [pid]); const o = await order(c, l.id, [{ product_id: pid, units }], 'k' + Math.random()); return paid(o); };
 
-before(async () => { db = await createMemoryDb(); await rates(); });
+before(async () => { db = await createMemoryDb(); await db.query(`update settings set value = 'false' where key = 'rate_chat_required'`); await rates(); });
 after(async () => db.close());
 
 test('the ledger and audit log cannot be edited or deleted', async () => {

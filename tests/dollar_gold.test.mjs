@@ -18,7 +18,7 @@ const sell = (c, grams, key = 's' + Math.random(), iban = 'PK36SCBL0000001123456
 const grams = async c => Number((await db.one(`select micro_grams($1) g`, [c])).g);
 const lots = side => db.query(`select * from tola_lots where side = $1 order by no`, [side]);
 
-before(async () => { db = await createMemoryDb(); await rates(); });
+before(async () => { db = await createMemoryDb(); await db.query(`update settings set value = 'false' where key = 'rate_chat_required'`); await rates(); });
 after(async () => db.close());
 
 test('each $1 is its own transaction at the live dollar rate and gold price', async () => {

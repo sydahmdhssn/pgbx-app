@@ -40,6 +40,8 @@ const API_URLS = LIVE ? [Live.API_ROOT + '/rates'] : API_BASES.map(b => b + '/ap
 const KYC_START = !LIVE && params.get('kyc') === 'done' ? 'verified' : 'none';   // ?kyc=done skips identity verification
 let DAY_LIMIT = 1500000;                   // FR-B6: per-day purchase limit in PKR (sample; production: from the server)
 let MIN_PURCHASE = null;
+// Every purchase and sale needs a final rate confirmed by PGBX support in chat (production: from the server; demo: ?ratechat=0 shows instant prices)
+let RATE_CHAT = LIVE || params.get('ratechat') !== '0';
 // Production: limits come from the PGBX settings, so the app and the server always agree
 function applyLimits(l) {
   if (!l) return;
@@ -48,6 +50,7 @@ function applyLimits(l) {
   if (Number.isInteger(l.price_lock_seconds)) LOCK_S = l.price_lock_seconds;
   if (Number.isInteger(l.redemption_valid_hours)) RESERVE_MS = l.redemption_valid_hours * 3600e3;
   MIN_PURCHASE = Number.isInteger(l.min_purchase_pkr) ? l.min_purchase_pkr : null;
+  if (typeof l.rate_chat_required === 'boolean') RATE_CHAT = l.rate_chat_required;
 }
 const PIN_DEFAULT = '1234';                // prototype PIN (changeable in Account > Change PIN)
 // Production: the PIN is stored on the phone only as a salted, stretched SHA-256 hash, never as the digits.
@@ -306,6 +309,9 @@ const PATHS = {
   help: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM9.5 9.5a2.5 2.5 0 0 1 4.9.7c0 1.8-2.4 2.2-2.4 3.8M12 17v.1',
   flag: 'M5 21V4M5 4h11l-2 4 2 4H5',
   doc: 'M7 3h7l4 4v14H7zM14 3v4h4M9.5 12h6M9.5 15.5h6',
+  chat: 'M5 5h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-9l-4 3.5V17H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM8.5 9.5h7M8.5 12.5h4.5',
+  send: 'M4 12l16-7-6 15-2.5-6.5zM11.5 13.5L20 5',
+  clip: 'M20 11.5l-7.8 7.8a4.6 4.6 0 0 1-6.5-6.5l8-8a3 3 0 0 1 4.3 4.3l-8 8a1.5 1.5 0 0 1-2.1-2.1l7.3-7.3',
   receipt: 'M6 3h12v18l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5L6 21zM9 8h6M9 11.5h6M9 15h4',
   key: 'M14.5 9.5a4 4 0 1 1-8 0 4 4 0 0 1 8 0zM13.4 12.4L20 19M17 16l2-2',
   share: 'M12 3v12M7.5 7.5L12 3l4.5 4.5M5 13v6.5h14V13',
@@ -987,6 +993,7 @@ function BuyList({ S, A }) {
     <div class="pad small muted" style="margin-top:12px;display:flex;align-items:center;gap:8px"><span class=${dotClass(S.rates, S.stale)}></span>${metalName(metal)} ${fmt(r.buyTola)} per tola · ${fmt(r.buyGram)} per gram</div>
     ${S.stale && html`<${StaleBanner} S=${S}/>`}
     <${KycCta} S=${S} A=${A} />
+    <${RateNotice} S=${S} A=${A} />
     ${metal === 'gold' && (q => html`<button class="card micro-cta" onClick=${() => A.openMicro()}>
       <span class="ri gold"><${Icon} n="gem" c="sm"/></span>
       <div class="rt"><b>Buy gold one dollar at a time</b><span>${q.unitPkr ? `$1 = ${fmt(q.unitPkr)} · ${fmtG(q.gramsPerUnit)} of gold today` : 'Start with $1. Sell any amount, any time.'}</span></div>
@@ -1064,6 +1071,7 @@ function MicroScreen({ S, A }) {
         </div>
       </section>
       <${KycCta} S=${S} A=${A} />
+      <${RateNotice} S=${S} A=${A} />
       ${m.grams > 0 && html`<div class="pad" style="margin-top:12px"><button class="btn btn-secondary" style="width:100%" onClick=${() => A.push({ name: 'micro-sell' })}><${Icon} n="scale" c="sm"/> Sell gold</button></div>`}
       <section class="sec"><div class="sec-h"><h3>Transactions</h3>${m.txns.length > 0 && html`<span class="aside">Tap one to see its tola lot</span>`}</div>
         ${m.txns.length === 0 ? html`<${Empty} icon="gem" title="No transactions yet" body="Every $1 you buy and every sale appears here with its transaction ID." />`
@@ -1075,7 +1083,7 @@ function MicroScreen({ S, A }) {
       </section>
       <p class="foot">Your gold is pooled with other customers’ in whole 1-tola bars PGBX buys and holds; each bar’s record lists every transaction ID in it. ${LIVE ? '' : 'Demo: transactions are simulated on this phone.'}</p>
     </div>
-    <div class="actionbar"><button class="btn btn-primary" disabled=${!S.guest && (!ready || over || S.paying)} onClick=${() => A.microBuy(units, key)}>${S.guest ? 'Log in to buy' : `Buy $${units} of gold · ${fmt(total)}`}</button></div>
+    <div class="actionbar"><button class="btn btn-primary" disabled=${!S.guest && (!ready || over || S.paying)} onClick=${() => (RATE_CHAT && !S.guest ? A.rateChat('buy_micro', { units }, total) : A.microBuy(units, key))}>${S.guest ? 'Log in to buy' : RATE_CHAT ? `Get final rate for $${units} of gold` : `Buy $${units} of gold · ${fmt(total)}`}</button></div>
   </div>`;
 }
 function MicroSell({ S, A }) {
@@ -1089,7 +1097,7 @@ function MicroSell({ S, A }) {
   const key = useMemo(() => 'S' + uid() + uid(), [g, cleanIban, m.txns && m.txns.length]);
   const tooMuch = grams > m.grams + 1e-9, tooSmall = g !== '' && grams < (q.minSellGrams || 0.001);
   const ok = grams > 0 && !tooMuch && !tooSmall && ibanOk && amount >= 1 && q.fresh && !S.stale && !S.offline && !S.paying;
-  const go = () => A.confirm({ title: `Sell ${fmtG(grams)} for ${fmt(amount)}?`, body: `PGBX pays ${fmt(amount)} to the account ending ${cleanIban.slice(-4)}. The price is today’s sell price of ${fmt(q.sellGram)} per gram.`,
+  const go = RATE_CHAT ? () => { A.set({ lastIban: cleanIban }); A.rateChat('sell_micro', { grams: Math.round(grams * 1e6) / 1e6 }, amount); } : () => A.confirm({ title: `Sell ${fmtG(grams)} for ${fmt(amount)}?`, body: `PGBX pays ${fmt(amount)} to the account ending ${cleanIban.slice(-4)}. The price is today’s sell price of ${fmt(q.sellGram)} per gram.`,
     confirm: 'Sell', onConfirm: () => A.microSell(Math.round(grams * 1e6) / 1e6, cleanIban, key, amount) });
   return html`<div class="page has-actions">
     <${TopBar} title="Sell gold" onBack=${A.back} />
@@ -1101,16 +1109,230 @@ function MicroSell({ S, A }) {
       <div class="chips" style="margin-top:8px">${[[0.25, '¼'], [0.5, '½'], [1, 'All']].map(([f, l]) => html`<button class="chipb" onClick=${() => setG(String(Math.floor(m.grams * f * 1e6) / 1e6))}>${l}</button>`)}</div>
       ${tooMuch && html`<div class="hint err">That’s more than you have.</div>`}
       ${tooSmall && html`<div class="hint err">The smallest sale is ${q.minSellGrams || 0.001} g.</div>`}
-      <div class="card" style="margin-top:16px"><div class="between"><span class="muted">You receive</span><b style="font-size:20px">${fmt(amount)}</b></div>
+      <div class="card" style="margin-top:16px"><div class="between"><span class="muted">You receive${RATE_CHAT ? ' (indicative)' : ''}</span><b style="font-size:20px">${fmt(amount)}</b></div>
         <div class="small muted" style="margin-top:4px">At ${q.sellGram ? fmt(q.sellGram) : '—'} per gram, today’s PGBX sell price</div></div>
       <label class="field"><span class="lbl">Pay to (your bank IBAN)</span>
         <input class=${'inp mono' + (iban && !ibanOk ? ' bad' : '')} autocapitalize="characters" autocorrect="off" autocomplete="off" spellcheck=${false} placeholder="PK36 SCBL 0000 0011 2345 6702" value=${iban} onInput=${e => setIban(e.target.value.slice(0, 34))} /></label>
       ${iban && !ibanOk && html`<div class="hint err">${/^PK\d{2}[A-Z]{4}[0-9A-Z]{16}$/.test(cleanIban) ? 'That IBAN isn’t valid. Check it against your bank details.' : 'An IBAN is 24 characters and starts with PK.'}</div>`}
       <p class="foot" style="padding:0">The account must be in your name. PGBX sends the payment by bank transfer, usually the same working day.</p>
-    </div></div>
-    <div class="actionbar"><button class="btn btn-primary" disabled=${!ok} onClick=${go}>${S.paying ? 'Selling…' : amount ? `Sell for ${fmt(amount)}` : 'Sell'}</button></div>
+    </div><${RateNotice} S=${S} A=${A} /></div>
+    <div class="actionbar"><button class="btn btn-primary" disabled=${!ok} onClick=${go}>${S.paying ? 'Selling…' : RATE_CHAT ? 'Get final rate via chat' : amount ? `Sell for ${fmt(amount)}` : 'Sell'}</button></div>
   </div>`;
 }
+/* ============================================================
+   Rate chat: app prices are indicative. The final rate for each purchase or sale is confirmed by PGBX support in a
+   private chat about that request; the order is placed at that rate, once, before it expires.
+   ============================================================ */
+const RATE_TEXT = 'The prices shown on this app are for informational purposes only. Final buying and selling rates will be confirmed by our support team through live chat. Please open the chat to get the final rate before proceeding.';
+const CHAT_KIND = { buy_bars: 'Buy bars', sell_bars: 'Sell bars back', buy_micro: 'Buy $1 gold', sell_micro: 'Sell $1 gold', gift: 'Gift order' };
+const CHAT_STATUS = { open: ['warning', 'Waiting for rate'], confirmed: ['success', 'Rate confirmed'], completed: ['neutral', 'Done'], closed: ['neutral', 'Closed'] };
+// The same request always has the same details, so a second tap opens the chat already asking about it
+function normDetails(kind, d) {
+  d = d || {};
+  if (kind === 'buy_bars' || kind === 'sell_bars') return { lines: (d.lines || []).map(l => ({ product_id: String(l.product_id), units: Math.floor(Number(l.units)) })).sort((a, b) => (a.product_id < b.product_id ? -1 : a.product_id > b.product_id ? 1 : 0)) };
+  if (kind === 'buy_micro') return { units: Math.floor(Number(d.units)) };
+  if (kind === 'sell_micro') return { grams: Math.round(Number(d.grams) * 1e6) / 1e6 };
+  return { item: d.item, shape: d.shape, design: d.design, engraving: String(d.engraving || '').trim(), packaging: d.packaging };
+}
+function chatSummary(kind, d) {
+  const lines = () => d.lines.map(l => `${l.units} × ${P[l.product_id] ? pname(P[l.product_id]) : l.product_id}`).join(', ');
+  if (kind === 'buy_bars') return 'Buy ' + lines();
+  if (kind === 'sell_bars') return 'Sell back ' + lines();
+  if (kind === 'buy_micro') return `Buy $${d.units} of gold ($1 gold)`;
+  if (kind === 'sell_micro') return `Sell ${d.grams.toFixed(4)} g of $1 gold`;
+  return `Gift: ${d.item} ${d.shape}`;
+}
+// The notice on every buying and selling screen. action: { label, fn } opens the chat for what's on the screen.
+function RateNotice({ S, A, action, confirmed }) {
+  if (!RATE_CHAT) return null;
+  if (confirmed) return html`<div class="rate-note ok" role="note"><span class="ri"><${Icon} n="check" c="sm"/></span>
+    <div class="grow"><b>Final rate confirmed by PGBX support</b><span>App prices are indicative; this uses the rate agreed in your chat ${confirmed}.</span></div></div>`;
+  const open = (S.chats || []).filter(c => c.status === 'open' || c.status === 'confirmed').length;
+  return html`<div class="rate-note" role="note"><span class="ri"><${Icon} n="chat" c="sm"/></span>
+    <div class="grow"><b>Prices are indicative</b><span>${RATE_TEXT}</span>
+      <div class="rate-note-btns">
+        ${action && html`<button class="btn btn-primary btn-sm" onClick=${action.fn} disabled=${action.disabled}><${Icon} n="chat" c="sm"/> ${action.label || 'Get final rate via chat'}</button>`}
+        ${!S.guest && open > 0 && html`<button class="btn btn-secondary btn-sm" onClick=${() => A.push({ name: 'chats' })}>Your rate chats (${open})</button>`}
+      </div></div></div>`;
+}
+// Photos are made smaller before sending (long side 1600 px, JPEG); PDFs go as they are
+const toB64 = blob => new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = bad; r.readAsDataURL(blob); });
+async function fileForUpload(file) {
+  if (file.size > 12e6) throw new Error('That file is too large.');
+  if (/^image\//.test(file.type) && file.size > 600e3) {
+    const img = await createImageBitmap(file).catch(() => null);
+    if (img) {
+      const k = Math.min(1, 1600 / Math.max(img.width, img.height)), c = document.createElement('canvas');
+      c.width = Math.round(img.width * k); c.height = Math.round(img.height * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+      return { name: file.name.replace(/\.\w+$/, '') + '.jpg', mime: 'image/jpeg', data: await toB64(blob), blob };
+    }
+  }
+  if (!['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(file.type)) throw new Error('Send a photo (JPEG, PNG or WebP) or a PDF.');
+  if (file.size > 2621440) throw new Error('Files can be up to 2.5 MB.');
+  return { name: file.name, mime: file.type, data: await toB64(file), blob: file };
+}
+function ChatFile({ chatId, a }) {
+  const [url, setUrl] = useState(a.url || null);
+  const [err, setErr] = useState(false);
+  useEffect(() => {
+    if (a.url || !LIVE) return;
+    let u = null, live = true;
+    Live.chatFile(chatId, a.id).then(d => { if (!live) return; const bin = Uint8Array.from(atob(d.data), c => c.charCodeAt(0)); u = URL.createObjectURL(new Blob([bin], { type: d.mime })); setUrl(u); }, () => live && setErr(true));
+    return () => { live = false; u && URL.revokeObjectURL(u); };
+  }, [a.id]);
+  if (err || (!url && !LIVE)) return html`<span class="small muted">${a.name} (no longer available)</span>`;
+  if (!url) return html`<span class="small muted">Loading ${a.name}…</span>`;
+  return a.mime.startsWith('image/') ? html`<a href=${url} target="_blank" rel="noopener"><img class="chat-img" src=${url} alt=${a.name} /></a>`
+    : html`<a class="chat-pdf" href=${url} download=${a.name}><${Icon} n="doc" c="sm"/> ${a.name}</a>`;
+}
+// Production: the chat's messages come from the server, newest every 3 s while it's on screen. Demo: kept in S.chats.
+function useChatThread(S, A, id) {
+  const local = (S.chats || []).find(c => c.id === id);
+  const [t, setT] = useState(null);
+  const [err, setErr] = useState(null);
+  const lastId = useRef(0);
+  useEffect(() => {
+    if (!LIVE) return;
+    let live = true;
+    const merge = d => setT(prev => {
+      const msgs = prev ? [...prev.messages, ...d.messages.filter(m => !prev.messages.some(x => x.id === m.id))] : d.messages;
+      if (msgs.length) lastId.current = msgs[msgs.length - 1].id;
+      return { chat: d.chat, messages: msgs, confirmation: d.confirmation };
+    });
+    const get = () => Live.chatThread(id, lastId.current).then(d => { if (live) { merge(d); setErr(null); } }, e => { if (live) { if (Live.signedOut(e)) ACT.liveFail(e); else setErr(e); } });
+    get();
+    const tick = setInterval(() => { if (document.visibilityState === 'visible') get(); }, 3000);
+    const vis = () => document.visibilityState === 'visible' && get();
+    document.addEventListener('visibilitychange', vis);
+    return () => { live = false; clearInterval(tick); document.removeEventListener('visibilitychange', vis); };
+  }, [id]);
+  useEffect(() => { if (LIVE && local && local.unread) A.set(s => ({ chats: s.chats.map(c => (c.id === id ? { ...c, unread: 0 } : c)) })); else if (!LIVE && local && local.unread) A.set(s => ({ chats: s.chats.map(c => (c.id === id ? { ...c, unread: 0 } : c)) })); }, [id, local && local.unread]);
+  if (!LIVE) return { chat: local, messages: local ? local.messages : [], confirmation: local ? local.confirmation : null, loading: false };
+  const add = m => setT(prev => (prev && !prev.messages.some(x => x.id === m.id) ? { ...prev, messages: [...prev.messages, m] } : prev));
+  return { chat: t ? t.chat : local, messages: t ? t.messages : [], confirmation: t ? t.confirmation : null, loading: !t && !err, error: err, add,
+    refresh: () => Live.chatThread(id, lastId.current).then(d => setT(prev => ({ chat: d.chat, messages: [...(prev ? prev.messages : []), ...d.messages.filter(m => !(prev ? prev.messages : []).some(x => x.id === m.id))], confirmation: d.confirmation })), () => {}) };
+}
+function ChatScreen({ S, A, id }) {
+  const th = useChatThread(S, A, id);
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const scroller = useRef(null), fileRef = useRef(null);
+  useEffect(() => { const el = scroller.current; if (el) el.scrollTop = el.scrollHeight; }, [th.messages.length, !!th.confirmation]);
+  useEffect(() => { if (!LIVE && th.chat && th.chat.status === 'open' && !th.chat.confirmation) A.demoSupport(th.chat.id); }, [th.chat && th.chat.id]);
+  const c = th.chat;
+  if (!c && th.loading) return html`<div class="page"><${TopBar} title="Final rate" onBack=${A.back} /><div class="scroll"><div class="pad"><span class="sk" style="height:200px"></span></div></div></div>`;
+  if (!c) return html`<div class="page"><${TopBar} title="Final rate" onBack=${A.back} /><div class="scroll"><${Empty} icon="chat" title="Chat not found" body=${th.error ? th.error.message : 'It may have been removed from this phone.'} /></div></div>`;
+  const closed = c.status === 'closed';
+  const send = async () => {
+    const body = text.trim(); if (!body || busy) return;
+    setBusy(true);
+    try { await A.chatSend(c.id, body, th.add); setText(''); } catch (e) { A.toast(e.message); } finally { setBusy(false); }
+  };
+  const attach = async e => {
+    const f = e.target.files && e.target.files[0]; e.target.value = ''; if (!f) return;
+    setBusy(true);
+    try { const up = await fileForUpload(f); await A.chatAttach(c.id, up, text.trim(), th.add); setText(''); } catch (x) { A.toast(x.message); } finally { setBusy(false); }
+  };
+  const conf = th.confirmation;
+  const close = () => A.confirm({ title: 'Close this request?', body: 'You can still read it, but its rate can’t be used. You can start a new request any time.', confirm: 'Close request', cancel: 'Keep it', danger: true, onConfirm: () => A.chatClose(c.id, th.refresh) });
+  return html`<div class="page has-actions chat-page">
+    <${TopBar} title="Final rate" onBack=${A.back} right=${!closed && html`<button class="linkbtn sm" onClick=${close}>Close</button>`} />
+    <div class="scroll" ref=${scroller}>
+      <div class="card chat-req">
+        <div class="between"><span class="small muted">${CHAT_KIND[c.kind]} · <span class="mono">${c.ref}</span></span><span class=${'tag ' + (CHAT_STATUS[c.status] || ['', ''])[0]}>${(CHAT_STATUS[c.status] || ['', c.status])[1]}</span></div>
+        <b style="display:block;margin-top:6px">${c.summary}</b>
+        ${c.indicative ? html`<div class="small muted" style="margin-top:2px">App price when you asked: ${fmt(c.indicative)} (indicative)</div>` : ''}
+      </div>
+      <div class="chat-msgs" aria-live="polite">
+        ${th.messages.map(m => html`<div class=${'msg ' + m.sender + (m.confirmationId ? ' rate' : '')} key=${m.id}>
+          ${m.sender === 'system' ? html`<span>${m.body}</span>` : html`<div class="bubble">
+            ${m.attachment && html`<${ChatFile} chatId=${c.id} a=${m.attachment} />`}
+            ${m.body && html`<div style="white-space:pre-wrap">${m.body}</div>`}
+            <div class="meta">${m.sender === 'staff' ? (m.staffName ? m.staffName + ' · PGBX' : 'PGBX support') : 'You'} · ${F.hm.format(new Date(m.ts))}</div></div>`}
+        </div>`)}
+        ${c.status === 'open' && !conf && html`<div class="msg system"><span>PGBX support usually replies within a few minutes during working hours.</span></div>`}
+      </div>
+      ${conf && html`<${ConfirmedRate} S=${S} A=${A} chat=${c} conf=${conf} />`}
+      ${!LIVE && html`<${Demo} title="Support" body="In the real app a PGBX team member replies and confirms the rate. Here a sample reply arrives automatically."></${Demo}>`}
+    </div>
+    ${closed ? html`<div class="actionbar"><div class="small muted" style="text-align:center">This request is closed. Start a new one from the product or checkout.</div></div>`
+      : html`<div class="actionbar chat-compose">
+        <input type="file" ref=${fileRef} accept="image/jpeg,image/png,image/webp,application/pdf" style="display:none" onChange=${attach} />
+        <button class="iconbtn" onClick=${() => fileRef.current.click()} disabled=${busy || S.offline} aria-label="Attach a photo or PDF"><${Icon} n="clip"/></button>
+        <textarea class="inp" rows="1" placeholder="Message PGBX support" value=${text} maxlength="2000" aria-label="Message"
+          onInput=${e => { setText(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(120, e.target.scrollHeight) + 'px'; }}
+          onKeyDown=${e => { if (e.key === 'Enter' && !e.shiftKey && innerWidth > 500) { e.preventDefault(); send(); } }}></textarea>
+        <button class="iconbtn send" onClick=${send} disabled=${busy || !text.trim() || S.offline} aria-label="Send"><${Icon} n="send"/></button>
+      </div>`}
+  </div>`;
+}
+// The agreed rate, with its time left and the one button that uses it
+function ConfirmedRate({ S, A, chat, conf }) {
+  const [iban, setIban] = useState(S.lastIban || '');
+  const left = Math.max(0, Math.ceil((conf.expiresAt - S.now) / 1000));
+  const cleanIban = iban.replace(/\s/g, '').toUpperCase();
+  const needsIban = chat.kind === 'sell_micro' || chat.kind === 'sell_bars';
+  if (conf.status === 'used') return html`<div class="conf-card used"><${Icon} n="check" c="sm"/><span>Done at the confirmed rate${conf.usedRef ? html` · <span class="mono">${conf.usedRef}</span>` : ''}.</span></div>`;
+  if (conf.status !== 'valid') return null;
+  if (!left) return html`<div class="conf-card expired"><${Icon} n="clock" c="sm"/><span>The confirmed rate (${fmt(conf.total)}) has expired. Ask here for a new one.</span></div>`;
+  const label = { buy_bars: `Pay ${fmt(conf.total)}`, buy_micro: `Pay ${fmt(conf.total)}`, gift: `Pay ${fmt(conf.total)}`, sell_micro: `Sell for ${fmt(conf.total)}`, sell_bars: `Sell for ${fmt(conf.total)}` }[chat.kind];
+  const go = () => A.useRate(chat, conf, cleanIban);
+  return html`<div class="conf-card" role="region" aria-label="Confirmed rate">
+    <div class="between"><span class="small"><b>Final rate confirmed</b>${conf.note ? ' · ' + conf.note : ''}</span><span class="tag success" role="timer">${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} left</span></div>
+    <div class="conf-total">${fmt(conf.total)}</div>
+    ${needsIban && html`<label class="field" style="margin-top:8px"><span class="lbl">Pay to (your bank IBAN)</span>
+      <input class=${'inp mono' + (iban && !ibanValid(cleanIban) ? ' bad' : '')} autocapitalize="characters" autocorrect="off" autocomplete="off" spellcheck=${false} placeholder="PK36 SCBL 0000 0011 2345 6702" value=${iban} onInput=${e => setIban(e.target.value.slice(0, 34))} /></label>`}
+    <button class="btn btn-primary" style="margin-top:10px" disabled=${S.paying || S.offline || (needsIban && !ibanValid(cleanIban))} onClick=${go}>${S.paying ? html`<span class="spin"></span> Working` : label}</button>
+  </div>`;
+}
+function ChatsScreen({ S, A }) {
+  const chats = [...(S.chats || [])].sort((a, b) => b.lastAt - a.lastAt);
+  return html`<div class="page">
+    <${TopBar} title="Rate chats" onBack=${A.back} />
+    <div class="scroll">
+      <div class="pad"><p class="muted">Your requests for a final rate. Each chat is private between you and PGBX support.</p></div>
+      ${chats.length === 0 ? html`<${Empty} icon="chat" title="No rate chats yet" body="When you buy or sell, open a chat from the product, cart or checkout to get the final rate." />`
+        : html`<div class="group">${chats.map(c => html`<button class="row" onClick=${() => A.push({ name: 'chat', id: c.id })}>
+          <span class="ri gold"><${Icon} n="chat" c="sm"/></span>
+          <div class="rt"><b>${c.summary}</b><span>${c.lastBody ? c.lastBody.slice(0, 80) : CHAT_KIND[c.kind]} · ${rel(c.lastAt, S.now)}</span></div>
+          ${c.unread > 0 ? html`<span class="badge-dot" aria-label=${c.unread + ' new'}>${c.unread}</span>` : html`<span class=${'tag ' + (CHAT_STATUS[c.status] || ['', ''])[0]}>${(CHAT_STATUS[c.status] || ['', c.status])[1]}</span>`}</button>`)}</div>`}
+    </div>
+  </div>`;
+}
+// Selling bars back to PGBX: choose what to sell, then agree the rate in chat
+function SellBarsScreen({ S, A }) {
+  const free = PRODUCTS.map(p => ({ p, n: (S.holdings[p.id] || 0) - (S.reserved[p.id] || 0) })).filter(x => x.n > 0);
+  const [pid, setPid] = useState(free[0] ? free[0].p.id : null);
+  const [units, setUnits] = useState(1);
+  const max = (free.find(x => x.p.id === pid) || { n: 0 }).n;
+  const p = P[pid];
+  const value = p ? Math.round(rateOf(S.rates, p.metal).sellGram * p.grams) * units : 0;
+  return html`<div class="page has-actions">
+    <${TopBar} title="Sell bars to PGBX" onBack=${A.back} />
+    <div class="scroll">
+      <${RateNotice} S=${S} A=${A} />
+      ${free.length === 0 ? html`<${Empty} icon="wallet" title="No bars to sell" body="Bars you hold (and haven’t reserved for collection) can be sold back to PGBX here." />` : html`
+        <section class="sec"><div class="sec-h"><h3>What to sell</h3></div>
+          <div class="group inset-thumb" role="radiogroup" aria-label="Product to sell">
+            ${free.map(({ p: q, n }) => html`<button class="row" onClick=${() => { setPid(q.id); setUnits(1); }} role="radio" aria-checked=${pid === q.id}>
+              <${Thumb} p=${q} /><div class="rt"><b>${pname(q)}</b><span>${n} you can sell</span></div><${Radio} on=${pid === q.id} /></button>`)}
+          </div>
+          <div class="group" style="margin-top:8px"><div class="row"><div class="rt"><b>Quantity</b></div>
+            <div class="stepper" role="group" aria-label="Quantity to sell">
+              <button disabled=${units <= 1} onClick=${() => setUnits(u => u - 1)} aria-label="Decrease quantity"><${Icon} n="minus" c="sm"/></button>
+              <output aria-live="polite"><span key=${units}>${units}</span></output>
+              <button disabled=${units >= max} onClick=${() => setUnits(u => u + 1)} aria-label="Increase quantity"><${Icon} n="plus" c="sm"/></button>
+            </div></div></div>
+        </section>
+        <p class="foot">PGBX pays the agreed amount to your bank account by transfer, usually the same working day. The bars leave your wallet when you confirm the sale.</p>`}
+    </div>
+    ${free.length > 0 && html`<${ActionBar} label="Indicative value" amount=${fmt(value)}>
+      <button class="btn btn-primary" disabled=${!pid || S.offline} onClick=${() => A.rateChat('sell_bars', { lines: [{ product_id: pid, units }] }, value)}><${Icon} n="chat" c="sm"/> Get final rate via chat</button>
+    </${ActionBar}>`}
+  </div>`;
+}
+
 function MicroTxn({ S, A, ref_ }) {
   const t = ((S.micro && S.micro.txns) || []).find(x => x.ref === ref_);
   if (!t) return html`<div class="page"><${TopBar} title="Transaction" onBack=${A.back} /><div class="scroll"><${Empty} icon="gem" title="Transaction not found" body="It may still be loading. Try again in a moment." /></div></div>`;
@@ -1172,7 +1394,7 @@ function ProductScreen({ S, A, pid }) {
       ${S.stale && html`<${StaleBanner} S=${S}/>`}
       <div class="card" style="margin-top:12px">
         <div class="between"><span class="muted">Price per bar</span><b style="font-size:17px">${unit ? html`<${Odo} value=${unit} flash=${S.lock.expiresAt} />` : '—'}</b></div>
-        <div style="margin-top:12px"><${LockLine} S=${S} /></div>
+        ${!RATE_CHAT && html`<div style="margin-top:12px"><${LockLine} S=${S} /></div>`}
         <div class="between" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
           <div><b style="display:block">Quantity</b><span class="small muted">Up to ${MAX_UNITS} per order</span></div>
           <div class="stepper" role="group" aria-label="Quantity">
@@ -1182,12 +1404,13 @@ function ProductScreen({ S, A, pid }) {
           </div>
         </div>
       </div>
+      <${RateNotice} S=${S} A=${A} />
       <p class="foot">Each bar is backed one-to-one by metal held by PGBX. Collect it at a dealer whenever you like.</p>
     </div>
-    <${ActionBar} label=${`Total for ${S.qty} bar${S.qty > 1 ? 's' : ''}`} amount=${html`<${Odo} value=${total} />`}>
+    <${ActionBar} label=${`Total for ${S.qty} bar${S.qty > 1 ? 's' : ''}${RATE_CHAT ? ' (indicative)' : ''}`} amount=${html`<${Odo} value=${total} />`}>
       <div class="ab-btns">
         <button class="btn btn-secondary" disabled=${S.stale} onClick=${() => A.addToCart(pid, S.qty)}>Add to cart</button>
-        <button class="btn btn-primary" disabled=${S.stale} onClick=${() => A.checkout('now')}>Buy now</button>
+        <button class="btn btn-primary" disabled=${S.stale} onClick=${() => A.checkout('now')}>${RATE_CHAT ? 'Get final rate' : 'Buy now'}</button>
       </div>
     </${ActionBar}>
   </div>`;
@@ -1205,7 +1428,7 @@ function CartScreen({ S, A }) {
   return html`<div class="page has-actions">
     <${TopBar} title="Cart" onBack=${A.back} />
     <div class="scroll">
-      <div class="pad"><${LockLine} S=${S} /></div>
+      ${RATE_CHAT ? html`<${RateNotice} S=${S} A=${A} />` : html`<div class="pad"><${LockLine} S=${S} /></div>`}
       <div class="group" style="margin-top:16px">
         ${lines.map(l => { const p = P[l.pid]; return html`<div class="row" key=${l.pid} style="align-items:flex-start">
           <${Thumb} p=${p} />
@@ -1224,7 +1447,7 @@ function CartScreen({ S, A }) {
       ${S.stale && html`<${StaleBanner} S=${S}/>`}
     </div>
     <${ActionBar} label=${`${units} bar${units > 1 ? 's' : ''} · ${new Set(lines.map(l => P[l.pid].metal)).size > 1 ? 'gold and silver' : metalName(P[lines[0].pid].metal).toLowerCase()}`} amount=${html`<${Odo} value=${total} />`}>
-      <button class="btn btn-primary" disabled=${S.stale || over || units > MAX_UNITS} onClick=${() => A.checkout('cart')}>Continue to payment</button>
+      <button class="btn btn-primary" disabled=${S.stale || over || units > MAX_UNITS} onClick=${() => A.checkout('cart')}>${RATE_CHAT ? html`<${Icon} n="chat" c="sm"/> Get final rate via chat` : 'Continue to payment'}</button>
     </${ActionBar}>
   </div>`;
 }
@@ -1238,6 +1461,7 @@ function PayScreen({ S, A }) {
   const lines = S.checkout; const prices = S.lock.prices;
   const total = linesTotal(lines, prices);
   const over = S.spentToday + total > DAY_LIMIT;
+  const conf = S.lock.confirmed, left = conf ? Math.max(0, Math.ceil((S.lock.expiresAt - S.now) / 1000)) : 1;
   return html`<div class="page has-actions">
     <${TopBar} title="Payment" onBack=${A.back} />
     <div class="scroll">
@@ -1245,8 +1469,9 @@ function PayScreen({ S, A }) {
       <div class="card">
         ${lines.map(l => { const p = P[l.pid]; return html`<div class="kv"><span>${l.units} × ${pname(p)}</span><b>${fmt(prices[l.pid] * l.units)}</b></div>`; })}
         <div class="kv total"><span>Total</span><b><${Odo} value=${total} /></b></div>
-        <div style="margin-top:12px"><${LockLine} S=${S} /></div>
+        <div style="margin-top:12px">${conf ? html`<div class="lockline" role="timer" aria-live="off"><${Icon} n="lock" c="xs"/><span>${left ? html`Confirmed rate valid for <b style="color:var(--text)">${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}</b>` : 'The confirmed rate has expired. Ask in the chat for a new one.'}</span></div>` : html`<${LockLine} S=${S} />`}</div>
       </div>
+      ${conf && html`<${RateNotice} S=${S} A=${A} confirmed=${conf} />`}
       <section class="sec">
         <div class="sec-h"><h3>Pay with</h3></div>
         <div class="group inset" role="radiogroup" aria-label="Payment method">
@@ -1266,7 +1491,7 @@ function PayScreen({ S, A }) {
       </${Demo}>
     </div>
     <${ActionBar}>
-      <button class="btn btn-primary" disabled=${S.stale || S.paying || over || S.offline || S.lock.pending} onClick=${A.pay}>${S.paying ? html`<span class="spin"></span> Processing` : S.lock.pending ? html`<span class="spin"></span> Getting the latest price` : html`<${Icon} n="lock" c="sm"/> Pay ${fmt(total)}`}</button>
+      <button class="btn btn-primary" disabled=${(S.stale && !conf) || S.paying || over || S.offline || S.lock.pending || !left} onClick=${A.pay}>${S.paying ? html`<span class="spin"></span> Processing` : S.lock.pending ? html`<span class="spin"></span> Getting the latest price` : html`<${Icon} n="lock" c="sm"/> Pay ${fmt(total)}`}</button>
     </${ActionBar}>
   </div>`;
 }
@@ -1550,18 +1775,22 @@ function WalletScreen({ S, A }) {
     </section>
 
     <section class="sec">
-      <div class="group"><div class="row">
+      <div class="group"><button class="row" onClick=${() => A.push({ name: 'sell-bars' })}>
         <span class="ri"><${Icon} n="refresh" c="sm"/></span>
-        <div class="rt"><b>Sell back to PGBX</b><small><${Tbc}/></small></div>
-      </div></div>
+        <div class="rt"><b>Sell bars back to PGBX</b><span>At a rate PGBX support confirms in chat</span></div><${Icon} n="chev" c="sm chev"/>
+      </button>
+      ${(S.barSales || []).slice(0, 5).map(b => html`<div class="row">
+        <span class="ri gold"><${Icon} n="bank" c="sm"/></span>
+        <div class="rt"><b>Sold ${b.lines.map(l => `${l.units} × ${P[l.pid] ? pname(P[l.pid]) : l.pid}`).join(', ')}</b><span>${fmt(b.total)} · ${rel(b.ts, S.now)} · <span class="mono">${b.ref}</span></span></div>
+        <span class=${'tag ' + (b.status === 'paid_out' ? 'success' : 'warning')}>${b.status === 'paid_out' ? 'Paid' : 'Payment on its way'}</span></div>`)}</div>
     </section>
 
     <section class="sec">
       <div class="sec-h"><h3>Activity</h3></div>
       ${!history.length && html`<p class="foot" style="margin-top:0">Purchases and collections appear here.</p>`}
       <${Keep} deps=${[shown, minuteOf(S.now)]} render=${() => html`<div class="group inset">
-        ${shown.map(e => { const p = P[e.pid]; const kind = e.reason === 'purchase' ? 'plus' : e.reason === 'redemption' ? 'minus' : 'open';
-          const title = kind === 'plus' ? 'Bought' : kind === 'minus' ? 'Collected' : 'Opening balance';
+        ${shown.map(e => { const p = P[e.pid]; const kind = e.reason === 'purchase' ? 'plus' : e.reason === 'redemption' || e.reason === 'sale' ? 'minus' : 'open';
+          const title = kind === 'plus' ? 'Bought' : e.reason === 'sale' ? 'Sold to PGBX' : kind === 'minus' ? 'Collected' : 'Opening balance';
           return html`<div class="row" style="align-items:flex-start">
             <span class=${'ri' + (kind === 'minus' ? ' gold' : '')}><${Icon} n=${kind === 'minus' ? 'store' : kind === 'plus' ? 'buy' : 'box'} c="sm"/></span>
             <div class="rt"><b>${title} ${Math.abs(e.delta)} × ${pname(p)}</b>
@@ -1587,7 +1816,7 @@ function statementData(S, from, to) {
     microGrams: (S.micro && S.micro.grams) || 0 };
 }
 const microType = t => (t.side === 'buy' ? '$1 gold purchase' : '$1 gold sale');
-const entryType = e => (e.reason === 'purchase' ? 'Purchase' : e.reason === 'redemption' ? 'Redemption' : 'Opening balance (sample)');
+const entryType = e => (e.reason === 'purchase' ? 'Purchase' : e.reason === 'redemption' ? 'Redemption' : e.reason === 'sale' ? 'Sold to PGBX' : 'Opening balance (sample)');
 function downloadBlob(name, type, text) {
   const url = URL.createObjectURL(new Blob([text], { type }));
   const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
@@ -1832,8 +2061,8 @@ function CodeScreen({ S, A, rid }) {
 /* ============================================================
    Notifications (FR-N1)
    ============================================================ */
-const N_ICON = { purchase: 'buy', redemption: 'store', security: 'shield', account: 'user', alert: 'bell', service: 'gem' };
-const N_TONE = { purchase: '', redemption: ' gold', security: ' danger', account: '', alert: ' gold', service: ' gold' };
+const N_ICON = { purchase: 'buy', redemption: 'store', security: 'shield', account: 'user', alert: 'bell', service: 'gem', chat: 'chat' };
+const N_TONE = { purchase: '', redemption: ' gold', security: ' danger', account: '', alert: ' gold', service: ' gold', chat: ' gold' };
 function PushBanner({ n, onOpen }) {
   return html`<button class="push" key=${n.id} onClick=${onOpen} role="status">
     <${Coin} size=${32} label="PGBX" />
@@ -1917,6 +2146,7 @@ function AccountScreen({ S, A }) {
     <section class="sec"><div class="sec-h"><h3>Preferences</h3></div>
       <div class="group inset">
         ${R({ icon: 'bell', label: 'Notifications', value: S.unread ? `${S.unread} new` : '', go: () => A.push({ name: 'inbox' }) })}
+        ${R({ icon: 'chat', label: 'Rate chats with PGBX', value: (n => (n ? `${n} new` : ''))((S.chats || []).reduce((t, c) => t + (c.unread || 0), 0)), go: () => A.push({ name: 'chats' }) })}
         ${R({ icon: 'chart', label: 'Price alerts', value: activeAlerts ? `${activeAlerts} active` : '', go: () => A.openHistory('gold') })}
       </div></section>
 
@@ -2144,7 +2374,7 @@ const SVC_SAMPLE = {
   },
 };
 // Screens a notification link may open
-const LINK_NAMES = ['receipt', 'code', 'appraisal', 'gift', 'history', 'product', 'wallet', 'statement', 'micro'];
+const LINK_NAMES = ['receipt', 'code', 'appraisal', 'gift', 'history', 'product', 'wallet', 'statement', 'micro', 'chat'];
 const KARATS_ALL = { gold: ['24K', '22K', '21K', '20K', '18K', '14K'], silver: ['999', '925', '900', '800'] };
 const KARAT_NAME = { '999': '999 fine', '925': '925 sterling', '900': '900', '800': '800' };
 const DESIGNS = [['plain', 'Plain', ''], ['eid', 'Eid Mubarak', 'EID MUBARAK'], ['wedding', 'Wedding', 'SHAADI MUBARAK'], ['birthday', 'Birthday', 'HAPPY BIRTHDAY'],
@@ -2429,7 +2659,7 @@ function GiftNew({ S, A }) {
   const E = k => touched && errs[k] && html`<div class="hint err">${errs[k]}</div>`;
   const pickMetal = m => { const first = svc.gift.items.find(i => i.metal === m); if (!first) { A.toast(`${metalName(m)} gifts aren’t available right now.`); return; } up({ metal: m, item: first.id, shape: first.shapes.includes(d.shape) ? d.shape : first.shapes[0] }); };
   const pickItem = i => up({ item: i.id, shape: i.shapes.includes(d.shape) ? d.shape : i.shapes[0] });
-  const pay = () => { if (!ok) { setTouched(true); showFirstError(); return; } A.placeGift(); };
+  const pay = () => { if (!ok) { setTouched(true); showFirstError(); return; } if (RATE_CHAT) A.rateChat('gift', { item: it.id, shape: d.shape, design: d.design, engraving: d.engraving, packaging: d.packaging }, price.total); else A.placeGift(); };
   return html`<div class="page has-actions">
     <${TopBar} title="Gift gold and silver" onBack=${A.back} />
     <div class="scroll">
@@ -2464,8 +2694,9 @@ function GiftNew({ S, A }) {
         ${price.packaging > 0 && html`<div class="kv"><span>Velvet box</span><b>${fmt(price.packaging)}</b></div>`}
         <div class="kv"><span>Insured delivery</span><b>${fmt(price.delivery)}</b></div>
         <div class="kv total"><span>Total</span><b><${Odo} value=${price.total} /></b></div>
-        <p class="tiny muted" style="margin-top:8px">The metal price follows the live rate and is fixed when you pay.</p>
+        <p class="tiny muted" style="margin-top:8px">${RATE_CHAT ? 'Indicative: PGBX support confirms the final price in chat before you pay.' : 'The metal price follows the live rate and is fixed when you pay.'}</p>
       </div></section>
+      <${RateNotice} S=${S} A=${A} />
       <section class="sec"><div class="sec-h"><h3>Pay with</h3></div>
         <div class="group inset" role="radiogroup" aria-label="Payment method">
           ${METHODS.map(m => html`<button class="row" onClick=${() => A.set({ method: m.id })} role="radio" aria-checked=${S.method === m.id}><span class="ri"><${Icon} n=${m.icon} c="sm"/></span><div class="rt"><b>${m.name}</b><span>${m.sub}</span></div><${Radio} on=${S.method === m.id} /></button>`)}
@@ -2473,8 +2704,8 @@ function GiftNew({ S, A }) {
       ${S.stale && html`<${StaleBanner} S=${S}/>`}
       ${S.offline && html`<${Notice} kind="warning" icon="wifiOff" title="You’re offline">Connect to the internet to order.</${Notice}>`}
     </div>
-    <${ActionBar} label="Total" amount=${fmt(price.total)}>
-      <button class="btn btn-primary" disabled=${S.paying || S.offline || S.stale} onClick=${pay}>${S.paying ? html`<span class="spin"></span> Placing order` : html`<${Icon} n="lock" c="sm"/> Pay ${fmt(price.total)}`}</button>
+    <${ActionBar} label=${RATE_CHAT ? 'Total (indicative)' : 'Total'} amount=${fmt(price.total)}>
+      <button class="btn btn-primary" disabled=${S.paying || S.offline || S.stale} onClick=${pay}>${S.paying ? html`<span class="spin"></span> Placing order` : RATE_CHAT ? html`<${Icon} n="chat" c="sm"/> Get final rate via chat` : html`<${Icon} n="lock" c="sm"/> Pay ${fmt(price.total)}`}</button>
     </${ActionBar}>
   </div>`;
 }
@@ -2530,7 +2761,7 @@ const GUEST_REASON = { buy: 'Log in to buy gold and silver.', wallet: 'Log in to
 // Prototype data is kept in this browser so a refresh does not wipe the demo. Sample data only; nothing leaves the device.
 const STORE_KEY = LIVE ? 'pgbx-device-v1' : 'pgbx-demo-v1';
 const KEEP = LIVE ? ['worth', 'cart', 'pin', 'pinFails', 'pinLockUntil', 'phone', 'biometric', 'notifPrefs', 'tips', 'pinSet', 'loggedIn'] : ['ledger', 'orders', 'redemptions', 'dealerStock', 'cart', 'profile', 'kyc', 'pin', 'pinFails', 'pinLockUntil', 'phone',
-  'notifications', 'notifPrefs', 'alerts', 'biometric', 'tab', 'buyMetal', 'loggedIn', 'pinSet', 'tips', 'appraisals', 'giftOrders', 'worth', 'micro'];
+  'notifications', 'notifPrefs', 'alerts', 'biometric', 'tab', 'buyMetal', 'loggedIn', 'pinSet', 'tips', 'appraisals', 'giftOrders', 'worth', 'micro', 'chats', 'barSales'];
 function loadSaved() { try { const d = JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); return d && d.v === 1 && d.s && typeof d.s === 'object' ? sanitizeSaved(d.s) : null; } catch (e) { return null; } }
 
 // Saved data is untrusted (it may be damaged or from an older app version): keep only well-formed values,
@@ -2574,6 +2805,11 @@ function sanitizeSaved(s) {
   set('giftOrders', list(s.giftOrders, g => str(g.id) && str(g.ref) && str(g.item) && isObj(g.recipient) && str(g.recipient.name) && str(g.recipient.city) && str(g.status) && num(g.total) && str(g.deliverBy)));
   if (isObj(s.micro) && num(s.micro.grams) && s.micro.grams >= 0 && Array.isArray(s.micro.txns) && isObj(s.micro.lots) && isObj(s.micro.lots.buy) && isObj(s.micro.lots.sell))
     out.micro = { grams: s.micro.grams, lots: s.micro.lots, txns: s.micro.txns.filter(t => isObj(t) && str(t.ref) && (t.side === 'buy' || t.side === 'sell') && num(t.grams) && num(t.amount) && num(t.ts) && str(t.status) && Array.isArray(t.lots)) };
+  // rate chats: photos sent in the demo were only on screen (object URLs), so they don't survive a reload
+  set('chats', list(s.chats, c => str(c.id) && str(c.ref) && CHAT_KIND[c.kind] && CHAT_STATUS[c.status] && str(c.summary) && num(c.lastAt) && isObj(c.details) && Array.isArray(c.messages))
+    ?.map(c => ({ ...c, unread: int(c.unread, 0, 1e4) ? c.unread : 0, messages: c.messages.filter(m => isObj(m) && num(m.ts) && ['customer', 'staff', 'system'].includes(m.sender)).map(m => (m.attachment ? { ...m, attachment: { ...m.attachment, url: undefined } } : m)),
+      confirmation: isObj(c.confirmation) && num(c.confirmation.expiresAt) && num(c.confirmation.total) && isObj(c.confirmation.prices) ? c.confirmation : null })));
+  set('barSales', list(s.barSales, b => str(b.ref) && num(b.total) && num(b.ts) && Array.isArray(b.lines) && str(b.status)));
   set('worth', list(s.worth, w => str(w.id) && metalOk(w.metal) && str(w.karat) && KARATS_ALL[w.metal].includes(w.karat)));
   if (s.tab === 'redeem') out.tab = 'services';                       // the Redeem tab moved into Services
   else if (TABS.some(t => t[0] === s.tab)) out.tab = s.tab;
@@ -2590,9 +2826,9 @@ const SAVED = loadSaved();
 const CARRY_NOTE = (() => { try { const n = sessionStorage.getItem('pgbx-note'); sessionStorage.removeItem('pgbx-note'); return n || ''; } catch (e) { return ''; } })();
 
 // Account data. Cleared on logout and session end; hidden while browsing as a guest.
-const ACCOUNT_BLANK = LIVE ? { synced: false, missing: [], ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], banner: null, apprDraft: null, giftDraft: null, micro: { grams: 0, txns: [], lots: null },
+const ACCOUNT_BLANK = LIVE ? { synced: false, missing: [], ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], chats: [], barSales: [], banner: null, apprDraft: null, giftDraft: null, micro: { grams: 0, txns: [], lots: null },
   profile: { name: '', cnic: '', dob: '', email: '', address: '' }, kyc: { status: 'none', at: null }, checkout: [], lock: null } : {};
-const GUEST_VIEW = { ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], banner: null, micro: { grams: 0, txns: [], lots: { buy: { no: 1, filled: 0 }, sell: { no: 1, filled: 0 } } } };
+const GUEST_VIEW = { ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], chats: [], barSales: [], banner: null, micro: { grams: 0, txns: [], lots: { buy: { no: 1, filled: 0 }, sell: { no: 1, filled: 0 } } } };
 // A request key for a draft: the same draft sent twice (a retry after a lost answer) books once; any change makes a new one
 const draftKey = (prefix, d) => { const { key, ...rest } = d; return prefix + (key || '') + hex(sha256(new TextEncoder().encode(JSON.stringify(rest)))).slice(0, 24); };
 const apprDefaults = s => ({ key: uid() + uid(), items: [{ metal: 'gold', karat: '', approx_g: 0, note: '' }], date: '', slot: '', city: (s.svc && s.svc.appraisal.cities[0]) || 'Karachi', area: '', address: (s.profile && s.profile.address) || '', phone: s.phone || '', notes: '' });
@@ -2615,7 +2851,7 @@ function App() {
     kyc: { status: KYC_START, at: KYC_START === 'verified' ? Date.now() - 20 * 86400e3 : null },
     pin: LIVE ? null : PIN_DEFAULT, pinFails: 0, pinLockUntil: 0,
     cart: [], checkout: [], checkoutFrom: 'now', simCreditFail: false,
-    appraisals: [], giftOrders: [], worth: [], apprDraft: null, giftDraft: null, svc: LIVE ? null : SVC_SAMPLE,
+    appraisals: [], giftOrders: [], worth: [], chats: [], barSales: [], apprDraft: null, giftDraft: null, svc: LIVE ? null : SVC_SAMPLE,
     // $1 gold. Demo: the pool already holds other customers' gold, so the open lot isn't empty.
     micro: { grams: 0, txns: [], lots: { buy: { no: 3, filled: 7.912 }, sell: { no: 1, filled: 2.406 } } }, microQuote: null,
     notifications: [], banner: null, notifPrefs: { push: true, sms: true, email: false, alerts: true },
@@ -2802,9 +3038,52 @@ function App() {
     set(s => ({ notifications: [n, ...s.notifications].slice(0, 60), banner: s.notifPrefs.push && !quiet && !(kind === 'alert' && s.notifPrefs.alerts === false) ? n : s.banner }));
   }
 
+  // ---------- demo rate chat: a sample PGBX support reply and confirmation (production: real staff in the admin panel) ----------
+  const demoAsked = useRef(new Set());
+  function demoMsg(id, msg) {
+    const ts = Date.now();
+    set(s => ({ chats: s.chats.map(c => {
+      if (c.id !== id) return c;
+      const top = s.stack[s.stack.length - 1], watching = top && top.name === 'chat' && top.id === id;
+      const m = { id: c.messages.reduce((a, x) => Math.max(a, x.id), 0) + 1, ts, body: '', ...msg };
+      return { ...c, messages: [...c.messages, m], lastAt: ts, lastBody: m.body || (m.attachment ? m.attachment.name : ''), unread: msg.sender === 'staff' && !watching ? (c.unread || 0) + 1 : c.unread || 0 };
+    }) }));
+    if (msg.sender === 'customer') setTimeout(() => {
+      const c = (stRef.current.chats || []).find(x => x.id === id);
+      if (c && c.status !== 'closed') demoMsg(id, { sender: 'staff', staffName: 'Sana', body: msg.attachment ? 'Thanks, we’ve received your file.' : 'Thanks, noted. Anything else I can help with on this request?' });
+    }, 1500);
+  }
+  function demoConfirm(id) {
+    const s = stRef.current, c = (s.chats || []).find(x => x.id === id);
+    if (!c || c.status !== 'open' || c.confirmation) return;
+    const d = c.details; let prices, total;
+    if (c.kind === 'buy_bars' || c.kind === 'sell_bars') {
+      const unit = Object.fromEntries(d.lines.map(l => { const p = P[l.product_id]; return [l.product_id, c.kind === 'buy_bars' ? priceOf(p, s.rates) : Math.round(rateOf(s.rates, p.metal).sellGram * p.grams)]; }));
+      prices = { unit }; total = d.lines.reduce((a, l) => a + unit[l.product_id] * l.units, 0);
+    } else if (c.kind === 'buy_micro') { const q = microQuote(s); prices = { unit_pkr: q.unitPkr, price_gram: q.buyGram, usd_pkr: q.usdPkr }; total = q.unitPkr * d.units; }
+    else if (c.kind === 'sell_micro') { const q = microQuote(s); prices = { price_gram: q.sellGram }; total = Math.max(1, Math.floor(d.grams * q.sellGram)); }
+    else { const pr = s.svc && giftPrice(d, s.svc, s.rates); if (!pr) return; prices = { metal_pkr: pr.metal, making_pkr: pr.making, packaging_pkr: pr.packaging, delivery_pkr: pr.delivery }; total = pr.total; }
+    const conf = { id: 'RC-' + uid() + uid(), kind: c.kind, details: d, prices, total, note: '', status: 'valid', expiresAt: Date.now() + 15 * 60e3, lockId: 'LK-' + uid() };
+    set(x => ({ chats: x.chats.map(y => (y.id === id ? { ...y, status: 'confirmed', confirmation: conf } : y)) }));
+    demoMsg(id, { sender: 'staff', staffName: 'Sana', body: `Final rate confirmed: ${fmt(total)}. It’s valid for 15 minutes; tap the button below to go ahead.`, confirmationId: conf.id });
+    const t = s.stack[s.stack.length - 1];
+    notify('chat', 'Final rate confirmed', `${c.summary}: ${fmt(total)}. Valid for 15 minutes.`, !!(t && t.name === 'chat' && t.id === id), { name: 'chat', id });
+  }
+  function demoSupport(id) {
+    if (LIVE || demoAsked.current.has(id)) return;
+    demoAsked.current.add(id);
+    setTimeout(() => demoMsg(id, { sender: 'staff', staffName: 'Sana', body: 'Assalam o alaikum! This is Sana from PGBX support. I’m checking today’s rate for your request now.' }), 1800);
+    setTimeout(() => demoConfirm(id), 4200);
+  }
+  // A confirmed rate is used once: the chat is done and says what it was used for
+  function demoUsed(conf, ref) {
+    set(s => ({ chats: s.chats.map(c => (!c.confirmation || c.confirmation.id !== conf.id ? c : { ...c, status: 'completed', lastAt: Date.now(), confirmation: { ...c.confirmation, status: 'used', usedRef: ref },
+      messages: [...c.messages, { id: c.messages.reduce((a, x) => Math.max(a, x.id), 0) + 1, sender: 'system', body: `Done at the confirmed rate · ${ref}`, ts: Date.now() }] })) }));
+  }
+
   // FR-B2: refresh locked prices at zero while on product, cart or pay
   useEffect(() => {
-    if (st.lock && top && ['product', 'cart', 'pay'].includes(top.name) && now >= st.lock.expiresAt) {
+    if (st.lock && !st.lock.confirmed && top && ['product', 'cart', 'pay'].includes(top.name) && now >= st.lock.expiresAt) {
       if (LIVE) { if (!st.lock.renewing && now >= (st.lock.retryAt || 0)) { set(s => ({ lock: { ...s.lock, renewing: true } })); serverLock(Object.keys(st.lock.prices), true); } return; }
       set(s => ({ lock: { prices: Object.fromEntries(Object.keys(s.lock.prices).map(pid => [pid, priceOf(P[pid], s.rates)])), expiresAt: Date.now() + LOCK_S * 1000 } }));
       toast('Prices updated to the latest rate');
@@ -2816,7 +3095,8 @@ function App() {
   const needPids = !top ? [] : top.name === 'product' ? [top.pid] : top.name === 'cart' ? st.cart.map(l => l.pid) : top.name === 'pay' ? st.checkout.map(l => l.pid) : [];
   const needKey = needPids.join(',');
   useEffect(() => {
-    if (!needPids.length || (st.lock && needPids.every(pid => pid in st.lock.prices))) return;
+    // a rate confirmed in chat is only for its checkout: anywhere else gets the ordinary indicative price
+    if (!needPids.length || (st.lock && !(st.lock.confirmed && top.name !== 'pay') && needPids.every(pid => pid in st.lock.prices))) return;
     if (LIVE) { set(s => ({ lock: lockFor(s, needPids) })); serverLock(needPids); }
     else set(s => ({ lock: lockFor(s, needPids) }));
   }, [needKey, top && top.name, st.lock && Object.keys(st.lock.prices).join(',')]);
@@ -2918,6 +3198,8 @@ function App() {
       if (link.name === 'wallet') { set({ banner: null, tab: 'wallet', stack: [], navDir: 'fade' }); return; }   // a tab, not a pushed screen
       if (link.name === 'product' && !P[link.pid]) return;
       if (link.name === 'history' && link.metal !== 'gold' && link.metal !== 'silver') return; if (link.name === 'receipt' && link.from === undefined) link = { ...link, from: 'inbox' }; if (link.name === 'receipt' && !st.orders.some(o => o.id === link.oid)) return; if (link.name === 'code' && !st.redemptions.some(r => r.id === link.rid)) return; if (link.name === 'appraisal' && !st.appraisals.some(a => a.id === link.id)) return; if (link.name === 'gift' && !st.giftOrders.some(g => g.id === link.id)) return;
+      if (link.name === 'chat' && (typeof link.id !== 'string' || (!LIVE && !st.chats.some(c => c.id === link.id)))) return;
+      if (link.name === 'chat') { const t = st.stack[st.stack.length - 1]; if (t && t.name === 'chat' && t.id === link.id) { set({ banner: null }); return; } }
       set(s => ({ banner: null, navDir: 'fwd', stack: [...s.stack, link] })); },
     // Guests are told why they need to log in, and taken where they were going afterwards.
     login: (note, go) => { set({ stack: [], loginNote: '', loginIntent: note ? { note, go } : null }); setPhase('login'); },
@@ -2954,13 +3236,88 @@ function App() {
       set({ sending: true });
       Live.report(ref.startsWith('o:') ? 'order' : ref.startsWith('r:') ? 'collection' : 'general', `${about}\n\n${text.trim()}`).then(() => { set({ sending: false }); done(); }, e => { set({ sending: false }); liveFail(e); });
     },
+    // ---------- rate chat ----------
+    // Opens the chat for this request, or the open one already asking about exactly the same thing
+    rateChat: (kind, details, indicative) => {
+      if (st.guest) { A.login('Log in to get the final rate from PGBX support.'); return; }
+      const d = normDetails(kind, details), sig = kind + JSON.stringify(d);
+      const same = st.chats.find(c => ['open', 'confirmed'].includes(c.status) && c.kind + JSON.stringify(normDetails(c.kind, c.details)) === sig);
+      if (same) { A.push({ name: 'chat', id: same.id }); return; }
+      if (LIVE) {
+        if (st.sending) return;
+        set({ sending: true });
+        Live.openChat(kind, d, Math.round(indicative) || undefined).then(c => set(s => ({ sending: false, chats: [c, ...s.chats.filter(x => x.id !== c.id)], navDir: 'fwd', stack: [...s.stack, { name: 'chat', id: c.id }] })),
+          e => { set({ sending: false }); liveFail(e); });
+        return;
+      }
+      const now = Date.now(), id = 'CH-' + uid() + uid(), summary = chatSummary(kind, d);
+      const c = { id, ref: `PGBX-C-${ymd(now).slice(2).replace(/-/g, '')}-${uid().toUpperCase().slice(0, 6)}`, kind, details: d, summary, indicative: Math.round(indicative) || null, status: 'open',
+        createdAt: now, lastAt: now, unread: 0, confirmation: null,
+        messages: [{ id: 1, sender: 'system', body: `${summary}${indicative ? ` · app price ${fmt(indicative)} (indicative)` : ''}. PGBX support will confirm the final rate here.`, ts: now }] };
+      set(s => ({ chats: [c, ...s.chats], navDir: 'fwd', stack: [...s.stack, { name: 'chat', id }] }));
+    },
+    chatSend: (id, body, add) => {
+      if (LIVE) return Live.chatSend(id, body).then(m => { add && add(m); set(s => ({ chats: s.chats.map(c => (c.id === id ? { ...c, lastAt: m.ts, lastBody: body } : c)) })); });
+      demoMsg(id, { sender: 'customer', body });
+      return Promise.resolve();
+    },
+    chatAttach: (id, up, caption, add) => {
+      if (LIVE) return Live.chatAttach(id, { name: up.name, mime: up.mime, data: up.data, caption }).then(m => add && add(m));
+      demoMsg(id, { sender: 'customer', body: caption, attachment: { id: uid(), name: up.name, mime: up.mime, url: URL.createObjectURL(up.blob) } });
+      return Promise.resolve();
+    },
+    chatClose: (id, refresh) => {
+      if (LIVE) { Live.chatClose(id).then(() => { sync(); refresh && refresh(); toast('Request closed'); }, liveFail); return; }
+      set(s => ({ chats: s.chats.map(c => (c.id !== id ? c : { ...c, status: 'closed', lastAt: Date.now(), confirmation: c.confirmation && c.confirmation.status === 'valid' ? { ...c.confirmation, status: 'withdrawn' } : c.confirmation,
+        messages: [...c.messages, { id: c.messages.length + 1, sender: 'system', body: 'You closed this request.', ts: Date.now() }] })) }));
+      toast('Request closed');
+    },
+    // Uses the confirmed rate: checkout for bars, or the purchase / sale itself
+    useRate: (chat, conf, iban) => {
+      if (st.paying || st.offline) return;
+      if (conf.expiresAt <= Date.now()) { toast('The confirmed rate has expired. Ask in the chat for a new one.'); return; }
+      const d = conf.details;
+      if (chat.kind === 'buy_bars') {
+        const lines = d.lines.map(l => ({ pid: l.product_id, units: l.units }));
+        const fromCart = JSON.stringify(normDetails('buy_bars', { lines: st.cart.map(l => ({ product_id: l.pid, units: l.units })) })) === JSON.stringify(d);
+        const orderKey = 'K' + conf.id;
+        set(s => ({ checkout: lines, checkoutFrom: fromCart ? 'cart' : 'chat', paying: false, navDir: 'fwd',
+          lock: { id: conf.lockId, prices: conf.prices.unit, expiresAt: conf.expiresAt, confirmed: chat.ref, chatId: chat.id, confId: conf.id },
+          stack: [...s.stack, s.kyc.status === 'verified' ? { name: 'pay', orderKey } : { name: 'kyc', next: 'pay', orderKey }] }));
+        return;
+      }
+      if (chat.kind === 'buy_micro') { A.microBuy(d.units, 'K' + conf.id, conf); return; }
+      if (chat.kind === 'sell_micro') { set({ lastIban: iban }); A.microSell(Number(d.grams), iban, 'S' + conf.id, conf.total, conf); return; }
+      if (chat.kind === 'gift') { A.placeGift(conf); return; }
+      if (chat.kind === 'sell_bars') { set({ lastIban: iban }); A.sellBars(conf, iban); }
+    },
+    sellBars: (conf, iban) => {
+      if (st.kyc.status !== 'verified') { A.push({ name: 'kyc' }); return; }
+      if (LIVE) {
+        set({ paying: true });
+        Live.sellBars(conf.id, iban, 'B' + conf.id).then(async b => { await sync(); set({ paying: false }); toast(`Sold · ${fmt(b.total)} on its way to your bank`); }, e => { set({ paying: false }); liveFail(e); });
+        return;
+      }
+      const lines = conf.details.lines, ref = `PGBX-BS-${ymd(Date.now()).slice(2).replace(/-/g, '')}-${uid().toUpperCase()}`;
+      if (lines.some(l => (holdings[l.product_id] || 0) - (reserved[l.product_id] || 0) < l.units)) { toast('You no longer have those bars to sell.'); return; }
+      set(s => ({ ledger: [...s.ledger, ...lines.map(l => ({ id: 'L-' + uid(), ts: Date.now(), pid: l.product_id, delta: -l.units, reason: 'sale', ref, price: conf.prices.unit[l.product_id] }))],
+        barSales: [{ id: uid(), ref, lines: lines.map(l => ({ pid: l.product_id, units: l.units, unit: conf.prices.unit[l.product_id] })), total: conf.total, status: 'pending_payout', payoutTo: '•••• ' + iban.slice(-4), ts: Date.now() }, ...(s.barSales || [])] }));
+      demoUsed(conf, ref);
+      notify('purchase', 'Bars sold to PGBX', `${fmt(conf.total)} · ${ref}. PGBX will pay it to your bank account ending ${iban.slice(-4)}.`, true, { name: 'wallet' });
+      toast(`Sold · ${fmt(conf.total)} on its way to your bank`);
+    },
+    liveFail: e => liveFail(e),
+    demoSupport: id => demoSupport(id),
     // ---------- $1 gold ----------
     openMicro: () => { A.push({ name: 'micro' }); if (LIVE) Live.microQuote().then(q => set({ microQuote: q }), () => {}); },
     microQuote: () => Live.microQuote().then(q => set({ microQuote: q }), liveFail),
-    microBuy: (units, key) => {
+    microBuy: (units, key, conf) => {
       if (st.guest) { A.login('Log in to buy $1 gold.', { push: { name: 'micro' } }); return; }
       if (st.kyc.status !== 'verified') { A.push({ name: 'kyc' }); return; }
-      const q = microQuote(st); const total = (q.unitPkr || 0) * units;
+      const q0 = microQuote(st);
+      // a confirmed rate replaces today's indicative $1 price
+      const q = conf ? { ...q0, unitPkr: conf.prices.unit_pkr, buyGram: conf.prices.price_gram, gramsPerUnit: Math.round(conf.prices.unit_pkr / conf.prices.price_gram * 1e6) / 1e6 } : q0;
+      const total = (q.unitPkr || 0) * units;
       if (st.paying || st.offline || !q.unitPkr) return;
       if (spentToday + total > DAY_LIMIT) { toast(`You can buy up to ${fmt(Math.max(0, DAY_LIMIT - spentToday))} more today.`); return; }
       const done = g => toast(`Gold added: $${units} · ${fmtG(g)}`);
@@ -2968,7 +3325,7 @@ function App() {
       const back = s => ({ paying: false, navDir: 'fade', stack: s.stack.filter(r => r.name !== 'processing') });
       if (LIVE) {
         // The toast says what the server says: gold added, or still waiting for the payment (a provider's page)
-        Live.microBuy(units, key).then(async o => {
+        Live.microBuy(units, key, conf && conf.id).then(async o => {
           await sync(); set(back);
           const txns = (lastSync.current && lastSync.current.micro && lastSync.current.micro.txns || []).filter(t => t.orderRef === o.ref);
           if (txns.length && txns.every(t => t.status === 'credited')) done(txns.reduce((a, t) => a + t.grams, 0));
@@ -2992,14 +3349,15 @@ function App() {
         }
         return { ...back(s), micro: { grams: Math.round((s.micro.grams + q.gramsPerUnit * units) * 1e6) / 1e6, lots, txns: [...txns.reverse(), ...s.micro.txns].slice(0, 500) } };
       }), 1500);
+      if (conf) setTimeout(() => demoUsed(conf, (stRef.current.micro.txns[0] || {}).orderRef || 'PGBX-MO'), 1520);
       setTimeout(() => { done(q.gramsPerUnit * units); notify('purchase', 'Gold added', `$${units} of gold (${fmtG(q.gramsPerUnit * units)}) for ${fmt(total)}`, true, { name: 'micro' }); }, 1550);
     },
-    microSell: (grams, iban, key, expected) => {
+    microSell: (grams, iban, key, expected, conf) => {
       if (st.paying || st.offline) return;
-      const q = microQuote(st);
+      const q = conf ? { ...microQuote(st), sellGram: conf.prices.price_gram } : microQuote(st);
       if (LIVE) {
         set({ paying: true });
-        Live.microSell(grams, iban, key, expected).then(async t => {
+        Live.microSell(grams, iban, key, expected, conf && conf.id).then(async t => {
           await sync(); set(s => ({ paying: false, lastIban: iban, navDir: 'fwd', stack: [...s.stack.filter(r => r.name !== 'micro-sell'), { name: 'micro-txn', ref: t.ref }] }));
           toast(`Sold ${fmtG(grams)} · ${fmt(t.amount)} on its way to your bank`);
         }, e => {
@@ -3011,7 +3369,7 @@ function App() {
         return;
       }
       if (grams > st.micro.grams + 1e-9) { toast('That’s more than you have.'); return; }
-      const amount = Math.floor(grams * q.sellGram), ts = Date.now(), ref = `PGBX-MS-${ymd(ts).slice(2).replace(/-/g, '')}-${uid()}${uid().slice(0, 2)}`;
+      const amount = conf ? conf.total : Math.floor(grams * q.sellGram), ts = Date.now(), ref = `PGBX-MS-${ymd(ts).slice(2).replace(/-/g, '')}-${uid()}${uid().slice(0, 2)}`;
       set(s => {
         const lots = { ...s.micro.lots, sell: { ...s.micro.lots.sell } }; const parts = []; let left = grams;
         while (left > 1e-9) {
@@ -3024,6 +3382,7 @@ function App() {
         return { lastIban: iban, micro: { grams: Math.max(0, Math.round((s.micro.grams - grams) * 1e6) / 1e6), lots, txns: [t, ...s.micro.txns].slice(0, 500) },
           navDir: 'fwd', stack: [...s.stack.filter(r => r.name !== 'micro-sell'), { name: 'micro-txn', ref }] };
       });
+      if (conf) demoUsed(conf, ref);
       notify('purchase', 'Gold sold', `${fmtG(grams)} for ${fmt(amount)} · ${ref}. PGBX will pay it to your bank account ending ${iban.slice(-4)}.`, true, { name: 'micro' });
       toast(`Sold ${fmtG(grams)} · ${fmt(amount)} on its way to your bank`);
     },
@@ -3076,23 +3435,25 @@ function App() {
       if (st.guest) { A.login('Log in to send gold or silver as a gift.', { push: { name: 'gift-new' } }); return; }
       set(s => ({ giftDraft: s.giftDraft || giftDefaults(s), navDir: 'fwd', stack: [...s.stack, { name: 'gift-new' }] }));
     },
-    placeGift: () => {
+    placeGift: conf => {
       const d = st.giftDraft, svc = st.svc;
-      if (!d || !svc || st.paying || st.offline || stale) return;
+      if (!d || !svc || st.paying || st.offline || (stale && !conf)) return;
+      if (conf && JSON.stringify(normDetails('gift', d)) !== JSON.stringify(conf.details)) { toast('The gift was changed after the rate was confirmed. Ask in the chat for a new rate.'); return; }
       if (st.kyc.status !== 'verified') { A.push({ name: 'kyc', next: 'gift' }); return; }
       const phone = d.phone.replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '');
       if (LIVE) {
         set(s => ({ paying: true, navDir: 'fade', stack: [...s.stack, { name: 'processing', kind: 'gift' }] }));
-        Live.placeGift({ ...d, phone, key: draftKey('G', d) }).then(async g => { await sync(); set(s => ({ paying: false, giftDraft: null, navDir: 'fade', stack: [...s.stack.filter(r => !['processing', 'gift-new'].includes(r.name)), { name: 'gift', id: g.id }] })); },
+        Live.placeGift({ ...d, phone, key: draftKey('G', d) + (conf ? conf.id.slice(0, 8) : ''), confirmationId: conf ? conf.id : undefined }).then(async g => { await sync(); set(s => ({ paying: false, giftDraft: null, navDir: 'fade', stack: [...s.stack.filter(r => !['processing', 'gift-new'].includes(r.name)), { name: 'gift', id: g.id }] })); },
           e => { set(s => ({ paying: false, navDir: 'back', stack: s.stack.filter(r => r.name !== 'processing') })); liveFail(e); });
         return;
       }
-      const pr = giftPrice(d, svc, st.rates);
+      const pr = conf ? { metal: conf.prices.metal_pkr, making: conf.prices.making_pkr, packaging: conf.prices.packaging_pkr, delivery: conf.prices.delivery_pkr, total: conf.total } : giftPrice(d, svc, st.rates);
       if (spentToday + pr.total > DAY_LIMIT) { toast(`You can spend up to ${fmt(Math.max(0, DAY_LIMIT - spentToday))} more today.`); return; }
       const g = { id: 'GF-' + uid(), ref: `PGBX-G-${ymd(Date.now()).slice(2).replace(/-/g, '')}-${uid().slice(0, 5)}`, createdAt: Date.now(), item: d.item, shape: d.shape, design: d.design,
         engraving: d.engraving.trim(), message: d.message.trim(), packaging: d.packaging, recipient: { name: d.name.trim(), phone, city: d.city, address: d.address.trim() }, deliverBy: d.deliverBy,
         metal_pkr: pr.metal, making_pkr: pr.making, packaging_pkr: pr.packaging, delivery_pkr: pr.delivery, total: pr.total, status: 'placed', tracking: null, refundDue: false };
       set(s => ({ paying: true, navDir: 'fade', stack: [...s.stack, { name: 'processing', kind: 'gift' }] }));
+      if (conf) demoUsed(conf, g.ref);
       setTimeout(() => {
         set(s => ({ paying: false, giftDraft: null, giftOrders: [g, ...s.giftOrders], navDir: 'fade', stack: [...s.stack.filter(r => !['processing', 'gift-new'].includes(r.name)), { name: 'gift', id: g.id }] }));
         notify('service', 'Gift order placed', `${g.ref} · ${fmt(g.total)}. Delivery by ${dayName(g.deliverBy)}.`, true, { name: 'gift', id: g.id });
@@ -3152,6 +3513,16 @@ function App() {
     cartUnits: (pid, units) => set(s => ({ cart: units <= 0 ? s.cart.filter(l => l.pid !== pid) : s.cart.map(l => (l.pid === pid ? { ...l, units } : l)) })),
     checkout: from => {
       if (stale) return;
+      if (RATE_CHAT) {                                 // the final rate comes from PGBX support, so the next step is the chat
+        const lines = from === 'cart' ? st.cart : [{ pid: top.pid, units: st.qty }];
+        if (!lines.length) return;
+        if (linesUnits(lines) > MAX_UNITS) { toast(`You can buy up to ${MAX_UNITS} bars per order.`); return; }
+        const total = linesTotal(lines, Object.fromEntries(lines.map(l => [l.pid, (st.lock && st.lock.prices[l.pid]) || priceOf(P[l.pid], st.rates)])));
+        if (spentToday + total > DAY_LIMIT) { toast(`You can buy up to ${fmt(Math.max(0, DAY_LIMIT - spentToday))} more today.`); return; }
+        if (MIN_PURCHASE && total < MIN_PURCHASE) { toast(`The minimum order is ${fmt(MIN_PURCHASE)}.`); return; }
+        A.rateChat('buy_bars', { lines: lines.map(l => ({ product_id: l.pid, units: l.units })) }, total);
+        return;
+      }
       if (LIVE && (!st.lock || st.lock.pending)) { toast('Getting the latest price. Try again in a moment.'); return; }
       if (LIVE && MIN_PURCHASE && linesTotal(from === 'cart' ? st.cart : [{ pid: top.pid, units: st.qty }], st.lock.prices) < MIN_PURCHASE) { toast(`The minimum order is ${fmt(MIN_PURCHASE)}.`); return; }
       const lines = from === 'cart' ? st.cart : [{ pid: top.pid, units: st.qty }];
@@ -3165,6 +3536,7 @@ function App() {
     },
     pay: () => {
       if (stale || st.paying || st.offline) return;
+      if (st.lock && st.lock.confirmed && st.lock.expiresAt <= Date.now()) { toast('The confirmed rate has expired. Ask in the chat for a new one.'); return; }
       if (LIVE) {
         if (!st.lock || st.lock.pending || !st.checkout.every(l => Number.isFinite(st.lock.prices[l.pid]))) return;
         const key = top.orderKey;
@@ -3175,13 +3547,14 @@ function App() {
         }, e => {
           // Back to the payment screen with the reason; the same key makes a retry safe (no double order)
           set(s => ({ paying: false, navDir: 'back', stack: s.stack.filter(r => r.name !== 'processing') }));
-          if (e.code === 'LOCK_EXPIRED' || e.code === 'RATES_STALE') serverLock(st.checkout.map(l => l.pid), true);
+          if (!st.lock.confirmed && (e.code === 'LOCK_EXPIRED' || e.code === 'RATES_STALE')) serverLock(st.checkout.map(l => l.pid), true);
           liveFail(e);
         });
         return;
       }
       const key = top.orderKey; const fail = st.simCreditFail;
       if (!st.lock || !st.checkout.length || !st.checkout.every(l => Number.isFinite(st.lock.prices[l.pid]))) { toast('Getting the latest price. Try again in a moment.'); return; }
+      const conf = st.lock.confirmed ? { id: st.lock.confId } : null;
       const lines = st.checkout.map(l => ({ ...l, unit: st.lock.prices[l.pid] }));
       const total = lines.reduce((a, l) => a + l.unit * l.units, 0);
       if (spentToday + total > DAY_LIMIT) return;
@@ -3192,6 +3565,7 @@ function App() {
         const d = new Date(); let rno;
         do { rno = `PGBX-R-${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${uid()}`; } while (receipts.current.has(rno));
         receipts.current.add(rno);
+        if (conf) demoUsed(conf, rno);
         const order = { id: key, receipt: rno, lines, total, method: st.method, ts: Date.now(), status: fail ? 'flagged' : 'credited' };
         set(s => ({
           paying: false, orders: [...s.orders, order], navDir: 'fade', simCreditFail: false,
@@ -3371,6 +3745,9 @@ function App() {
     else if (n === 'micro') content = html`<${MicroScreen} S=${S} A=${A}/>`;
     else if (n === 'micro-sell') content = html`<${MicroSell} S=${S} A=${A}/>`;
     else if (n === 'micro-txn') content = html`<${MicroTxn} S=${S} A=${A} ref_=${top.ref}/>`;
+    else if (n === 'chat') content = html`<${ChatScreen} S=${S} A=${A} id=${top.id} key=${top.id}/>`;
+    else if (n === 'chats') content = html`<${ChatsScreen} S=${S} A=${A}/>`;
+    else if (n === 'sell-bars') content = html`<${SellBarsScreen} S=${S} A=${A}/>`;
     else if (n === 'appraisal-book') content = html`<${AppraisalBook} S=${S} A=${A}/>`;
     else if (n === 'appraisal') content = html`<${AppraisalDetail} S=${S} A=${A} id=${top.id}/>`;
     else if (n === 'gift-new') content = html`<${GiftNew} S=${S} A=${A}/>`;
@@ -3398,7 +3775,7 @@ function App() {
     const m = document.querySelector('meta[name="theme-color"]'); if (m) m.setAttribute('content', c);
   }, [darkTop]);
   // Checkout and verification are focused tasks: the tab bar steps aside for their sticky actions.
-  const hideTabs = top && ['product', 'cart', 'pay', 'processing', 'receipt', 'kyc', 'changepin', 'worth', 'appraisal-book', 'gift-new', 'micro', 'micro-sell', 'micro-txn'].includes(top.name);
+  const hideTabs = top && ['product', 'cart', 'pay', 'processing', 'receipt', 'kyc', 'changepin', 'worth', 'appraisal-book', 'gift-new', 'micro', 'micro-sell', 'micro-txn', 'chat', 'sell-bars'].includes(top.name);
   const enterCls = st.navDir === 'fwd' ? 'enter-fwd' : st.navDir === 'back' ? 'enter-back' : 'enter';
 
   // System back (Android back button, iOS edge swipe, browser back) walks back through the app's screens.

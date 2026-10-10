@@ -49,6 +49,7 @@ On a desktop the app shows inside a 390×844 phone frame; at phone width (500 px
 | `?start=login` / `?start=pin` | Open straight on the login or PIN screen |
 | `?sim=1` | Use simulated rates instead of the live feed |
 | `?kyc=done` | Start with identity already verified (skips the CNIC + selfie step before buying) |
+| `?ratechat=0` | Demo only: instant prices without the final-rate chat (as if PGBX switched `rate_chat_required` off) |
 
 Combine them: `?start=home&feedFail=1`. `?start=home` and `?kyc=done` are demo shortcuts and must not exist in a production build.
 
@@ -242,6 +243,57 @@ so they hold across server instances. Every staff action and every look at a cus
   - Accounts with $1 gold, or a payout still owed, can't be closed.
   - Prices pause (`RATES_STALE`) if the dollar rate is missing or jumps by more than 10%.
 
+## Final rate by live chat (every purchase and sale)
+
+App prices are **indicative**. Before any order, PGBX support confirms the final rate in a private chat tied to that
+exact request. This covers buying bars (product or cart), $1 gold buy and sell, gift orders, and selling bars back.
+
+**Disclaimer** (shown as a gold notice with a **Get final rate via chat** button on the Buy list, product, cart,
+checkout, $1 gold, sell, gift and sell-back screens; the totals there are labelled *indicative*):
+
+> The prices shown on this app are for informational purposes only. Final buying and selling rates will be confirmed
+> by our support team through live chat. Please open the chat to get the final rate before proceeding.
+
+**Customer flow**
+1. Product / cart / $1 gold / gift / sell → **Get final rate via chat**. The chat opens with the request summary and the
+   app price at that moment (`PGBX-C-YYMMDD-XXXXXX`). Asking about the same thing again reopens the same chat.
+2. Text, photos (JPEG/PNG/WebP, resized on the phone) and PDFs up to 2.5 MB. New replies arrive every 3 s while the
+   chat is open, and as a push notification otherwise (Account → Rate chats lists them with unread counts).
+3. When support confirms, a card shows the final amount and a countdown (default 15 min). Its button goes to payment
+   (bars: the payment screen is locked to that rate), buys or sells the $1 gold, places the gift, or sells the bars
+   (with the IBAN). The rate works **once**, only for that request, and only before it expires.
+4. The chat then says which order used it and is marked done. Customers can close a chat; history is kept.
+
+**Support flow (Admin panel → Rate chats)**: list of Active / Order placed / Closed chats with waiting badges (updated
+every 8 s), search by customer, mobile or chat ID. A chat shows the customer's identity status, holdings, today's
+spend and the market price now, the messages and files, a reply box with attachments, **Confirm final rate** (per-kind
+price fields pre-filled from the market, validity in minutes, optional note, live total) and **Close chat**. A new
+confirmation withdraws the previous one. Bar sell-backs are paid out in **Admin → Bar sell-backs**.
+
+**Privacy and access control**
+- A chat belongs to one customer. Every customer route filters by the signed-in customer; anyone else's chat (or file)
+  is "not found" (404), never "forbidden", so IDs can't be probed.
+- Staff access: the new **Support** role and **Admins** only. Support sees nothing but Rate chats (every other admin
+  route returns 403). Ops and dealers can't open chats. The first time a staff member opens a chat it is written to
+  the audit log (`chat.viewed`), as are confirmations and closures.
+- Messages and confirmations are append-only in the database (triggers refuse edits and deletes); files are checked by
+  their content (magic bytes), not their name. Closing an account closes its chats; the closed-account purge blanks message
+  text and drops files.
+- Row-level security is on for all chat tables with no policies: only the PGBX API (server key) can read them.
+
+**Rules in the database** (`supabase/migrations/20261010000000_rate_chat.sql`): `rate_chats`, `chat_messages`,
+`chat_attachments` (files in the database for now; can move to private storage later), `rate_confirmations`,
+`bar_sales`. Orders, $1 gold, gifts and sell-backs all call `take_confirmation`: no valid, unexpired, unused
+confirmation for the same customer, kind and details → `RATE_NOT_CONFIRMED` / `RATE_EXPIRED` / `RATE_USED` /
+`RATE_MISMATCH`. A confirmed price more than `rate_confirm_max_move_pct` (default 20%) from the market is refused as a
+likely typo. Settings: `rate_chat_required` (default on; off restores instant prices), `rate_confirm_minutes` (15),
+`rate_confirm_max_move_pct` (20).
+
+**Real time**: short polling, because the API runs on Vercel functions (no WebSockets). Swapping in Supabase Realtime
+later only changes how the app hears about new messages; the tables and rules stay the same.
+
+Tests: `tests/chat.test.mjs` (privacy, roles, every flow, expiry, replacement, append-only, rule off).
+
 ## Services (jewellery worth, doorstep appraisal, gift bullion)
 
 The **Services** tab replaces the old Redeem tab: collecting bars now sits inside it and in Wallet.
@@ -269,8 +321,9 @@ The **Services** tab replaces the old Redeem tab: collecting bars now sits insid
   customers (search, details, suspend), support requests (reply to the customer's inbox), dealers and stock,
   products and premiums, reconciliation (money and metal for bars, $1 gold and services, with vault counts), settings,
   audit log (filter by item, action, person or ID; pages back in time), staff accounts (setup by QR code).
-  Also: **Doorstep appraisals** (assign goldsmith, record result, cancel) and **Gift orders** (production, dispatch
-  with tracking, delivery, cancel).
+  Also: **Doorstep appraisals** (assign goldsmith, record result, cancel), **Gift orders** (production, dispatch
+  with tracking, delivery, cancel), **Rate chats** and **Bar sell-backs** (see Final rate by live chat).
+  The **Support** role sees only Rate chats.
   Operations staff can't change settings, premiums, dealers' details or staff, or suspend customers.
 - **Dealer app** (`/dealer`, phone-first): enter the customer's code, prepare and mark ready, tick the CNIC check,
   record one serial per bar and confirm. Shows today's queue and the counter's stock.
