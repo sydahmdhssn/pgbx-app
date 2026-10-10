@@ -21,6 +21,9 @@ const START = LIVE ? null : params.get('start');   // demo only: home | login | 
 const FEED_FAIL = !LIVE && params.get('feedFail') === '1';
 const FORCE_SIM = !LIVE && params.get('sim') === '1';
 const POLL_MS = 10000;                     // FR-R1: update every 5–10 s
+const SYNC_MS = 20000;                     // production: the account's records, while the app is open
+const MICRO_QUOTE_MS = 20000;              // production: today's $1 price, while a $1 gold screen is open
+const PUBLIC_RETRY_MS = 30000;             // production: dealers, products and service settings that didn't load
 const SIM_TICK_MS = 5000;
 const STALE_MS = 30000;                    // FR-R4: freshness limit (proposed default): no successful update for 30 s
 const DATA_STALE_MS = 90000;               // FR-R4: the prices themselves older than 90 s (the source updates about every 30 s)
@@ -540,7 +543,7 @@ function Login({ S, note, intent, hasPin, onDone, onBrowse, onPin, onRetry }) {
       <${Logo} size=${104} orbit=${true} />
       <h1>Pakistan Gold Bullion Exchange</h1>
       <div class="brand-badge"><${Shariah}/></div>
-      <p>Buy 999.0 gold and silver, held for you by PGBX. Collect it at any of 250 dealers.</p>
+      <p>Buy 999.0 gold and silver, held for you by PGBX. Collect it at any of ${DEALERS_TEXT}.</p>
       <div class="ticker" aria-label="Current buy rates">
         ${[['gold', g], ['silver', s]].map(([m, r]) => html`<div class="tick">
           <span><span class=${dotClass(S.rates, S.stale)}></span>${metalName(m)} · per tola</span>
@@ -727,7 +730,9 @@ const Empty = ({ icon, title, body, action, onAction }) => html`<div class="empt
   ${action && html`<button class="btn btn-primary" onClick=${onAction}>${action}</button>`}</div>`;
 // Demo-only controls, visibly separate from the product.
 const Demo = ({ title, body, children }) => LIVE ? null : html`<div class="demo"><div class="demo-h"><${Icon} n="sliders" c="xs"/> Demo · ${title}</div>${body && html`<p>${body}</p>`}${children}</div>`;
-const Tbc = () => html`<span class="tbc">${TBC}</span>`;
+// Details PGBX hasn't given yet: marked in the demo; in production the row or sentence is left out instead (see LIVE checks)
+const Tbc = () => (LIVE ? null : html`<span class="tbc">${TBC}</span>`);
+const DEALERS_TEXT = LIVE ? 'PGBX dealers' : '250 dealers';
 const Sample = () => (LIVE ? null : html`<span class="tag neutral">Sample</span>`);
 const Seg = ({ items, value, onChange, label }) => {
   const idx = Math.max(0, items.findIndex(x => x[0] === value));
@@ -867,7 +872,7 @@ function RatesHome({ S, A }) {
     <section class="sec"><div class="group"><button class="row" onClick=${() => A.push({ name: 'worth' })}>
       <span class="ri gold"><${Icon} n="calc" c="sm"/></span><div class="rt"><b>What is your jewellery worth?</b><span>Enter the karat and weight for a free buy-back estimate.</span></div><${Icon} n="chev" c="sm chev"/>
     </button><button class="row" onClick=${() => A.tab('services')}>
-      <span class="ri gold"><${Icon} n="gem" c="sm"/></span><div class="rt"><b>More from PGBX</b><span>Doorstep appraisal, gift bullion and coins, collection at 250 dealers.</span></div><${Icon} n="chev" c="sm chev"/>
+      <span class="ri gold"><${Icon} n="gem" c="sm"/></span><div class="rt"><b>More from PGBX</b><span>Doorstep appraisal, gift bullion and coins, collection at ${DEALERS_TEXT}.</span></div><${Icon} n="chev" c="sm chev"/>
     </button></div></section>
 
     <p class="foot">${rates.mode === 'live'
@@ -1134,13 +1139,14 @@ function normDetails(kind, d) {
   if (kind === 'sell_micro') return { grams: Math.round(Number(d.grams) * 1e6) / 1e6 };
   return { item: d.item, shape: d.shape, design: d.design, engraving: String(d.engraving || '').trim(), packaging: d.packaging };
 }
-function chatSummary(kind, d) {
+function chatSummary(kind, d, svc) {
   const lines = () => d.lines.map(l => `${l.units} × ${P[l.product_id] ? pname(P[l.product_id]) : l.product_id}`).join(', ');
   if (kind === 'buy_bars') return 'Buy ' + lines();
   if (kind === 'sell_bars') return 'Sell back ' + lines();
   if (kind === 'buy_micro') return `Buy $${d.units} of gold ($1 gold)`;
   if (kind === 'sell_micro') return `Sell ${d.grams.toFixed(4)} g of $1 gold`;
-  return `Gift: ${d.item} ${d.shape}`;
+  const it = svc && svc.gift.items.find(i => i.id === d.item);
+  return `Gift: ${it ? `${it.label} ${metalName(it.metal).toLowerCase()}` : d.item} ${d.shape}`;
 }
 // The notice on every buying and selling screen. action: { label, fn } opens the chat for what's on the screen.
 function RateNotice({ S, A, action, confirmed }) {
@@ -1155,99 +1161,154 @@ function RateNotice({ S, A, action, confirmed }) {
         ${!S.guest && open > 0 && html`<button class="btn btn-secondary btn-sm" onClick=${() => A.push({ name: 'chats' })}>Your rate chats (${open})</button>`}
       </div></div></div>`;
 }
-// Photos are made smaller before sending (long side 1600 px, JPEG); PDFs go as they are
+// Photos are made smaller before sending (long side 1600 px, JPEG; iPhone HEIC photos are converted); PDFs go as they are.
+// The server accepts up to FILE_MAX_BYTES of JPEG, PNG, WebP or PDF.
+const FILE_PICK_MAX = 12e6, FILE_SHRINK_OVER = 600e3, FILE_MAX_BYTES = 2621440, PHOTO_SIDE = 1600, PHOTO_QUALITY = 0.85;
+const FILE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
 const toB64 = blob => new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = bad; r.readAsDataURL(blob); });
 async function fileForUpload(file) {
-  if (file.size > 12e6) throw new Error('That file is too large.');
-  if (/^image\//.test(file.type) && file.size > 600e3) {
+  if (file.size > FILE_PICK_MAX) throw new Error('That file is too large.');
+  if (/^image\//.test(file.type) && (file.size > FILE_SHRINK_OVER || !FILE_TYPES.includes(file.type))) {
     const img = await createImageBitmap(file).catch(() => null);
     if (img) {
-      const k = Math.min(1, 1600 / Math.max(img.width, img.height)), c = document.createElement('canvas');
+      const k = Math.min(1, PHOTO_SIDE / Math.max(img.width, img.height)), c = document.createElement('canvas');
       c.width = Math.round(img.width * k); c.height = Math.round(img.height * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+      img.close();                                          // the full-size decoded photo can be tens of MB
+      const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', PHOTO_QUALITY));
+      c.width = c.height = 0;
+      if (!blob || blob.size > FILE_MAX_BYTES) throw new Error('That photo is too large. Try a smaller one.');
       return { name: file.name.replace(/\.\w+$/, '') + '.jpg', mime: 'image/jpeg', data: await toB64(blob), blob };
     }
   }
-  if (!['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(file.type)) throw new Error('Send a photo (JPEG, PNG or WebP) or a PDF.');
-  if (file.size > 2621440) throw new Error('Files can be up to 2.5 MB.');
+  if (!FILE_TYPES.includes(file.type)) throw new Error('Send a photo (JPEG, PNG or WebP) or a PDF.');
+  if (file.size > FILE_MAX_BYTES) throw new Error('Files can be up to 2.5 MB.');
   return { name: file.name, mime: file.type, data: await toB64(file), blob: file };
 }
-function ChatFile({ chatId, a }) {
-  const [url, setUrl] = useState(a.url || null);
+// Chat files: fetched when they scroll into view, kept for the session (an attachment never changes), at most 40 at once
+const FILE_URLS = new Map();                 // attachment id -> object URL, oldest first
+const FILE_KEEP = 40;
+function keepFile(id, blob) {
+  if (FILE_URLS.has(id)) return FILE_URLS.get(id);
+  const url = URL.createObjectURL(blob); FILE_URLS.set(id, url);
+  while (FILE_URLS.size > FILE_KEEP) { const [k, u] = FILE_URLS.entries().next().value; FILE_URLS.delete(k); URL.revokeObjectURL(u); }
+  return url;
+}
+function b64Blob(data, mime) {               // a plain loop: several times faster than Uint8Array.from with a callback
+  const bin = atob(data), out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return new Blob([out], { type: mime });
+}
+function ChatFile({ chatId, a, onLoad }) {
+  const [url, setUrl] = useState(a.url || FILE_URLS.get(a.id) || null);
   const [err, setErr] = useState(false);
+  const box = useRef(null);
   useEffect(() => {
-    if (a.url || !LIVE) return;
-    let u = null, live = true;
-    Live.chatFile(chatId, a.id).then(d => { if (!live) return; const bin = Uint8Array.from(atob(d.data), c => c.charCodeAt(0)); u = URL.createObjectURL(new Blob([bin], { type: d.mime })); setUrl(u); }, () => live && setErr(true));
-    return () => { live = false; u && URL.revokeObjectURL(u); };
+    if (url || !LIVE) return;
+    let live = true, io = null;
+    const get = () => Live.chatFile(chatId, a.id).then(d => { if (live) setUrl(keepFile(a.id, b64Blob(d.data, d.mime))); }, () => live && setErr(true));
+    if (typeof IntersectionObserver === 'function' && box.current) {
+      io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { io.disconnect(); io = null; get(); } }, { rootMargin: '400px 0px' });
+      io.observe(box.current);
+    } else get();
+    return () => { live = false; io && io.disconnect(); };
   }, [a.id]);
   if (err || (!url && !LIVE)) return html`<span class="small muted">${a.name} (no longer available)</span>`;
-  if (!url) return html`<span class="small muted">Loading ${a.name}…</span>`;
-  return a.mime.startsWith('image/') ? html`<a href=${url} target="_blank" rel="noopener"><img class="chat-img" src=${url} alt=${a.name} /></a>`
+  if (!url) return html`<span class="chat-file-wait small muted" ref=${box}>Loading ${a.name}…</span>`;
+  return a.mime.startsWith('image/') ? html`<a href=${url} target="_blank" rel="noopener"><img class="chat-img" src=${url} alt=${a.name} onLoad=${onLoad} /></a>`
     : html`<a class="chat-pdf" href=${url} download=${a.name}><${Icon} n="doc" c="sm"/> ${a.name}</a>`;
 }
-// Production: the chat's messages come from the server, newest every 3 s while it's on screen. Demo: kept in S.chats.
+// What a chat's tag says: a confirmed rate that has run out is "Rate expired", not "Rate confirmed"
+const rateEnds = c => (c.confirmation && c.confirmation.status === 'valid' ? c.confirmation.expiresAt : c.rateExpiresAt || null);
+const chatState = (c, expiresAt, now) => (c.status === 'confirmed' && expiresAt && expiresAt <= now ? ['neutral', 'Rate expired'] : CHAT_STATUS[c.status] || ['', c.status]);
+const CHAT_POLL_MS = 3000, CHAT_POLL_DONE_MS = 15000;     // while a rate is being agreed; after the order (support may still write)
+// Production: the chat's messages come from the server while it's on screen (one request at a time; an older answer
+// never replaces a newer one). Demo: kept in S.chats.
 function useChatThread(S, A, id) {
   const local = (S.chats || []).find(c => c.id === id);
   const [t, setT] = useState(null);
   const [err, setErr] = useState(null);
-  const lastId = useRef(0);
+  const lastId = useRef(0), get = useRef(() => Promise.resolve());
+  const tRef = useRef(null); tRef.current = t;
   useEffect(() => {
     if (!LIVE) return;
-    let live = true;
-    const merge = d => setT(prev => {
-      const msgs = prev ? [...prev.messages, ...d.messages.filter(m => !prev.messages.some(x => x.id === m.id))] : d.messages;
-      if (msgs.length) lastId.current = msgs[msgs.length - 1].id;
-      return { chat: d.chat, messages: msgs, confirmation: d.confirmation };
+    let live = true, busy = false, seq = 0, applied = 0, timer = null;
+    const merge = (d, n) => setT(prev => {
+      if (n < applied) return prev;                       // an older answer that arrived late
+      applied = n;
+      const have = prev ? prev.messages : [];
+      const fresh = d.messages.filter(m => !have.some(x => x.id === m.id));
+      const same = prev && !fresh.length && prev.chat.status === d.chat.status && JSON.stringify(prev.confirmation) === JSON.stringify(d.confirmation);
+      if (same) return prev;                              // nothing changed: no redraw
+      const messages = fresh.length ? [...have, ...fresh].sort((a, b) => a.id - b.id) : have;
+      if (messages.length) lastId.current = messages[messages.length - 1].id;
+      return { chat: d.chat, messages, confirmation: d.confirmation };
     });
-    const get = () => Live.chatThread(id, lastId.current).then(d => { if (live) { merge(d); setErr(null); } }, e => { if (live) { if (Live.signedOut(e)) ACT.liveFail(e); else setErr(e); } });
-    get();
-    const tick = setInterval(() => { if (document.visibilityState === 'visible') get(); }, 3000);
-    const vis = () => document.visibilityState === 'visible' && get();
+    const pull = () => {
+      if (busy) return Promise.resolve();
+      busy = true; const n = ++seq;
+      return Live.chatThread(id, lastId.current).then(d => { if (live) { merge(d, n); setErr(null); } }, e => { if (live) { if (Live.signedOut(e)) ACT.liveFail(e); else setErr(e); } })
+        .finally(() => { busy = false; });
+    };
+    get.current = pull;
+    // the next check is planned after each answer: often while the rate is being agreed, rarely once it's done, never once closed
+    const next = () => { timer = setTimeout(() => {
+      const st = tRef.current && tRef.current.chat && tRef.current.chat.status;
+      if (st === 'closed') return;
+      (document.visibilityState === 'visible' ? pull() : Promise.resolve()).then(() => live && next());
+    }, tRef.current && tRef.current.chat && tRef.current.chat.status === 'completed' ? CHAT_POLL_DONE_MS : CHAT_POLL_MS); };
+    pull().then(() => live && next());
+    const vis = () => document.visibilityState === 'visible' && pull();
     document.addEventListener('visibilitychange', vis);
-    return () => { live = false; clearInterval(tick); document.removeEventListener('visibilitychange', vis); };
+    return () => { live = false; clearTimeout(timer); document.removeEventListener('visibilitychange', vis); };
   }, [id]);
-  useEffect(() => { if (LIVE && local && local.unread) A.set(s => ({ chats: s.chats.map(c => (c.id === id ? { ...c, unread: 0 } : c)) })); else if (!LIVE && local && local.unread) A.set(s => ({ chats: s.chats.map(c => (c.id === id ? { ...c, unread: 0 } : c)) })); }, [id, local && local.unread]);
+  useEffect(() => { if (local && local.unread) A.set(s => ({ chats: s.chats.map(c => (c.id === id ? { ...c, unread: 0 } : c)) })); }, [id, local && local.unread]);
   if (!LIVE) return { chat: local, messages: local ? local.messages : [], confirmation: local ? local.confirmation : null, loading: false };
-  const add = m => setT(prev => (prev && !prev.messages.some(x => x.id === m.id) ? { ...prev, messages: [...prev.messages, m] } : prev));
-  return { chat: t ? t.chat : local, messages: t ? t.messages : [], confirmation: t ? t.confirmation : null, loading: !t && !err, error: err, add,
-    refresh: () => Live.chatThread(id, lastId.current).then(d => setT(prev => ({ chat: d.chat, messages: [...(prev ? prev.messages : []), ...d.messages.filter(m => !(prev ? prev.messages : []).some(x => x.id === m.id))], confirmation: d.confirmation })), () => {}) };
+  const add = m => setT(prev => (prev && !prev.messages.some(x => x.id === m.id) ? { ...prev, messages: [...prev.messages, m].sort((a, b) => a.id - b.id) } : prev));
+  return { chat: t ? t.chat : local, messages: t ? t.messages : [], confirmation: t ? t.confirmation : null, loading: !t && !err, error: err, add, refresh: () => get.current() };
 }
 function ChatScreen({ S, A, id }) {
   const th = useChatThread(S, A, id);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
-  const scroller = useRef(null), fileRef = useRef(null);
-  useEffect(() => { const el = scroller.current; if (el) el.scrollTop = el.scrollHeight; }, [th.messages.length, !!th.confirmation]);
-  useEffect(() => { if (!LIVE && th.chat && th.chat.status === 'open' && !th.chat.confirmation) A.demoSupport(th.chat.id); }, [th.chat && th.chat.id]);
-  const c = th.chat;
+  const scroller = useRef(null), fileRef = useRef(null), box = useRef(null);
+  // Follow new messages (and photos as they load) only while the customer is at the bottom; reading older ones isn't interrupted
+  const stick = useRef(true);
+  const toEnd = () => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; };
+  useEffect(toEnd, [th.messages.length, !!th.confirmation]);
+  const c = th.chat, conf = th.confirmation;
+  // demo: a sample reply and rate; again if the last one ran out
+  const confDead = conf && (conf.status !== 'valid' || conf.expiresAt <= S.now);
+  useEffect(() => { if (!LIVE && c && ['open', 'confirmed'].includes(c.status) && (!conf || confDead)) A.demoSupport(c.id); }, [c && c.id, conf && conf.id, !!confDead]);
   if (!c && th.loading) return html`<div class="page"><${TopBar} title="Final rate" onBack=${A.back} /><div class="scroll"><div class="pad"><span class="sk" style="height:200px"></span></div></div></div>`;
   if (!c) return html`<div class="page"><${TopBar} title="Final rate" onBack=${A.back} /><div class="scroll"><${Empty} icon="chat" title="Chat not found" body=${th.error ? th.error.message : 'It may have been removed from this phone.'} /></div></div>`;
   const closed = c.status === 'closed';
+  const fit = () => { const el = box.current; if (el) { el.style.height = 'auto'; el.style.height = Math.min(120, el.scrollHeight) + 'px'; } };
+  const sent = body => { setText(v => (v.trim() === body ? '' : v)); requestAnimationFrame(fit); stick.current = true; };   // text typed meanwhile is kept
   const send = async () => {
     const body = text.trim(); if (!body || busy) return;
     setBusy(true);
-    try { await A.chatSend(c.id, body, th.add); setText(''); } catch (e) { A.toast(e.message); } finally { setBusy(false); }
+    try { await A.chatSend(c.id, body, th.add); sent(body); } catch (e) { A.toast(e.message); } finally { setBusy(false); }
   };
   const attach = async e => {
     const f = e.target.files && e.target.files[0]; e.target.value = ''; if (!f) return;
     setBusy(true);
-    try { const up = await fileForUpload(f); await A.chatAttach(c.id, up, text.trim(), th.add); setText(''); } catch (x) { A.toast(x.message); } finally { setBusy(false); }
+    const caption = text.trim();
+    try { const up = await fileForUpload(f); await A.chatAttach(c.id, up, caption, th.add); sent(caption); } catch (x) { A.toast(x.message); } finally { setBusy(false); }
   };
-  const conf = th.confirmation;
   const close = () => A.confirm({ title: 'Close this request?', body: 'You can still read it, but its rate can’t be used. You can start a new request any time.', confirm: 'Close request', cancel: 'Keep it', danger: true, onConfirm: () => A.chatClose(c.id, th.refresh) });
+  const [tone, label] = chatState(c, conf && conf.status === 'valid' ? conf.expiresAt : null, S.now);
   return html`<div class="page has-actions chat-page">
     <${TopBar} title="Final rate" onBack=${A.back} right=${!closed && html`<button class="linkbtn sm" onClick=${close}>Close</button>`} />
-    <div class="scroll" ref=${scroller}>
+    <div class="scroll" ref=${scroller} onScroll=${e => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
       <div class="card chat-req">
-        <div class="between"><span class="small muted">${CHAT_KIND[c.kind]} · <span class="mono">${c.ref}</span></span><span class=${'tag ' + (CHAT_STATUS[c.status] || ['', ''])[0]}>${(CHAT_STATUS[c.status] || ['', c.status])[1]}</span></div>
+        <div class="between"><span class="small muted">${CHAT_KIND[c.kind]} · <span class="mono">${c.ref}</span></span><span class=${'tag ' + tone}>${label}</span></div>
         <b style="display:block;margin-top:6px">${c.summary}</b>
         ${c.indicative ? html`<div class="small muted" style="margin-top:2px">App price when you asked: ${fmt(c.indicative)} (indicative)</div>` : ''}
       </div>
       <div class="chat-msgs" aria-live="polite">
         ${th.messages.map(m => html`<div class=${'msg ' + m.sender + (m.confirmationId ? ' rate' : '')} key=${m.id}>
           ${m.sender === 'system' ? html`<span>${m.body}</span>` : html`<div class="bubble">
-            ${m.attachment && html`<${ChatFile} chatId=${c.id} a=${m.attachment} />`}
+            ${m.attachment && html`<${ChatFile} chatId=${c.id} a=${m.attachment} onLoad=${toEnd} />`}
             ${m.body && html`<div style="white-space:pre-wrap">${m.body}</div>`}
             <div class="meta">${m.sender === 'staff' ? (m.staffName ? m.staffName + ' · PGBX' : 'PGBX support') : 'You'} · ${F.hm.format(new Date(m.ts))}</div></div>`}
         </div>`)}
@@ -1258,10 +1319,10 @@ function ChatScreen({ S, A, id }) {
     </div>
     ${closed ? html`<div class="actionbar"><div class="small muted" style="text-align:center">This request is closed. Start a new one from the product or checkout.</div></div>`
       : html`<div class="actionbar chat-compose">
-        <input type="file" ref=${fileRef} accept="image/jpeg,image/png,image/webp,application/pdf" style="display:none" onChange=${attach} />
+        <input type="file" ref=${fileRef} accept="image/jpeg,image/png,image/webp,image/heic,application/pdf" style="display:none" onChange=${attach} />
         <button class="iconbtn" onClick=${() => fileRef.current.click()} disabled=${busy || S.offline} aria-label="Attach a photo or PDF"><${Icon} n="clip"/></button>
-        <textarea class="inp" rows="1" placeholder="Message PGBX support" value=${text} maxlength="2000" aria-label="Message"
-          onInput=${e => { setText(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(120, e.target.scrollHeight) + 'px'; }}
+        <textarea class="inp" rows="1" ref=${box} placeholder="Message" value=${text} maxlength="2000" aria-label="Message to PGBX support"
+          onInput=${e => { setText(e.target.value); fit(); }}
           onKeyDown=${e => { if (e.key === 'Enter' && !e.shiftKey && innerWidth > 500) { e.preventDefault(); send(); } }}></textarea>
         <button class="iconbtn send" onClick=${send} disabled=${busy || !text.trim() || S.offline} aria-label="Send"><${Icon} n="send"/></button>
       </div>`}
@@ -1293,10 +1354,12 @@ function ChatsScreen({ S, A }) {
     <div class="scroll">
       <div class="pad"><p class="muted">Your requests for a final rate. Each chat is private between you and PGBX support.</p></div>
       ${chats.length === 0 ? html`<${Empty} icon="chat" title="No rate chats yet" body="When you buy or sell, open a chat from the product, cart or checkout to get the final rate." />`
-        : html`<div class="group">${chats.map(c => html`<button class="row" onClick=${() => A.push({ name: 'chat', id: c.id })}>
+        : html`<div class="group chat-list">${chats.map(c => { const [tone, label] = chatState(c, rateEnds(c), S.now); return html`<button class="row" onClick=${() => A.push({ name: 'chat', id: c.id })}>
           <span class="ri gold"><${Icon} n="chat" c="sm"/></span>
-          <div class="rt"><b>${c.summary}</b><span>${c.lastBody ? c.lastBody.slice(0, 80) : CHAT_KIND[c.kind]} · ${rel(c.lastAt, S.now)}</span></div>
-          ${c.unread > 0 ? html`<span class="badge-dot" aria-label=${c.unread + ' new'}>${c.unread}</span>` : html`<span class=${'tag ' + (CHAT_STATUS[c.status] || ['', ''])[0]}>${(CHAT_STATUS[c.status] || ['', c.status])[1]}</span>`}</button>`)}</div>`}
+          <div class="rt"><b>${c.summary}</b>
+            <span class="chat-prev">${c.lastBody || CHAT_KIND[c.kind]}</span>
+            <span class="chat-when"><span class=${'tag ' + tone}>${label}</span> ${rel(c.lastAt, S.now)}</span></div>
+          ${c.unread > 0 && html`<span class="badge-dot" aria-label=${c.unread + ' new'}>${c.unread}</span>`}</button>`; })}</div>`}
     </div>
   </div>`;
 }
@@ -1550,7 +1613,7 @@ function Receipt({ S, A, oid, showBack }) {
       <div class="kv"><span>Date</span><b>${dt(o.ts)}</b></div>
       <div class="kv"><span>Status</span><span class=${'tag ' + (ended ? 'neutral' : flagged ? 'warning' : 'success')}>${o.status === 'pending' ? 'Awaiting payment' : ended ? HEAD[o.status][0] : flagged ? 'With operations' : 'In your wallet'}</span></div>
       <div class="kv total"><span>${paid ? 'Total paid' : 'Total'}</span><b>${fmt(o.total)}</b></div>
-      <div class="small muted" style="margin-top:8px">Tax and legal details: <${Tbc}/></div>
+      ${!LIVE && html`<div class="small muted" style="margin-top:8px">Tax and legal details: <${Tbc}/></div>`}
     </div>
     <div class="pad stack-btns" style="margin-top:24px">
       <button class="btn btn-primary" onClick=${() => A.tab('wallet')}>View wallet</button>
@@ -1840,7 +1903,7 @@ function statementHtml(S, d, from, to) {
   return `<!doctype html><html><head><meta charset="utf-8"><title>PGBX statement ${from} to ${to}</title>
 <style>body{font:13px/1.5 -apple-system,BlinkMacSystemFont,system-ui,'Segoe UI',Roboto,Arial,sans-serif;color:#1D2B22;margin:32px}h1{font-family:ui-serif,'New York',Georgia,serif;color:#0B4A2C;margin:0}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{padding:7px 8px;border-bottom:1px solid #ddd;text-align:left}th{background:#0B4A2C;color:#fff;font-size:11px;text-transform:uppercase}.m{color:#5F6D64}.box{border:1px solid #C8962B;border-radius:8px;padding:10px 12px;margin-top:12px}</style></head>
 <body><h1>PGBX wallet statement</h1><div class="m">Pakistan Gold Bullion Exchange · Shariah compliant · Office 1211, 12th Floor, Gold Tower, Saddar, Karachi</div>
-<div class="box"><b>${esc(S.profile.name)}</b> · CNIC ${esc(maskCnic(S.profile.cnic) || 'not verified')} · +92 ${esc(S.phone || '3XX XXX 4521')}<br>Period: ${from} to ${to} · Generated ${esc(dt(Date.now()))}</div>
+<div class="box"><b>${esc(S.profile.name)}</b> · CNIC ${esc(maskCnic(S.profile.cnic) || 'not verified')} · ${S.phone ? '+92 ' + esc(S.phone) : ''}<br>Period: ${from} to ${to} · Generated ${esc(dt(Date.now()))}</div>
 <p><b>Opening holdings:</b> ${esc(holdText(d.opening))}<br><b>Closing holdings:</b> ${esc(holdText(d.closing))}</p>
 <table><tr><th>Date</th><th>Type</th><th>Product</th><th>Units</th><th>Price / unit</th><th>Receipt / reference</th></tr>${rows}</table>
 <h2 style="font-size:15px;margin-top:24px;color:#0B4A2C">$1 gold</h2><p><b>Balance today:</b> ${esc(fmtG(d.microGrams))} of 24K gold, pooled in 1-tola bars</p>
@@ -1894,7 +1957,7 @@ function StatementScreen({ S, A }) {
         <button class="btn btn-primary" onClick=${pdf}><${Icon} n="doc" c="sm"/> Save as PDF</button>
         <button class="btn btn-secondary" onClick=${csv}><${Icon} n="download" c="sm"/> Download CSV</button>
       </div>`}
-      <p class="foot">Save as PDF opens a printable statement. Choose “Save as PDF” in the print dialog. Tax and legal details on statements: <${Tbc}/></p>
+      <p class="foot">Save as PDF opens a printable statement. Choose “Save as PDF” in the print dialog. ${!LIVE && html`Tax and legal details on statements: <${Tbc}/>`}</p>
     </div>
   </div>`;
 }
@@ -1945,7 +2008,7 @@ function RedeemScreen({ S, A, pushed }) {
     ${active.length > 0 && html`<section class="sec"><div class="sec-h"><h3>Ready to collect</h3></div>
       <div class="group inset-thumb">${active.map(r => html`<${RedemptionRow} r=${r} S=${S} A=${A}/>`)}</div></section>`}
 
-    ${held.length === 0 ? html`<section class="sec"><${Empty} icon="store" title="Nothing to collect yet" body=${S.ledger.length ? 'All your bars are already reserved for collection.' : 'Buy a bar first. You can then collect it at any of 250 PGBX dealers.'} action=${S.ledger.length ? null : 'Buy a bar'} onAction=${() => A.tab('buy')} /></section>` : html`
+    ${held.length === 0 ? html`<section class="sec"><${Empty} icon="store" title="Nothing to collect yet" body=${S.ledger.length ? 'All your bars are already reserved for collection.' : `Buy a bar first. You can then collect it at any of ${LIVE ? 'the PGBX dealers' : 'the 250 PGBX dealers'}.`} action=${S.ledger.length ? null : 'Buy a bar'} onAction=${() => A.tab('buy')} /></section>` : html`
     <section class="sec">
       <div class="sec-h"><h3>What to collect</h3></div>
       <div class="group inset-thumb" role="radiogroup" aria-label="Product to collect">
@@ -1985,8 +2048,8 @@ function RedeemScreen({ S, A, pushed }) {
     <section class="sec">
       <div class="sec-h"><h3>Before you confirm</h3></div>
       <div class="card">
-        <div class="kv"><span>Collection fee</span><${Tbc}/></div>
-        <div class="kv"><span>Gold and silver rules</span><${Tbc}/></div>
+        ${!LIVE && html`<div class="kv"><span>Collection fee</span><${Tbc}/></div>
+        <div class="kv"><span>Gold and silver rules</span><${Tbc}/></div>`}
         <div class="kv"><span>Code valid for</span><b>${Math.round(RESERVE_MS / 3600e3)} hours</b></div>
       </div>
       <${Notice} kind="plain" icon="idcard"><b>Bring your original CNIC</b>The dealer checks it against your account. Your code works once, and only at the dealer you choose.</${Notice}>
@@ -2038,7 +2101,7 @@ function CodeScreen({ S, A, rid }) {
         <div class="kv"><span>Dealer</span><b>${d.name}</b></div>
         <div class="kv"><span>Area</span><b>${d.area}</b></div>
         <div class="kv"><span>Opening hours</span><b>${d.hours}</b></div>
-        <div class="kv"><span>Collection fee</span><${Tbc}/></div>
+        ${!LIVE && html`<div class="kv"><span>Collection fee</span><${Tbc}/></div>`}
         ${r.serials && html`<div class="kv"><span>Serial number${r.serials.length > 1 ? 's' : ''}</span><b class="mono">${r.serials.join(', ')}</b></div>`}
         <${DealerActions} d=${d} />
       </div>
@@ -2186,7 +2249,7 @@ function CloseAccount({ S, A }) {
   const services = S.appraisals.filter(a => ['booked', 'confirmed'].includes(a.status)).length + S.giftOrders.filter(g => ['placed', 'in_production', 'dispatched'].includes(g.status)).length;
   const blockers = [
     LIVE && (!S.synced || (S.missing && S.missing.length > 0)) && { t: 'Your account hasn’t fully loaded', d: 'We need your latest holdings and orders before the account can be closed.', act: 'Try again', go: A.sync },
-    bars > 0 && { t: `You still hold ${bars} bar${bars > 1 ? 's' : ''} worth ${fmt(S.walletValue.total - S.walletValue.micro)}`, d: 'Collect them at a dealer first. Selling back to PGBX: ', tbc: true, act: 'Collect your bars', go: () => A.push({ name: 'collect' }) },
+    bars > 0 && { t: `You still hold ${bars} bar${bars > 1 ? 's' : ''} worth ${fmt(S.walletValue.total - S.walletValue.micro)}`, d: 'Collect them at a dealer, or sell them back to PGBX from your wallet.', act: 'Go to wallet', go: () => A.tab('wallet') },
     active > 0 && { t: `${active} collection${active > 1 ? 's are' : ' is'} still open`, d: 'Collect or cancel them first.', act: 'View collections', go: () => A.push({ name: 'collect' }) },
     services > 0 && { t: `${services} service booking${services > 1 ? 's are' : ' is'} still open`, d: 'Wait until your appraisal visit or gift delivery is done, or cancel it.', act: 'View services', go: () => A.tab('services') },
     pending > 0 && { t: `${pending} order${pending > 1 ? 's are' : ' is'} still being completed`, d: 'Wait until PGBX operations completes it.', act: 'View wallet', go: () => A.tab('wallet') },
@@ -2200,13 +2263,13 @@ function CloseAccount({ S, A }) {
       <div class="pad"><p class="muted">We’re sorry to see you go. Here’s what closing your account means.</p></div>
       ${blockers.length > 0 && html`<section class="sec"><div class="sec-h"><h3>Before you can close it</h3></div>
         <div class="group">${blockers.map(b => html`<div class="row" style="align-items:flex-start"><span class="ri gold"><${Icon} n="alert" c="sm"/></span>
-          <div class="rt"><b>${b.t}</b><span>${b.d}${b.tbc && html`<${Tbc}/>`}</span>
+          <div class="rt"><b>${b.t}</b><span>${b.d}</span>
             <button class="btn btn-secondary btn-sm" style="margin-top:8px" onClick=${b.go}>${b.act}</button></div></div>`)}</div></section>`}
       <section class="sec"><div class="sec-h"><h3>What happens</h3></div>
         <div class="card prose" style="padding:16px">
           <ul style="margin:0"><li>You can’t log in, buy or collect with this account again.</li>
           <li>Your PIN, saved details and settings are removed from this phone.</li>
-          <li>PGBX keeps transaction records for as long as the law requires: <${Tbc}/></li>
+          <li>PGBX keeps transaction records for as long as the law requires${LIVE ? '.' : html`: <${Tbc}/>`}</li>
           <li>You can download your statement first from Account › Your data.</li></ul>
         </div></section>
       <div class="pad" style="margin-top:24px">
@@ -2266,19 +2329,19 @@ function InfoScreen({ S, A, kind }) {
         href ? html`<a class="row" href=${href} target="_blank" rel="noopener"><span class="ri"><${Icon} n=${ic} c="sm"/></span><div class="rt"><span style="margin:0">${l}</span><b>${v}</b></div><${Icon} n="chev" c="sm chev"/></a>`
           : html`<div class="row"><span class="ri"><${Icon} n=${ic} c="sm"/></span><div class="rt"><span style="margin:0">${l}</span><b>${v}</b></div></div>`)}
     </div>
-    <div class="group" style="margin-top:12px"><div class="row"><div class="rt"><b>Support hours</b><small><${Tbc}/></small></div></div></div>`;
+    ${!LIVE && html`<div class="group" style="margin-top:12px"><div class="row"><div class="rt"><b>Support hours</b><small><${Tbc}/></small></div></div></div>`}`;
   else if (kind === 'report') body = html`<${Report} S=${S} A=${A}/>`;
   else if (kind === 'fees') body = html`
     <div class="sec-h"><h3>Product premiums</h3><${Sample}/></div>
     <div class="group">${PRODUCTS.map(p => html`<div class="row" style="min-height:48px"><div class="rt"><b style="font-weight:500">${pname(p)}</b></div><span class="rv"><b>${fmt((S.premiums && S.premiums[p.id]) ?? p.premium)}</b></span></div>`)}</div>
     <p class="foot">The premium is added to the metal value of each bar. It’s already included in every price you see.</p>
     <section class="sec"><div class="sec-h"><h3>Other charges</h3></div>
-      <div class="group">${[['Buy and sell spread'], ['Collection fee'], ['Storage fee or time limit'], ['Minimum purchase', MIN_PURCHASE]].map(([l, v]) => v ? html`<div class="row"><div class="rt"><b style="font-weight:500">${l}</b></div><span class="rv"><b>${fmt(v)}</b></span></div>` : html`<div class="row"><div class="rt"><b style="font-weight:500">${l}</b><small><${Tbc}/></small></div></div>`)}</div></section>
+      <div class="group">${[['Buy and sell spread'], ['Collection fee'], ['Storage fee or time limit'], ['Minimum purchase', MIN_PURCHASE]].filter(([, v]) => v || !LIVE).map(([l, v]) => v ? html`<div class="row"><div class="rt"><b style="font-weight:500">${l}</b></div><span class="rv"><b>${fmt(v)}</b></span></div>` : html`<div class="row"><div class="rt"><b style="font-weight:500">${l}</b><small><${Tbc}/></small></div></div>`)}</div></section>
     <section class="sec"><div class="sec-h"><h3>Limits</h3><${Sample}/></div>
       <div class="group">
         <div class="row"><div class="rt"><b style="font-weight:500">Per order</b></div><span class="rv"><b>${MAX_UNITS} bars</b></span></div>
         <div class="row"><div class="rt"><b style="font-weight:500">Per day</b></div><span class="rv"><b>${fmt(DAY_LIMIT)}</b></span></div>
-        <div class="row"><div class="rt"><b style="font-weight:500">Limits by verification level</b><small><${Tbc}/></small></div></div>
+        ${!LIVE && html`<div class="row"><div class="rt"><b style="font-weight:500">Limits by verification level</b><small><${Tbc}/></small></div></div>`}
       </div></section>
     <p class="foot">Every fee is shown before you confirm a purchase or collection.</p>`;
   else if (kind === 'about' && LIVE) body = html`<div class="prose">
@@ -2295,7 +2358,7 @@ function InfoScreen({ S, A, kind }) {
       <h3>Sample or simulated</h3>
       <ul><li>The customer, wallet, orders and four dealers</li><li>Product premiums, sell spread and purchase limits</li><li>Payments, identity checks and the camera</li><li>The dealer map and the customer’s location</li><li>Notifications, which appear in the app only</li></ul>
       <h3>Still to be decided by PGBX</h3>
-      <ul><li>Payment channels and providers: <${Tbc}/></li><li>Identity verification provider: <${Tbc}/></li><li>Push, SMS and email providers: <${Tbc}/></li><li>Map provider: <${Tbc}/></li><li>Urdu at launch: <${Tbc}/></li><li>In-app chat: <${Tbc}/></li><li>Written Shariah approval behind the “Shariah compliant” badge: <${Tbc}/></li></ul>
+      <ul><li>Payment channels and providers: <${Tbc}/></li><li>Identity verification provider: <${Tbc}/></li><li>Push, SMS and email providers: <${Tbc}/></li><li>Map provider: <${Tbc}/></li><li>Urdu at launch: <${Tbc}/></li><li>Written Shariah approval behind the “Shariah compliant” badge: <${Tbc}/></li></ul>
       <h3>Demo controls</h3>
       <p>The PIN is ${PIN_DEFAULT} until you change it. Boxes marked “Demo” let you simulate payment problems, PGBX operations and the dealer’s steps.</p>
       <p class="small" style="margin-top:16px">Version ${APP_VERSION}</p>
@@ -2303,8 +2366,8 @@ function InfoScreen({ S, A, kind }) {
     <div class="pad" style="margin-top:24px"><button class="btn btn-danger" onClick=${() => A.confirm({ title: 'Reset demo data?', body: 'This erases the sample wallet, orders, collections, alerts and settings in this browser and starts the demo again.', confirm: 'Reset demo data', danger: true, onConfirm: A.resetDemo })}><${Icon} n="refresh" c="sm"/> Reset demo data</button></div>`;
   else body = html`<div class="prose">
       ${[['Ownership of the metal in your wallet', 'How the wallet is classified and which approvals apply.'], ['Fees and charges', 'Spread, collection fee and any storage fee.'], ['How long you can hold', 'How long holdings can be kept and collected.'], ['Refunds and disputes', 'What happens if something goes wrong.'], ['Shariah approval', 'Written approval of the product, wallet and collection process.'], ['Privacy policy', 'How your personal data is collected, stored and deleted.']].map(([h, d]) =>
-        html`<h3>${h}</h3><p>${d}</p><p style="margin-top:4px"><${Tbc}/></p>`)}
-      <p class="small" style="margin-top:24px">You’ll be asked to accept these terms before your first purchase.</p>
+        html`<h3>${h}</h3><p>${d}</p>${!LIVE && html`<p style="margin-top:4px"><${Tbc}/></p>`}`)}
+      <p class="small" style="margin-top:24px">${LIVE ? 'Ask PGBX support for the full current terms.' : 'You’ll be asked to accept these terms before your first purchase.'}</p>
     </div>`;
   return html`<div class="page">
     <${TopBar} title=${titles[kind]} onBack=${A.back} />
@@ -2319,15 +2382,15 @@ function Faqs() {
     ['Can I buy part of a bar?', 'No. You always buy whole bars, and smaller bars can’t be combined into a larger one.'],
     ['Can I buy gold and silver together?', 'Yes. Add bars to your cart and pay for them in one order.'],
     ['Why can’t I buy larger bars?', 'Larger bars are sold at PGBX offline only.'],
-    ['How long is the price locked?', 'For 60 seconds. After that it updates to the latest PGBX price.'],
+    ['How is the final price set?', 'Prices in the app are indicative. Before you buy or sell, PGBX support confirms the final rate in a private chat about your request. It’s valid for a few minutes and can be used once.'],
     ['Why do I need to verify my identity?', 'PGBX must check your CNIC and a selfie before your first purchase.'],
-    ['Where do I collect my metal?', 'At any of the 250 PGBX dealers that has your bar in stock. Bring your original CNIC. Your collection code is valid for 24 hours.'],
+    ['Where do I collect my metal?', `At any ${LIVE ? 'PGBX dealer' : 'of the 250 PGBX dealers'} that has your bar in stock. Bring your original CNIC. Your collection code is valid for 24 hours.`],
     ['Is there a collection fee?', null],
-    ['Can I sell back to PGBX?', null],
+    ['Can I sell back to PGBX?', 'Yes. In Wallet, tap Sell bars back to PGBX. Support confirms the rate in chat, the bars leave your wallet, and PGBX pays your bank account, usually the same working day.'],
     ['Is there a storage fee or time limit?', null],
     ['Is collecting gold different from silver?', null],
   ];
-  return html`<div class="group">${qs.map(([q, a], i) => html`<div class=${'faq' + (open === i ? ' open' : '')}>
+  return html`<div class="group">${qs.filter(([, a]) => a || !LIVE).map(([q, a], i) => html`<div class=${'faq' + (open === i ? ' open' : '')}>
     <button class="faq-q" onClick=${() => setOpen(open === i ? -1 : i)} aria-expanded=${open === i}>${q}<${Icon} n="chev" c="sm chev"/></button>
     ${open === i && html`<div class="ans">${a || html`<${Tbc}/>`}</div>`}
   </div>`)}</div>`;
@@ -2419,7 +2482,13 @@ function GiftPreview({ d, svc, size = 168 }) {
   const eng = d.engraving.trim();
   const c = silver ? ['#F5F7F8', '#B9C2C8', '#7E8A92'] : ['#F7DE9A', '#C8962B', '#8A6414'];
   const ink = silver ? '#4C5860' : '#6A4B0C', id = 'gp' + (silver ? 's' : 'g') + (coin ? 'c' : 'b');
-  const text = (y, s, w, t, extra = {}) => html`<text x="100" y=${y} text-anchor="middle" font-size=${s} font-weight=${w} fill=${ink} font-family="ui-serif, 'New York', Georgia, serif" ...${extra}>${t}</text>`;
+  // Text that would run off the piece is squeezed to fit inside its frame (coin face or bar)
+  const room = coin ? 128 : 92;
+  const text = (y, s, w, t, extra = {}) => {
+    const est = String(t).length * (s * 0.62 + (Number(extra['letter-spacing']) || 0));
+    const fit = est > room ? { textLength: room, lengthAdjust: 'spacingAndGlyphs' } : {};
+    return html`<text x="100" y=${y} text-anchor="middle" font-size=${s} font-weight=${w} fill=${ink} font-family="ui-serif, 'New York', Georgia, serif" ...${extra} ...${fit}>${t}</text>`;
+  };
   return html`<svg viewBox="0 0 200 200" width=${size} height=${size} role="img" aria-label=${`Preview: ${it.label} ${it.metal} ${d.shape}${motif ? ', ' + motif.toLowerCase() : ''}${eng ? ', engraved ' + eng : ''}`}>
     <defs><linearGradient id=${id} x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color=${c[0]}/><stop offset=".55" stop-color=${c[1]}/><stop offset="1" stop-color=${c[2]}/></linearGradient></defs>
     ${coin ? html`<circle cx="100" cy="100" r="92" fill=${`url(#${id})`}/><circle cx="100" cy="100" r="82" fill="none" stroke=${ink} stroke-opacity=".35" stroke-width="1.5" stroke-dasharray="2 3"/>`
@@ -2487,7 +2556,7 @@ function WorthScreen({ S, A }) {
   if (!svc || S.rates.mode === 'connecting') return html`<div class="page"><${TopBar} title="Jewellery worth" onBack=${A.back} /><div class="scroll"><div class="pad"><span class="sk" style="height:240px"></span></div></div></div>`;
   const vals = pieces.map(p => pieceValue(p, svc, S.rates));
   const total = vals.reduce((a, v) => a + v.estimate, 0), any = vals.some(v => v.net > 0);
-  const num4 = (v, f) => html`<input class="inp" inputmode="decimal" placeholder="0" value=${v} onInput=${e => f(e.target.value.replace(/,/g, '.').replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1').slice(0, 9))} />`;   // "12,5" is 12.5; one decimal point
+  const num4 = (v, f, label) => html`<input class="inp" inputmode="decimal" placeholder="0" aria-label=${label} value=${v} onInput=${e => f(e.target.value.replace(/,/g, '.').replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1').slice(0, 9))} />`;   // "12,5" is 12.5; one decimal point
   return html`<div class="page has-actions">
     <${TopBar} title="Jewellery worth" onBack=${A.back} />
     <div class="scroll">
@@ -2503,7 +2572,7 @@ function WorthScreen({ S, A }) {
           <${Seg} label="Weight unit" items=${[['g', 'Grams'], ['tola', 'Tola'], ['tmr', 'T · M · R']]} value=${p.unit} onChange=${u => upd(i, { unit: u })} />
           <div style="margin-top:8px">${p.unit === 'tmr' ? html`<div class="grid3">
               <label><span class="tiny muted">Tola</span>${num4(p.t, v => upd(i, { t: v }))}</label><label><span class="tiny muted">Masha</span>${num4(p.m, v => upd(i, { m: v }))}</label><label><span class="tiny muted">Ratti</span>${num4(p.r, v => upd(i, { r: v }))}</label></div>`
-            : num4(p.unit === 'tola' ? p.tola : p.g, v => upd(i, p.unit === 'tola' ? { tola: v } : { g: v }))}</div>
+            : num4(p.unit === 'tola' ? p.tola : p.g, v => upd(i, p.unit === 'tola' ? { tola: v } : { g: v }), p.unit === 'tola' ? 'Weight in tola' : 'Weight in grams')}</div>
           ${p.unit === 'tmr' && html`<div class="hint">Tola, masha and ratti, as a sarafa receipt shows them: 1 tola = 12 masha = 96 ratti.</div>`}</div>
         <label class="field"><span class="lbl">Stones, beads or lac (grams, optional)</span>${num4(p.stones, v => upd(i, { stones: v }))}
           <div class="hint">Their weight isn’t gold or silver, so it’s taken off.</div></label>
@@ -2553,9 +2622,9 @@ function AppraisalBook({ S, A }) {
             <div class="chips" role="radiogroup" aria-label=${`Piece ${i + 1} metal`}>${[['gold', 'Gold'], ['silver', 'Silver']].map(([m, l]) => html`<button class=${'chipb sm' + (it.metal === m ? ' on' : '')} role="radio" aria-checked=${it.metal === m} onClick=${() => updItem(i, { metal: m, karat: '' })}>${l}</button>`)}</div>
             <div class="grid2" style="margin-top:8px">
               <label><span class="tiny muted">Karat (if known)</span><select class="inp" value=${it.karat} onChange=${e => updItem(i, { karat: e.target.value })}><option value="">Not sure</option>${karats(it.metal).map(k => html`<option value=${k}>${it.metal === 'gold' ? k : KARAT_NAME[k]}</option>`)}</select></label>
-              <label><span class="tiny muted">About how many grams</span><input class="inp" inputmode="decimal" value=${it.approx_g || ''} onInput=${e => updItem(i, { approx_g: e.target.value.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1').slice(0, 8) })} /></label>
+              <label><span class="tiny muted">Grams (about)</span><input class="inp" inputmode="decimal" value=${it.approx_g || ''} onInput=${e => updItem(i, { approx_g: e.target.value.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1').slice(0, 8) })} /></label>
             </div>
-            <input class="inp" style="margin-top:8px" maxlength="80" placeholder="What is it? e.g. 4 bangles, necklace set" value=${it.note || ''} onInput=${e => updItem(i, { note: e.target.value })} />
+            <input class="inp" style="margin-top:8px" maxlength="80" aria-label="What the piece is" placeholder="What is it? e.g. 4 bangles, necklace set" value=${it.note || ''} onInput=${e => updItem(i, { note: e.target.value })} />
           </div>
           ${d.items.length > 1 && html`<button class="iconbtn" onClick=${() => up({ items: d.items.filter((_, j) => j !== i) })} aria-label=${`Remove piece ${i + 1}`}><${Icon} n="trash" c="sm"/></button>`}
         </div>`)}</div>
@@ -2826,7 +2895,7 @@ const SAVED = loadSaved();
 const CARRY_NOTE = (() => { try { const n = sessionStorage.getItem('pgbx-note'); sessionStorage.removeItem('pgbx-note'); return n || ''; } catch (e) { return ''; } })();
 
 // Account data. Cleared on logout and session end; hidden while browsing as a guest.
-const ACCOUNT_BLANK = LIVE ? { synced: false, missing: [], ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], chats: [], barSales: [], banner: null, apprDraft: null, giftDraft: null, micro: { grams: 0, txns: [], lots: null },
+const ACCOUNT_BLANK = LIVE ? { synced: false, missing: [], lastIban: '', ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], chats: [], barSales: [], banner: null, apprDraft: null, giftDraft: null, micro: { grams: 0, txns: [], lots: null },
   profile: { name: '', cnic: '', dob: '', email: '', address: '' }, kyc: { status: 'none', at: null }, checkout: [], lock: null } : {};
 const GUEST_VIEW = { ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], chats: [], barSales: [], banner: null, micro: { grams: 0, txns: [], lots: { buy: { no: 1, filled: 0 }, sell: { no: 1, filled: 0 } } } };
 // A request key for a draft: the same draft sent twice (a retry after a lost answer) books once; any change makes a new one
@@ -2875,7 +2944,21 @@ function App() {
   const stRef = useRef(null);             // latest state for the system back handler
   const histDepth = useRef(0), ignorePop = useRef(null);   // ignorePop: depth an app-initiated history.go() is heading to
 
-  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  // On-screen keyboard: when it takes the bottom of the screen, the tab bar and the action bar's summary step aside so the
+  // field being typed in stays visible above the buttons
+  useEffect(() => {
+    const vv = window.visualViewport; if (!vv) return;
+    const f = () => document.documentElement.classList.toggle('kb', innerHeight - vv.height > 150);
+    vv.addEventListener('resize', f, { passive: true });
+    return () => vv.removeEventListener('resize', f);
+  }, []);
+  // The clock behind countdowns and "x min ago"; it stops while the app is in the background
+  useEffect(() => {
+    const t = setInterval(() => { if (document.visibilityState !== 'hidden') setNow(Date.now()); }, 1000);
+    const back = () => { if (document.visibilityState === 'visible') setNow(Date.now()); };
+    document.addEventListener('visibilitychange', back);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', back); };
+  }, []);
   // Network state: tell the customer when they are offline instead of silently showing old prices
   useEffect(() => {
     const on = () => set({ offline: false }), off = () => set({ offline: true });
@@ -2919,8 +3002,11 @@ function App() {
     poll().then(ok => { if (!ok && alive) set(s => (s.rates.mode !== 'connecting' ? {} : LIVE
       ? { toast: { msg: 'Live prices are unavailable right now. Buying is paused until they’re back.', id: Math.random() } }
       : { rates: { ...s.rates, mode: 'sim', updatedAt: Date.now() }, toast: { msg: 'Live rates are unavailable. Showing simulated rates.', id: Math.random() } })); });
-    const t = setInterval(poll, POLL_MS);
-    return () => { alive = false; clearInterval(t); };
+    // Nothing is fetched while the app is in the background; prices are fetched again the moment it comes back
+    const t = setInterval(() => { if (document.visibilityState !== 'hidden') poll(); }, POLL_MS);
+    const back = () => { if (document.visibilityState === 'visible') poll(); };
+    document.addEventListener('visibilitychange', back);
+    return () => { alive = false; clearInterval(t); document.removeEventListener('visibilitychange', back); };
   }, []);
 
   // Simulated ticks (only when the live feed is unavailable, never with ?feedFail=1)
@@ -2957,7 +3043,11 @@ function App() {
       // A mark-all-read made while this sync was on its way wins over the older unread flags
       if (d.notifications && readAt.current > n0) d.notifications = d.notifications.map(x => ({ ...x, read: true }));
       // Parts that didn't change keep their old objects, so screens (and Keep lists) don't redraw for nothing
-      set(s => ({ ...unchanged(s, d), synced: s.synced || !d.missing.length, banner: fresh.length && s.notifPrefs.push && !(fresh[0].kind === 'alert' && s.notifPrefs.alerts === false) ? fresh[0] : s.banner }));
+      set(s => {
+        const t = s.stack[s.stack.length - 1];
+        const reading = fresh.length && fresh[0].link && fresh[0].link.name === 'chat' && t && t.name === 'chat' && t.id === fresh[0].link.id;   // already on screen
+        return { ...unchanged(s, d), synced: s.synced || !d.missing.length, banner: fresh.length && !reading && s.notifPrefs.push && !(fresh[0].kind === 'alert' && s.notifPrefs.alerts === false) ? fresh[0] : s.banner };
+      });
       return !d.missing.length;
     } catch (e) { if (Live.signedOut(e)) sessionEnded(endedNote(e)); return false; }
   };
@@ -2982,14 +3072,14 @@ function App() {
     loadPublic();
     const again = () => { if (document.visibilityState !== 'hidden') loadPublic(); };
     addEventListener('online', again); document.addEventListener('visibilitychange', again);
-    const t = setInterval(again, 30000);
+    const t = setInterval(again, PUBLIC_RETRY_MS);
     return () => { removeEventListener('online', again); document.removeEventListener('visibilitychange', again); clearInterval(t); };
   }, []);
   const signedIn = phase === 'app' && st.loggedIn && !st.guest;
   useEffect(() => {
     if (!LIVE || !signedIn) return;
     sync();
-    const t = setInterval(() => { if (document.visibilityState !== 'hidden') sync(); }, 20000);
+    const t = setInterval(() => { if (document.visibilityState !== 'hidden') sync(); }, SYNC_MS);
     const vis = () => document.visibilityState === 'visible' && sync();
     document.addEventListener('visibilitychange', vis);
     return () => { clearInterval(t); document.removeEventListener('visibilitychange', vis); };
@@ -3055,7 +3145,8 @@ function App() {
   }
   function demoConfirm(id) {
     const s = stRef.current, c = (s.chats || []).find(x => x.id === id);
-    if (!c || c.status !== 'open' || c.confirmation) return;
+    const live = c && c.confirmation && c.confirmation.status === 'valid' && c.confirmation.expiresAt > Date.now();
+    if (!c || !['open', 'confirmed'].includes(c.status) || live) return;          // a new rate only when there's none in force
     const d = c.details; let prices, total;
     if (c.kind === 'buy_bars' || c.kind === 'sell_bars') {
       const unit = Object.fromEntries(d.lines.map(l => { const p = P[l.product_id]; return [l.product_id, c.kind === 'buy_bars' ? priceOf(p, s.rates) : Math.round(rateOf(s.rates, p.metal).sellGram * p.grams)]; }));
@@ -3070,9 +3161,12 @@ function App() {
     notify('chat', 'Final rate confirmed', `${c.summary}: ${fmt(total)}. Valid for 15 minutes.`, !!(t && t.name === 'chat' && t.id === id), { name: 'chat', id });
   }
   function demoSupport(id) {
-    if (LIVE || demoAsked.current.has(id)) return;
-    demoAsked.current.add(id);
-    setTimeout(() => demoMsg(id, { sender: 'staff', staffName: 'Sana', body: 'Assalam o alaikum! This is Sana from PGBX support. I’m checking today’s rate for your request now.' }), 1800);
+    const c = (stRef.current.chats || []).find(x => x.id === id);
+    const askKey = id + ':' + (c && c.confirmation ? c.confirmation.id : '');   // once per request, and once more after each rate runs out
+    if (LIVE || demoAsked.current.has(askKey)) return;
+    demoAsked.current.add(askKey);
+    const again = c && c.confirmation;
+    setTimeout(() => demoMsg(id, { sender: 'staff', staffName: 'Sana', body: again ? 'That rate has run out. I’m checking today’s rate again for you.' : 'Assalam o alaikum! This is Sana from PGBX support. I’m checking today’s rate for your request now.' }), 1800);
     setTimeout(() => demoConfirm(id), 4200);
   }
   // A confirmed rate is used once: the chat is done and says what it was used for
@@ -3084,6 +3178,7 @@ function App() {
   // FR-B2: refresh locked prices at zero while on product, cart or pay
   useEffect(() => {
     if (st.lock && !st.lock.confirmed && top && ['product', 'cart', 'pay'].includes(top.name) && now >= st.lock.expiresAt) {
+      if (RATE_CHAT) { set(s => (s.lock && !s.lock.confirmed ? { lock: lockFor(s, Object.keys(s.lock.prices)) } : {})); return; }   // indicative: no toast, no server lock
       if (LIVE) { if (!st.lock.renewing && now >= (st.lock.retryAt || 0)) { set(s => ({ lock: { ...s.lock, renewing: true } })); serverLock(Object.keys(st.lock.prices), true); } return; }
       set(s => ({ lock: { prices: Object.fromEntries(Object.keys(s.lock.prices).map(pid => [pid, priceOf(P[pid], s.rates)])), expiresAt: Date.now() + LOCK_S * 1000 } }));
       toast('Prices updated to the latest rate');
@@ -3106,7 +3201,7 @@ function App() {
   useEffect(() => {
     if (!LIVE || !microOpen) return;
     const get = () => Live.microQuote().then(q => set({ microQuote: q }), () => {});
-    get(); const t = setInterval(get, 20000); return () => clearInterval(t);
+    get(); const t = setInterval(() => { if (document.visibilityState !== 'hidden') get(); }, MICRO_QUOTE_MS); return () => clearInterval(t);
   }, [microOpen]);
 
   // FR-A4: auto-lock after 2 minutes of inactivity
@@ -3167,14 +3262,16 @@ function App() {
   const unread = st.notifications.filter(n => !n.read).length;
 
   const tabIndex = t => TABS.findIndex(x => x[0] === t);
-  const lockFor = (s, pids) => ({ expiresAt: Date.now() + LOCK_S * 1000, prices: Object.fromEntries(pids.map(pid => [pid, priceOf(P[pid], s.rates)])), pending: LIVE });
+  const lockFor = (s, pids) => ({ expiresAt: Date.now() + LOCK_S * 1000, prices: Object.fromEntries(pids.map(pid => [pid, priceOf(P[pid], s.rates)])), pending: LIVE && !RATE_CHAT });
   // Production: the price shown on product, cart and payment is the server's lock; nothing can be paid until it arrives.
   // Only the newest request's answer is used, so a slow lock for another product can't replace this one.
+  // A server price lock is only needed when prices are paid as shown; with the rate chat the only payable lock is the one
+  // support confirms. A late answer never replaces a confirmed lock.
   const serverLock = (pids, renewed) => {
-    if (!LIVE || !pids.length) return;
+    if (!LIVE || RATE_CHAT || !pids.length) return;
     const n = ++lockSeq.current;
-    Live.lock(pids).then(l => { if (n !== lockSeq.current) return; set({ lock: l }); if (renewed) toast('Prices updated to the latest rate'); },
-      e => { if (n !== lockSeq.current) return; set(s => (s.lock ? { lock: { ...s.lock, pending: true, renewing: false, retryAt: Date.now() + 15000, error: e.message } } : {})); liveFail(e); });
+    Live.lock(pids).then(l => { if (n !== lockSeq.current) return; set(s => (s.lock && s.lock.confirmed ? {} : { lock: l })); if (renewed) toast('Prices updated to the latest rate'); },
+      e => { if (n !== lockSeq.current) return; set(s => (s.lock && !s.lock.confirmed ? { lock: { ...s.lock, pending: true, renewing: false, retryAt: Date.now() + 15000, error: e.message } } : {})); liveFail(e); });
   };
   const credit = (s, o) => [...s.ledger, ...o.lines.map(l => ({ id: 'L-' + uid(), ts: Date.now(), pid: l.pid, delta: l.units, reason: 'purchase', ref: o.receipt, price: l.unit }))];
   const A = {
@@ -3246,11 +3343,11 @@ function App() {
       if (LIVE) {
         if (st.sending) return;
         set({ sending: true });
-        Live.openChat(kind, d, Math.round(indicative) || undefined).then(c => set(s => ({ sending: false, chats: [c, ...s.chats.filter(x => x.id !== c.id)], navDir: 'fwd', stack: [...s.stack, { name: 'chat', id: c.id }] })),
+        Live.openChat(kind, d).then(c => set(s => ({ sending: false, chats: [c, ...s.chats.filter(x => x.id !== c.id)], navDir: 'fwd', stack: [...s.stack, { name: 'chat', id: c.id }] })),
           e => { set({ sending: false }); liveFail(e); });
         return;
       }
-      const now = Date.now(), id = 'CH-' + uid() + uid(), summary = chatSummary(kind, d);
+      const now = Date.now(), id = 'CH-' + uid() + uid(), summary = chatSummary(kind, d, st.svc);
       const c = { id, ref: `PGBX-C-${ymd(now).slice(2).replace(/-/g, '')}-${uid().toUpperCase().slice(0, 6)}`, kind, details: d, summary, indicative: Math.round(indicative) || null, status: 'open',
         createdAt: now, lastAt: now, unread: 0, confirmation: null,
         messages: [{ id: 1, sender: 'system', body: `${summary}${indicative ? ` · app price ${fmt(indicative)} (indicative)` : ''}. PGBX support will confirm the final rate here.`, ts: now }] };
@@ -3262,8 +3359,10 @@ function App() {
       return Promise.resolve();
     },
     chatAttach: (id, up, caption, add) => {
-      if (LIVE) return Live.chatAttach(id, { name: up.name, mime: up.mime, data: up.data, caption }).then(m => add && add(m));
-      demoMsg(id, { sender: 'customer', body: caption, attachment: { id: uid(), name: up.name, mime: up.mime, url: URL.createObjectURL(up.blob) } });
+      // the customer's own file is shown from the phone, not downloaded back
+      if (LIVE) return Live.chatAttach(id, { name: up.name, mime: up.mime, data: up.data, caption }).then(m => { if (m.attachment) keepFile(m.attachment.id, up.blob); add && add(m); });
+      const aid = uid() + uid();
+      demoMsg(id, { sender: 'customer', body: caption, attachment: { id: aid, name: up.name, mime: up.mime, url: keepFile(aid, up.blob) } });
       return Promise.resolve();
     },
     chatClose: (id, refresh) => {
@@ -3279,8 +3378,9 @@ function App() {
       const d = conf.details;
       if (chat.kind === 'buy_bars') {
         const lines = d.lines.map(l => ({ pid: l.product_id, units: l.units }));
-        const fromCart = JSON.stringify(normDetails('buy_bars', { lines: st.cart.map(l => ({ product_id: l.pid, units: l.units })) })) === JSON.stringify(d);
+        const fromCart = JSON.stringify(normDetails('buy_bars', { lines: st.cart.map(l => ({ product_id: l.pid, units: l.units })) })) === JSON.stringify(normDetails('buy_bars', d));
         const orderKey = 'K' + conf.id;
+        lockSeq.current++;                                     // any price lock still on its way is now out of date
         set(s => ({ checkout: lines, checkoutFrom: fromCart ? 'cart' : 'chat', paying: false, navDir: 'fwd',
           lock: { id: conf.lockId, prices: conf.prices.unit, expiresAt: conf.expiresAt, confirmed: chat.ref, chatId: chat.id, confId: conf.id },
           stack: [...s.stack, s.kyc.status === 'verified' ? { name: 'pay', orderKey } : { name: 'kyc', next: 'pay', orderKey }] }));
@@ -3436,9 +3536,17 @@ function App() {
       set(s => ({ giftDraft: s.giftDraft || giftDefaults(s), navDir: 'fwd', stack: [...s.stack, { name: 'gift-new' }] }));
     },
     placeGift: conf => {
+      // The recipient's details stay on screen only (not saved on the phone). If the app was closed since the rate was
+      // confirmed, the gift is set up again from the chat and the customer adds the delivery details.
+      if (conf && !st.giftDraft && st.svc) {
+        set(s => ({ giftDraft: { ...giftDefaults(s), ...normDetails('gift', conf.details) }, navDir: 'fwd', stack: [...s.stack, { name: 'gift-new' }] }));
+        toast('Add the delivery details, then tap Get final rate to pay at your confirmed rate.');
+        return;
+      }
       const d = st.giftDraft, svc = st.svc;
-      if (!d || !svc || st.paying || st.offline || (stale && !conf)) return;
-      if (conf && JSON.stringify(normDetails('gift', d)) !== JSON.stringify(conf.details)) { toast('The gift was changed after the rate was confirmed. Ask in the chat for a new rate.'); return; }
+      if (!svc) { toast('Gift details are still loading. Try again in a moment.'); return; }
+      if (!d || st.paying || st.offline || (stale && !conf)) return;
+      if (conf && JSON.stringify(normDetails('gift', d)) !== JSON.stringify(normDetails('gift', conf.details))) { toast('The gift was changed after the rate was confirmed. Ask in the chat for a new rate.'); return; }
       if (st.kyc.status !== 'verified') { A.push({ name: 'kyc', next: 'gift' }); return; }
       const phone = d.phone.replace(/\D/g, '').replace(/^92/, '').replace(/^0/, '');
       if (LIVE) {
@@ -3535,7 +3643,7 @@ function App() {
       set(s => ({ checkout: lines, checkoutFrom: from, paying: false, navDir: 'fwd', stack: [...s.stack, s.kyc.status === 'verified' ? { name: 'pay', orderKey } : { name: 'kyc', next: 'pay', orderKey }] }));
     },
     pay: () => {
-      if (stale || st.paying || st.offline) return;
+      if ((stale && !(st.lock && st.lock.confirmed)) || st.paying || st.offline) return;
       if (st.lock && st.lock.confirmed && st.lock.expiresAt <= Date.now()) { toast('The confirmed rate has expired. Ask in the chat for a new one.'); return; }
       if (LIVE) {
         if (!st.lock || st.lock.pending || !st.checkout.every(l => Number.isFinite(st.lock.prices[l.pid]))) return;

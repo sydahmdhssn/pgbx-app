@@ -136,15 +136,10 @@ const KYC = { none: 'none', pending: 'pending', review: 'pending', verified: 've
 // One failed part doesn't hide the rest: missing parts are left out and named in `missing`. The account itself
 // (/me) must load; if it fails, so does the whole sync.
 export async function loadAll() {
-  const got = await Promise.allSettled([
-    api('/me'), api('/orders'), api('/ledger'), api('/redemptions'), api('/notifications'), api('/alerts'), api('/appraisals'), api('/gifts'), api('/micro'), api('/chats'), api('/bars/sales'),
-  ]);
-  const bad = got.find(g => g.status === 'rejected' && (signedOut(g.reason) || isLocked(g.reason)));
-  if (bad) throw bad.reason;
-  if (got[0].status === 'rejected') throw got[0].reason;
-  const names = ['me', 'orders', 'ledger', 'redemptions', 'notifications', 'alerts', 'appraisals', 'giftOrders', 'micro', 'chats', 'barSales'];
-  const missing = names.filter((n, i) => got[i].status === 'rejected');
-  const [me, orders, ledger, reds, notes, alerts, apprs, gifts, micro, chatList, sales] = got.map(g => (g.status === 'fulfilled' ? g.value : null));
+  const { parts: p, failed } = await api('/sync');                      // one request for all of it
+  const names = ['me', 'orders', 'ledger', 'redemptions', 'notifications', 'alerts', 'appraisals', 'gifts', 'micro', 'chats', 'barSales'];
+  const missing = failed.map(n => (n === 'gifts' ? 'giftOrders' : n));
+  const [me, orders, ledger, reds, notes, alerts, apprs, gifts, micro, chatList, sales] = names.map(n => p[n] || null);
   const redemptions = reds ? reds.redemptions.map(redemption) : null;
   const out = {
     phone: me.profile.phone || '',
@@ -181,12 +176,13 @@ export const microSell = (grams, iban, key, expected, confirmationId) => api('/m
 
 // ---------- rate chat: the final rate for a purchase or sale is confirmed by PGBX support ----------
 const chatRow = c => ({ id: c.id, ref: c.ref, kind: c.kind, details: c.details, summary: c.summary, indicative: c.indicative_pkr, status: c.status,
-  createdAt: ts(c.created_at), lastAt: ts(c.last_message_at), unread: c.unread || 0, lastBody: c.last_body || '' });
+  createdAt: ts(c.created_at), lastAt: ts(c.last_message_at), unread: c.unread || 0, lastBody: c.last_body || '',
+  rateExpiresAt: c.rate_expires_in != null ? Date.now() + c.rate_expires_in * 1000 : null });
 const chatMsg = m => ({ id: m.id, sender: m.sender, staffName: m.staff_name, body: m.body, ts: ts(m.created_at), attachment: m.attachment || null, confirmationId: m.confirmation_id || null });
 // expiresAt from the server's "seconds left", so a wrong phone clock can't shorten or stretch the rate
 const confirmation = r => r && ({ id: r.id, kind: r.kind, details: r.details, prices: r.prices, total: r.total_pkr, note: r.note || '', status: r.status,
   expiresAt: Date.now() + (r.expires_in || 0) * 1000, usedRef: r.used_ref || null, lockId: r.lock_id || null });
-export const openChat = (kind, details, indicativePkr) => api('/chats', { method: 'POST', body: { kind, details, indicativePkr } }).then(d => chatRow(d.chat));
+export const openChat = (kind, details) => api('/chats', { method: 'POST', body: { kind, details } }).then(d => chatRow(d.chat));   // the server works out the app price itself
 export const chatThread = (id, after = 0) => api(`/chats/${id}${after ? '?after=' + after : ''}`).then(d => ({ chat: chatRow(d.chat), messages: d.messages.map(chatMsg), confirmation: confirmation(d.confirmation) }));
 export const chatSend = (id, body) => api(`/chats/${id}/messages`, { method: 'POST', body: { body } }).then(d => chatMsg(d.message));
 export const chatAttach = (id, file) => api(`/chats/${id}/attachments`, { method: 'POST', body: file, timeout: 60000 }).then(d => chatMsg(d.message));

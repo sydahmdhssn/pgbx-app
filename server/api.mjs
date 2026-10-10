@@ -871,7 +871,8 @@ route('GET', '/micro/txns/:ref', { auth: 'customer' }, async ({ db, customer, pa
 // chat's existence isn't revealed either.
 const CHAT_KINDS = ['buy_bars', 'sell_bars', 'buy_micro', 'sell_micro', 'gift'];
 const chatDto = c => ({ id: c.id, ref: c.ref, kind: c.kind, details: c.details, summary: c.summary, indicative_pkr: c.indicative_pkr, status: c.status,
-  created_at: c.created_at, last_message_at: c.last_message_at, unread: c.unread ?? undefined, last_body: c.last_body ?? undefined });
+  created_at: c.created_at, last_message_at: c.last_message_at, unread: c.unread ?? undefined, last_body: c.last_body ?? undefined,
+  rate_expires_in: c.rate_expires_at ? Math.max(0, Math.round((new Date(c.rate_expires_at) - Date.now()) / 1000)) : undefined });
 const msgDto = m => ({ id: m.id, sender: m.sender, staff_name: m.staff_name ? String(m.staff_name).split(' ')[0] : undefined, body: m.body, created_at: m.created_at,
   attachment: m.attachment_id ? { id: m.attachment_id, name: m.att_name, mime: m.att_mime, size: m.att_size } : undefined, confirmation_id: m.confirmation_id || undefined });
 const confDto = r => r && ({ id: r.id, kind: r.kind, details: r.details, prices: r.prices, total_pkr: r.total_pkr, note: r.note, status: r.status,
@@ -879,6 +880,10 @@ const confDto = r => r && ({ id: r.id, kind: r.kind, details: r.details, prices:
 const MSG_SQL = `select m.*, s.name as staff_name, a.name as att_name, a.mime as att_mime, a.size as att_size from chat_messages m
   left join staff s on s.id = m.staff_id left join chat_attachments a on a.id = m.attachment_id where m.chat_id = $1 and m.id > $2 order by m.id limit 300`;
 const CONF_SQL = `select r.*, (select id from price_locks l where l.confirmation_id = r.id) as lock_id from rate_confirmations r where r.chat_id = $1 order by r.created_at desc limit 1`;
+// A chat's messages after ?after=; the first load (after=0) gets the newest 300, so a long chat opens at its latest messages
+const MSG_LAST_SQL = `select * from (select m.*, s.name as staff_name, a.name as att_name, a.mime as att_mime, a.size as att_size from chat_messages m
+  left join staff s on s.id = m.staff_id left join chat_attachments a on a.id = m.attachment_id where m.chat_id = $1 order by m.id desc limit 300) x order by id`;
+const messagesOf = async (db, chatId, after) => (await db.query(after ? MSG_SQL : MSG_LAST_SQL, after ? [chatId, after] : [chatId])).map(msgDto);
 const msgOut = async (db, m) => ({ message: msgDto((await db.query(MSG_SQL, [m.chat_id, m.id - 1]))[0]) });
 async function chatOf(db, id, customerId) {
   if (!/^[0-9a-f-]{36}$/i.test(id)) fail(404, 'CHAT_NOT_FOUND', MESSAGES.CHAT_NOT_FOUND[1]);
@@ -928,13 +933,14 @@ route('POST', '/chats', { auth: 'customer' }, async ({ db, customer, body }) => 
 });
 route('GET', '/chats', { auth: 'customer' }, async ({ db, customer }) => ({ chats: (await db.query(`select c.*,
     (select count(*)::int from chat_messages m where m.chat_id = c.id and m.sender <> 'customer' and m.created_at > coalesce(c.customer_read_at, 'epoch')) as unread,
-    (select body from chat_messages m where m.chat_id = c.id order by m.id desc limit 1) as last_body
+    (select body from chat_messages m where m.chat_id = c.id order by m.id desc limit 1) as last_body,
+    (select expires_at from rate_confirmations r where r.chat_id = c.id and r.status = 'valid' order by r.created_at desc limit 1) as rate_expires_at
   from rate_chats c where c.customer_id = $1 order by c.last_message_at desc limit 50`, [customer.id])).map(chatDto) }));
 // The chat with messages after ?after= (the app asks every few seconds while the chat is open) and its newest rate
 route('GET', '/chats/:id', { auth: 'customer' }, async ({ db, customer, params, query }) => {
   const c = await chatOf(db, params.id, customer.id);
   const after = Math.max(0, int(query.after) || 0);
-  const messages = (await db.query(MSG_SQL, [c.id, after])).map(msgDto);
+  const messages = await messagesOf(db, c.id, after);
   if (messages.some(m => m.sender !== 'customer') || !after) await db.query(`update rate_chats set customer_read_at = now() where id = $1`, [c.id]);
   return { chat: chatDto(c), messages, confirmation: confDto(await db.one(CONF_SQL, [c.id])) };
 });
@@ -1016,7 +1022,7 @@ route('GET', '/support/chats', support, async ({ db, query }) => {
 route('GET', '/support/chats/:id', support, async ({ db, staff, params, query }) => {
   const c = await chatOf(db, params.id, null);
   const after = Math.max(0, int(query.after) || 0);
-  const messages = (await db.query(MSG_SQL, [c.id, after])).map(msgDto);
+  const messages = await messagesOf(db, c.id, after);
   if (messages.length || !after) await db.query(`update rate_chats set staff_read_at = now() where id = $1`, [c.id]);
   // any read is recorded (the first one by each staff member in a shift), however the messages were asked for
   if (after && !(await db.one(`select 1 from audit_log where actor = $1 and action = 'chat.viewed' and entity = 'chat' and entity_id = $2 and at > now() - interval '12 hours' limit 1`, ['staff:' + staff.id, c.ref])))
@@ -1548,6 +1554,20 @@ function publicLimit(req) {
 }
 
 // ---------- entry point ----------
+// Everything the app's signed-in screens show, in one request instead of eleven (the app asks every 20 s while open).
+// Each part is the same answer as its own route; a part that fails is listed in `failed` and the rest still arrive.
+const SYNC_PARTS = { me: '/me', orders: '/orders', ledger: '/ledger', redemptions: '/redemptions', notifications: '/notifications', alerts: '/alerts',
+  appraisals: '/appraisals', gifts: '/gifts', micro: '/micro', chats: '/chats', barSales: '/bars/sales' };
+route('GET', '/sync', { auth: 'customer' }, async ctx => {
+  const parts = {}, failed = [];
+  for (const [name, path] of Object.entries(SYNC_PARTS)) {               // one after another: one database connection per customer
+    const r = routes.find(x => x.method === 'GET' && x.re.test(path) && x.opts.auth === 'customer');
+    try { parts[name] = await r.handler({ ...ctx, params: {}, query: {} }); }
+    catch (e) { if (name === 'me') throw e; failed.push(name); }
+  }
+  return { parts, failed };
+});
+
 export async function handle(req, res, opts = {}) {
   const db = opts.db || (await getDb());
   const fetchRates = opts.fetchRates || fetchLiveRates;

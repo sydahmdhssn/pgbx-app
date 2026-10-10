@@ -58,7 +58,7 @@ p{margin:0 0 12px}
 .grid{display:grid;gap:16px}
 .g4{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
 @media (max-width:480px){.g4{grid-template-columns:1fr 1fr;gap:10px}}
-td.num,td.r .num,.num.amt{white-space:nowrap}
+td.num,td.r .num{white-space:nowrap}
 .g2{grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr))}
 .modal .g2{grid-template-columns:repeat(auto-fit,minmax(min(100%,140px),1fr))}
 .stat .k{font-size:13px;color:var(--text-2)} .stat .v{font:600 28px/1.15 var(--serif);margin-top:4px;font-variant-numeric:tabular-nums}

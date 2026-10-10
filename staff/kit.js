@@ -41,7 +41,8 @@ export function useLoad(path, deps = []) {
     if (!path) { setS({ data: null, error: null, loading: false }); return; }
     const fresh = shown.current !== path; shown.current = path;
     setS(p => ({ data: fresh ? null : p.data, loading: true, error: null }));
-    api(path).then(d => n === seq.current && setS({ data: d, error: null, loading: false }), e => n === seq.current && setS({ data: null, error: e, loading: false }));
+    // a failed refresh of something already on screen keeps it (a network blip during polling doesn't blank the page)
+    api(path).then(d => n === seq.current && setS({ data: d, error: null, loading: false }), e => n === seq.current && setS(p => (p.data && !fresh ? { ...p, loading: false } : { data: null, error: e, loading: false })));
   }, [path]);
   useEffect(reload, [path, ...deps]);
   return { ...s, reload };

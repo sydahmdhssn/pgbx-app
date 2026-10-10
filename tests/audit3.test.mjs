@@ -145,3 +145,12 @@ test('chat files have a limit per chat; staff reads are audited however they are
   ok(await call('GET', `/api/v1/support/chats/${c.id}?after=1`, { token: s2 }));
   assert.equal((await db.query(`select 1 from audit_log where action = 'chat.viewed' and entity_id = $1`, [c.ref])).length, 1, 'once per shift, not every poll');
 });
+
+test('one /sync request returns every part the app shows, each the same as its own route', async () => {
+  const t = await verified();
+  const d = ok(await call('GET', '/api/v1/sync', { token: t }));
+  assert.deepEqual(d.failed, []);
+  for (const k of ['me', 'orders', 'ledger', 'redemptions', 'notifications', 'alerts', 'appraisals', 'gifts', 'micro', 'chats', 'barSales']) assert.ok(d.parts[k], k);
+  assert.deepEqual(d.parts.orders, ok(await call('GET', '/api/v1/orders', { token: t })));
+  err(await call('GET', '/api/v1/sync'), 401);
+});

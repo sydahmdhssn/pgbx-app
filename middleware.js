@@ -16,6 +16,7 @@ const OPEN = [
   /^\/api\/v1\/kyc\/webhook\/?$/,            // identity provider callbacks, verified by signature
   /^\/api\/v1\/cron\//,                      // Vercel Cron, verified by CRON_SECRET
   /^\/(favicon\.svg|favicon\.ico|robots\.txt)$/,
+  /^\/(live\/)?manifest\.webmanifest$/,        // browsers fetch the manifest without cookies; it holds nothing private
 ];
 
 const enc = new TextEncoder();

@@ -388,7 +388,9 @@ async function fileForUpload(file) {
     if (img) {
       const k = Math.min(1, 1600 / Math.max(img.width, img.height)), c = document.createElement('canvas');
       c.width = Math.round(img.width * k); c.height = Math.round(img.height * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      img.close();                                          // release the full-size decoded photo
       const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+      c.width = c.height = 0;
       return { name: file.name.replace(/\.\w+$/, '') + '.jpg', mime: 'image/jpeg', data: await b64(blob) };
     }
   }
@@ -397,15 +399,15 @@ async function fileForUpload(file) {
   return { name: file.name, mime: file.type, data: await b64(file) };
 }
 const b64 = blob => new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = bad; r.readAsDataURL(blob); });
-function Attachment({ chatId, a }) {
+function Attachment({ chatId, a, onLoad }) {
   const [url, setUrl] = useState(null);
   const [err, setErr] = useState(false);
   useEffect(() => { let u = null, live = true;
-    api(`/support/chats/${chatId}/attachments/${a.id}`).then(d => { if (!live) return; const bin = Uint8Array.from(atob(d.attachment.data), c => c.charCodeAt(0)); u = URL.createObjectURL(new Blob([bin], { type: d.attachment.mime })); setUrl(u); }, () => live && setErr(true));
+    api(`/support/chats/${chatId}/attachments/${a.id}`).then(d => { if (!live) return; const s = atob(d.attachment.data), bin = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) bin[i] = s.charCodeAt(i); u = URL.createObjectURL(new Blob([bin], { type: d.attachment.mime })); setUrl(u); }, () => live && setErr(true));
     return () => { live = false; u && URL.revokeObjectURL(u); }; }, [a.id]);
   if (err) return html`<span class="small muted">File no longer available</span>`;
   if (!url) return html`<span class="small muted">Loading ${a.name}…</span>`;
-  return a.mime.startsWith('image/') ? html`<a href=${url} target="_blank" rel="noopener"><img class="chat-img" src=${url} alt=${a.name} /></a>`
+  return a.mime.startsWith('image/') ? html`<a href=${url} target="_blank" rel="noopener"><img class="chat-img" src=${url} alt=${a.name} onLoad=${onLoad} /></a>`
     : html`<a class="btn sm sec" href=${url} download=${a.name}>📄 ${a.name}</a>`;
 }
 function Chats({ id, me, toast, refreshCounts }) {
@@ -444,19 +446,23 @@ function ChatThread({ id, me, toast, onChange }) {
   const [rate, setRate] = useState(null);                 // the confirm form: { prices, minutes, note }
   const load = useRef(() => {});
   const last = useRef(0), box = useRef(null), fileRef = useRef(null);
-  const changed = useRef(onChange); changed.current = onChange;   // the list's reload for its current filter, not the first one
+  const changed = useRef(onChange); changed.current = onChange;
+  const statusRef = useRef(null); statusRef.current = d && d.chat.status;   // the list's reload for its current filter, not the first one
   const add = list => { if (!list.length) return; last.current = list[list.length - 1].id; setMsgs(m => [...m, ...list.filter(x => !m.some(y => y.id === x.id))]); };
   useEffect(() => {
     let live = true;
     const first = () => api(`/support/chats/${id}`).then(r => { if (!live) return; setErr(null); setD(r); setConf(r.confirmation); last.current = 0; setMsgs([]); add(r.messages); changed.current(); }, e => live && setErr(e));
     load.current = first; first();
     // New messages, the confirmation and the chat's status (the customer may close it or place the order meanwhile)
-    const t = setInterval(() => { if (document.visibilityState !== 'visible' || !last.current) return;
-      api(`/support/chats/${id}?after=${last.current}`).then(r => { if (!live) return; add(r.messages); setConf(r.confirmation);
+    const t = setInterval(() => { if (document.visibilityState !== 'visible' || !last.current || statusRef.current === 'closed') return;   // a closed chat gets no more messages
+      api(`/support/chats/${id}?after=${last.current}`).then(r => { if (!live) return; add(r.messages); setConf(c => (JSON.stringify(c) === JSON.stringify(r.confirmation) ? c : r.confirmation));
         setD(x => (x && x.chat.status !== r.chat.status ? { ...x, chat: r.chat } : x)); if (r.messages.length) changed.current(); }).catch(() => {}); }, 3000);
     return () => { live = false; clearInterval(t); };
   }, [id]);
-  useEffect(() => { if (box.current) box.current.scrollTop = box.current.scrollHeight; }, [msgs.length]);
+  // follow new messages, and photos as they load, while staff are at the bottom; reading older ones isn't interrupted
+  const stick = useRef(true);
+  const toEnd = () => { if (box.current && stick.current) box.current.scrollTop = box.current.scrollHeight; };
+  useEffect(toEnd, [msgs.length]);
   if (err) return html`<div class="chat-thread card"><a class="btn sm ghost back-link" href="#chats">‹ All chats</a><${Failed} error=${err} retry=${() => load.current()} /></div>`;
   if (!d) return html`<div class="chat-thread card"><${Loading} /></div>`;
   const c = d.chat, closed = c.status === 'closed', u = d.customer;
@@ -507,10 +513,10 @@ function ChatThread({ id, me, toast, onChange }) {
       ${conf && html`<div class=${'note ' + (confLive ? 'ok' : '')} style="margin-top:10px">${conf.status === 'used' ? html`Rate used for <span class="mono">${conf.used_ref}</span>.`
         : confLive ? html`Confirmed ${pkr(conf.total_pkr)}, valid until ${timeShort(conf.expires_at)}.` : conf.status === 'withdrawn' ? 'The last confirmed rate was withdrawn.' : html`The confirmed ${pkr(conf.total_pkr)} expired at ${timeShort(conf.expires_at)}.`}</div>`}
     </div>
-    <div class="card chat-msgs" ref=${box} aria-live="polite">
+    <div class="card chat-msgs" ref=${box} aria-live="polite" onScroll=${e => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
       ${msgs.map(m => html`<div class=${'msg ' + m.sender + (m.confirmation_id ? ' rate' : '')}>
         ${m.sender === 'system' ? html`<span>${m.body}</span>` : html`<div class="bubble">
-          ${m.attachment && html`<${Attachment} chatId=${id} a=${m.attachment} />`}
+          ${m.attachment && html`<${Attachment} chatId=${id} a=${m.attachment} onLoad=${toEnd} />`}
           ${m.body && html`<div style="white-space:pre-wrap">${m.body}</div>`}
           <div class="meta">${m.sender === 'staff' ? (m.staff_name || 'PGBX') : (u.name || 'Customer').split(' ')[0]} · ${timeShort(m.created_at)}</div></div>`}
       </div>`)}
@@ -820,7 +826,7 @@ function Admin() {
   const [narrow, setNarrow] = useState(() => matchMedia('(max-width:860px)').matches);
   // nothing is asked before sign-in; support staff only have the chat counts
   const counts = useLoad(me && !me.mustChangePassword ? (me.role === 'support' ? '/support/counts' : '/admin/overview') : null, [section]);
-  useEffect(() => { if (!me || me.mustChangePassword) return; const t = setInterval(counts.reload, 20000); return () => clearInterval(t); }, [me && me.role, me && me.mustChangePassword]);
+  useEffect(() => { if (!me || me.mustChangePassword) return; const t = setInterval(() => document.visibilityState === 'visible' && counts.reload(), 20000); return () => clearInterval(t); }, [me && me.role, me && me.mustChangePassword]);
   const sideRef = useRef();
   useEffect(() => { if (menu && sideRef.current) (sideRef.current.querySelector('[aria-current=page]') || sideRef.current.querySelector('a'))?.focus(); }, [menu]);
   useEffect(() => { setMenu(false); window.scrollTo(0, 0); }, [section, id]);

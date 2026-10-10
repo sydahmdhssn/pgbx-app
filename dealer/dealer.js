@@ -89,7 +89,7 @@ function Handover({ r, onDone, onBack, toast }) {
 
 function Queue({ toast }) {
   const { data, error, loading, reload } = useLoad('/dealer/redemptions');
-  useEffect(() => { const t = setInterval(reload, 30000); return () => clearInterval(t); }, []);
+  useEffect(() => { const t = setInterval(() => document.visibilityState === 'visible' && reload(), 30000); return () => clearInterval(t); }, []);
   if (error) return html`<${Failed} error=${error} retry=${reload} />`;
   if (!data) return html`<div class="card"><${Loading} /></div>`;
   const active = data.redemptions.filter(r => r.status === 'requested' || r.status === 'ready');

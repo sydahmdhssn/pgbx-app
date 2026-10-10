@@ -41,6 +41,7 @@ const csp = `default-src 'self'; script-src 'self' https://challenges.cloudflare
 const withBridge = fs.readFileSync(path.join(dist, 'index.html'), 'utf8')
   .replace('<link rel="icon" href="/favicon.svg"', '<link rel="icon" href="favicon.svg"')
   .replace(/<link rel="manifest"[^>]*>\n?/, '')
+  .replace(/<link rel="apple-touch-icon"[^>]*>\n?/, '')
   .replace('<meta charset="utf-8">', `<meta charset="utf-8">\n<meta http-equiv="Content-Security-Policy" content="${csp}">`)
   .replace('<script type="module" src="app.js"></script>', '<script type="module" src="bridge.js"></script>\n<script type="module" src="app.js"></script>');
 fs.writeFileSync(path.join(dist, 'index.html'), withBridge);
