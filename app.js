@@ -877,7 +877,7 @@ function RatesHome({ S, A }) {
 
     <p class="foot">${rates.mode === 'live'
       ? `Indicative prices: international spot converted at USD/PKR ${rates.usdPkr ? rates.usdPkr.rate.toFixed(2) : ''}${rates.usdPkr && rates.usdPkr.updatedAt ? ` (exchange rate of ${dt(Date.parse(rates.usdPkr.updatedAt))}, updated daily)` : ''}, refreshed every 10 seconds. Local Sarafa rates may differ.${LIVE ? '' : ' Sell prices and product premiums are sample values until PGBX sets them.'}`
-      : `Live prices are unavailable, so these rates are simulated from the Sarafa 24K rate of 1 Oct 2026. Buying uses PGBX’s server prices in the real app.`}</p>
+      : LIVE ? 'Live prices are unavailable right now. Buying and selling pause until they return.' : `Live prices are unavailable, so these rates are simulated from the Sarafa 24K rate of 1 Oct 2026. Buying uses PGBX’s server prices in the real app.`}</p>
     ${rates.mode === 'live' && rates.fxOld && html`<${Notice} kind="warning" icon="alert" title="Exchange rate is out of date">The USD/PKR rate hasn’t updated for more than a day, so rupee prices may be off.</${Notice}>`}
     ${rates.mode === 'live' && rates.warnings && rates.warnings.length > 0 && html`<p class="foot" style="margin-top:0" title=${rates.warnings.join(' · ')}>Some price sources didn’t answer; prices come from the backup source.</p>`}
   </div>`;
@@ -1282,6 +1282,9 @@ function useChatThread(S, A, id) {
     return () => { live = false; clearTimeout(timer); document.removeEventListener('visibilitychange', vis); };
   }, [id]);
   useEffect(() => { if (local && local.unread) A.set(s => ({ chats: s.chats.map(c => (c.id === id ? { ...c, unread: 0 } : c)) })); }, [id, local && local.unread]);
+  // what the thread says (e.g. support closed it) reaches the chats list, so "Get final rate" doesn't reopen a closed chat
+  const seen = t && t.chat && t.chat.status;
+  useEffect(() => { if (seen && local && local.status !== seen) A.set(s => ({ chats: s.chats.map(c => (c.id === id ? { ...c, status: seen } : c)) })); }, [id, seen]);
   if (!LIVE) return { chat: local, messages: local ? local.messages : [], confirmation: local ? local.confirmation : null, loading: false };
   const add = m => setT(prev => (prev && !prev.messages.some(x => x.id === m.id) ? { ...prev, messages: [...prev.messages, m].sort((a, b) => a.id - b.id) } : prev));
   return { chat: t ? t.chat : local, messages: t ? t.messages : [], confirmation: t ? t.confirmation : null, loading: !t && !err, error: err, add, refresh: () => get.current() };
@@ -1878,7 +1881,7 @@ function WalletScreen({ S, A }) {
       ${!history.length && html`<p class="foot" style="margin-top:0">Purchases and collections appear here.</p>`}
       <${Keep} deps=${[shown, minuteOf(S.now)]} render=${() => html`<div class="group inset">
         ${shown.map(e => { const p = P[e.pid]; const kind = e.reason === 'purchase' ? 'plus' : e.reason === 'redemption' || e.reason === 'sale' ? 'minus' : 'open';
-          const title = kind === 'plus' ? 'Bought' : e.reason === 'sale' ? 'Sold to PGBX' : kind === 'minus' ? 'Collected' : 'Opening balance';
+          const title = kind === 'plus' ? 'Bought' : e.reason === 'sale' ? 'Sold to PGBX' : e.reason === 'adjustment' ? 'Adjustment' : kind === 'minus' ? 'Collected' : 'Opening balance';
           return html`<div class="row" style="align-items:flex-start">
             <span class=${'ri' + (kind === 'minus' ? ' gold' : '')}><${Icon} n=${kind === 'minus' ? 'store' : kind === 'plus' ? 'buy' : 'box'} c="sm"/></span>
             <div class="rt"><b>${title} ${Math.abs(e.delta)} × ${pname(p)}</b>
@@ -1904,7 +1907,7 @@ function statementData(S, from, to) {
     microGrams: (S.micro && S.micro.grams) || 0 };
 }
 const microType = t => (t.side === 'buy' ? '$1 gold purchase' : '$1 gold sale');
-const entryType = e => (e.reason === 'purchase' ? 'Purchase' : e.reason === 'redemption' ? 'Redemption' : e.reason === 'sale' ? 'Sold to PGBX' : 'Opening balance (sample)');
+const entryType = e => (e.reason === 'purchase' ? 'Purchase' : e.reason === 'redemption' ? 'Redemption' : e.reason === 'sale' ? 'Sold to PGBX' : e.reason === 'adjustment' ? 'Adjustment' : LIVE ? 'Opening balance' : 'Opening balance (sample)');
 function downloadBlob(name, type, text) {
   const url = URL.createObjectURL(new Blob([text], { type }));
   const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
@@ -2270,15 +2273,16 @@ function AccountScreen({ S, A }) {
 function CloseAccount({ S, A }) {
   const bars = PRODUCTS.reduce((a, p) => a + (S.holdings[p.id] || 0), 0);
   const active = S.redemptions.filter(r => ['requested', 'ready'].includes(S.statusOf(r))).length;
-  const pending = S.orders.filter(o => o.status === 'flagged').length;
+  const pending = S.orders.filter(o => ['flagged', 'pending'].includes(o.status)).length;
   const services = S.appraisals.filter(a => ['booked', 'confirmed'].includes(a.status)).length + S.giftOrders.filter(g => ['placed', 'in_production', 'dispatched'].includes(g.status)).length;
   const blockers = [
     LIVE && (!S.synced || (S.missing && S.missing.length > 0)) && { t: 'Your account hasn’t fully loaded', d: 'We need your latest holdings and orders before the account can be closed.', act: 'Try again', go: A.sync },
     bars > 0 && { t: `You still hold ${bars} bar${bars > 1 ? 's' : ''} worth ${fmt(S.walletValue.total - S.walletValue.micro)}`, d: 'Collect them at a dealer, or sell them back to PGBX from your wallet.', act: 'Go to wallet', go: () => A.tab('wallet') },
     active > 0 && { t: `${active} collection${active > 1 ? 's are' : ' is'} still open`, d: 'Collect or cancel them first.', act: 'View collections', go: () => A.push({ name: 'collect' }) },
     services > 0 && { t: `${services} service booking${services > 1 ? 's are' : ' is'} still open`, d: 'Wait until your appraisal visit or gift delivery is done, or cancel it.', act: 'View services', go: () => A.tab('services') },
-    pending > 0 && { t: `${pending} order${pending > 1 ? 's are' : ' is'} still being completed`, d: 'Wait until PGBX operations completes it.', act: 'View wallet', go: () => A.tab('wallet') },
+    pending > 0 && { t: `${pending} order${pending > 1 ? 's are' : ' is'} still being completed`, d: 'Pay for it or let it expire, or wait until PGBX operations completes it.', act: 'View wallet', go: () => A.tab('wallet') },
     S.micro.grams > 0 && { t: `You still have ${fmtG(S.micro.grams)} of $1 gold`, d: 'Sell it first; PGBX pays it to your bank.', act: 'Sell gold', go: () => A.push({ name: 'micro-sell' }) },
+    (S.barSales || []).some(b => b.status === 'pending_payout') && { t: 'A payment for bars you sold is still on its way', d: 'Wait until PGBX has paid it to your bank.', act: 'View wallet', go: () => A.tab('wallet') },
     S.micro.txns.some(t => t.status === 'pending_payout') && { t: 'A payment for gold you sold is still on its way', d: 'Wait until PGBX has paid it to your bank.', act: 'View $1 gold', go: () => A.openMicro() },
   ].filter(Boolean);
   const close = () => A.confirm({ title: 'Close your PGBX account?', body: 'You won’t be able to log in or buy with this account again. Your personal details are removed from this phone. This can’t be undone.', confirm: 'Close account', cancel: 'Keep my account', danger: true, onConfirm: A.closeAccount });
@@ -3122,7 +3126,7 @@ function App() {
     if (!LIVE || !st.synced || termsAsked.current || st.termsVersion === TERMS_VERSION) return;
     termsAsked.current = true;
     set({ dialog: { title: 'Updated terms', body: 'Please read and accept PGBX’s Terms of use and Privacy policy to keep using the app. You can read them in Account › Terms and privacy.',
-      confirm: 'I accept', cancel: 'Log out',
+      confirm: 'I accept', cancel: 'Log out', required: true,
       onConfirm: () => Live.acceptTerms(TERMS_VERSION).then(() => set({ termsVersion: TERMS_VERSION }), e => { termsAsked.current = false; liveFail(e); }),
       onCancel: () => ACT.logout() } });
   }, [signedIn, st.synced, st.termsVersion]);
@@ -3242,10 +3246,10 @@ function App() {
   const needKey = needPids.join(',');
   useEffect(() => {
     // a rate confirmed in chat is only for its checkout: anywhere else gets the ordinary indicative price
-    if (!needPids.length || (st.lock && !(st.lock.confirmed && top.name !== 'pay') && needPids.every(pid => pid in st.lock.prices))) return;
+    if (!needPids.length || (st.lock && !(st.lock.confirmed && top.name !== 'pay') && needPids.every(pid => Number.isFinite(st.lock.prices[pid])))) return;
     if (LIVE) { set(s => ({ lock: lockFor(s, needPids) })); serverLock(needPids); }
     else set(s => ({ lock: lockFor(s, needPids) }));
-  }, [needKey, top && top.name, st.lock && Object.keys(st.lock.prices).join(',')]);
+  }, [needKey, top && top.name, st.lock && Object.keys(st.lock.prices).join(','), st.rates && st.rates.mode]);   // prices back: a fresh lock
 
   // $1 gold: refresh the server's quote every 20 s while its screens are open
   const microOpen = !!top && ['micro', 'micro-sell'].includes(top.name);
@@ -3356,7 +3360,8 @@ function App() {
       set({ ...ACCOUNT_BLANK, ...(LIVE ? { pinSet: false, pin: null, biometric: false, pinFails: 0, pinLockUntil: 0, cart: [] } : {}), stack: [], guest: false, tab: 'rates', loginNote: '', loginIntent: { note: 'You’ve logged out. Your holdings are safe.' }, loggedIn: false });
       setPhase('login');
     },
-    forgotPin: () => { set({ pinReset: true, lockNote: '', loginNote: '', loginIntent: { note: 'Log in with your mobile number to choose a new PIN.' } }); setPhase('login'); },
+    forgotPin: () => { if (LIVE && st.biometric) Live.disableBio().catch(() => { });
+      set({ biometric: false, pinReset: true, lockNote: '', loginNote: '', loginIntent: { note: 'Log in with your mobile number to choose a new PIN.' } }); setPhase('login'); },
     dismissTip: k => set(s => ({ tips: { ...s.tips, [k]: true } })),
     removeLine: pid => {
       const line = st.cart.find(l => l.pid === pid); if (!line) return;
@@ -3379,7 +3384,7 @@ function App() {
     report: (ref, text) => {
       const done = () => { A.guard(null); A.toast('Report sent. PGBX support will reply in your notifications.'); A.back(); };
       if (!LIVE) { A.guard(null); A.toast('Report sent to PGBX support (demo)'); A.back(); return; }
-      const about = ref.startsWith('o:') ? 'Order ' + ((st.orders.find(o => o.id === ref.slice(2)) || {}).receipt || '') : ref.startsWith('r:') ? 'Collection' : 'General';
+      const about = ref.startsWith('o:') ? 'Order ' + ((st.orders.find(o => o.id === ref.slice(2)) || {}).receipt || '') : ref.startsWith('r:') ? (r => (r ? `Collection ${r.code} (${r.units} × ${pname(P[r.pid])}, ${r.dealerName || (DEALERS.find(x => x.id === r.dealerId) || {}).name || 'dealer'})` : 'Collection'))(st.redemptions.find(r => r.id === ref.slice(2))) : 'General';
       if (st.sending) return;                                    // one report per tap
       set({ sending: true });
       Live.report(ref.startsWith('o:') ? 'order' : ref.startsWith('r:') ? 'collection' : 'general', `${about}\n\n${text.trim()}`).then(() => { set({ sending: false }); done(); }, e => { set({ sending: false }); liveFail(e); });
@@ -3590,7 +3595,7 @@ function App() {
       // The recipient's details stay on screen only (not saved on the phone). If the app was closed since the rate was
       // confirmed, the gift is set up again from the chat and the customer adds the delivery details.
       if (conf && !st.giftDraft && st.svc) {
-        set(s => ({ giftDraft: { ...giftDefaults(s), ...normDetails('gift', conf.details) }, navDir: 'fwd', stack: [...s.stack, { name: 'gift-new' }] }));
+        set(s => ({ giftDraft: { ...giftDefaults(s), ...normDetails('gift', conf.details), metal: ((s.svc.gift.items.find(i => i.id === conf.details.item) || giftDefaults(s)).metal) }, navDir: 'fwd', stack: [...s.stack, { name: 'gift-new' }] }));
         toast('Add the delivery details, then tap Get final rate to pay at your confirmed rate.');
         return;
       }
@@ -3859,7 +3864,12 @@ function App() {
   };
   const liveBio = async () => {
     try { if (await Live.bioUnlock()) return true; set({ biometric: false, lockNote: 'Enter your PIN. Switch ' + bioName() + ' on again in Account.' }); return false; }
-    catch (e) { if (Live.signedOut(e)) sessionEnded(endedNote(e)); else set({ lockNote: e.message }); return false; }
+    catch (e) {
+      if (Live.signedOut(e)) sessionEnded(endedNote(e));
+      else if (e.code === 'WRONG_PIN') { set({ biometric: false, lockNote: 'Enter your PIN. Switch ' + bioName() + ' on again in Account.' }); Live.disableBio().catch(() => { }); }
+      else set({ lockNote: e.message });
+      return false;
+    }
   };
   // The PIN chosen after login. Production saves it on the server; a refusal is shown on the PIN screen.
   const pinChosen = async p => {
@@ -4024,12 +4034,12 @@ function Dialog({ d, onClose }) {
   useEffect(() => {
     const prev = document.activeElement;
     const b = ref.current && ref.current.querySelector('[data-cancel]'); if (b) b.focus({ preventScroll: true });
-    const esc = e => { if (e.key === 'Escape') onClose(); };
+    const esc = e => { if (e.key === 'Escape' && !d.required) onClose(); };     // a required question can't be dismissed
     addEventListener('keydown', esc);
     return () => { removeEventListener('keydown', esc); try { prev && prev.focus && prev.focus({ preventScroll: true }); } catch (e) { } };
   }, []);
   const ok = () => { onClose(); d.onConfirm && d.onConfirm(); };
-  return html`<div class="scrim" onClick=${e => { if (e.target === e.currentTarget) onClose(); }}>
+  return html`<div class="scrim" onClick=${e => { if (e.target === e.currentTarget && !d.required) onClose(); }}>
     <div class="dialog" ref=${ref} role="alertdialog" aria-modal="true" aria-labelledby="dlg-t" aria-describedby="dlg-b">
       <h2 id="dlg-t">${d.title}</h2>${d.body && html`<p id="dlg-b">${d.body}</p>`}
       <div class="stack-btns">

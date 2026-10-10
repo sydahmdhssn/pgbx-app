@@ -252,7 +252,7 @@ export async function submitKyc(f) {
   return api(`/kyc/${k.check.id}/submit`, { method: 'POST', body: { cnic: f.cnic.replace(/\D/g, ''), name: f.name.trim(), dob: f.dob, expiry: f.expiry } });
 }
 export const saveProfile = f => api('/me', { method: 'PATCH', body: { name: f.name.trim(), ...(f.cnic ? { cnic: f.cnic } : {}), ...(f.dob ? { dob: f.dob } : {}), email: f.email || '', address: f.address || '' } });
-export const phoneStart = phone => api('/me/phone/start', { method: 'POST', body: { phone } });
+export const phoneStart = async phone => api('/me/phone/start', { method: 'POST', body: { phone, turnstileToken: await humanCheck() } });   // the same human check as login
 export const phoneVerify = (phone, code) => api('/me/phone/verify', { method: 'POST', body: { phone, code } });
 export const reserve = (pid, units, dealerId) => api('/redemptions', { method: 'POST', body: { productId: pid, units, dealerId } }).then(d => redemption(d.redemption));
 export const cancelRedemption = id => api(`/redemptions/${id}/cancel`, { method: 'POST', body: {} });
