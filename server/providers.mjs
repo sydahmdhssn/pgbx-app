@@ -28,6 +28,16 @@ const TWILIO_ERRORS = {
   60205: 'This number can’t receive SMS. Use a mobile number.',
   60410: 'Codes to this number are temporarily blocked. Contact PGBX support.',
 };
+// App Store / Play Store review: Apple and Google reviewers can't receive Pakistani SMS, so one review-only number may
+// log in with a fixed code instead. REVIEW_LOGIN="3001234567:482915" (number without 0 or +92, then a 6-digit code).
+// Off unless set; set it only while a store review is running, then remove it. Every review login is audited.
+export function reviewLogin(phone, code) {
+  const m = /^(3\d{9}):(\d{6})$/.exec(env('REVIEW_LOGIN') || '');
+  if (!m || m[2] === '123456' || phone !== m[1]) return null;
+  if (code === undefined) return true;                     // asking whether this number is the review number
+  const a = Buffer.from(String(code)), b = Buffer.from(m[2]);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 export const otp = {
   get mode() { return env('TWILIO_ACCOUNT_SID') && env('TWILIO_AUTH_TOKEN') && env('TWILIO_VERIFY_SERVICE_SID') ? 'twilio' : env('OTP_TEST_MODE') === '1' ? 'test' : 'off'; },
   channels() { return this.mode === 'twilio' ? ['sms', ...(env('OTP_WHATSAPP') === '1' ? ['whatsapp'] : [])] : this.mode === 'test' ? ['sms'] : []; },
@@ -40,12 +50,14 @@ export const otp = {
     return r.data;
   },
   async send(phone, channel = 'sms') {
+    if (reviewLogin(phone)) return { channel };             // the store reviewer's number: no SMS is sent
     if (this.mode === 'test') return { channel };
     if (this.mode !== 'twilio') { const e = new Error('Login codes aren’t available right now. Please try again later.'); e.status = 503; e.expose = true; throw e; }
     const d = await this.twilio('Verifications', { To: '+92' + phone, Channel: channel === 'whatsapp' ? 'whatsapp' : 'sms', Locale: 'en' });
     return { channel: d.channel || channel };
   },
   async check(phone, code) {
+    if (reviewLogin(phone)) return reviewLogin(phone, code);
     if (this.mode === 'test') return code === '123456';
     if (this.mode !== 'twilio') return false;
     const d = await this.twilio('VerificationCheck', { To: '+92' + phone, Code: code });

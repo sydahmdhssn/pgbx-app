@@ -3,3 +3,4 @@ Disallow: /admin
 Disallow: /dealer
 Disallow: /api/
 Disallow: /live
+Allow: /legal/

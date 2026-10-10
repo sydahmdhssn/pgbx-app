@@ -1,0 +1,8 @@
+{
+  "name": "PGBX",
+  "fullName": "PGBX — Pakistan Gold Bullion Exchange",
+  "appId": "pk.com.pgbx.app",
+  "apiOrigin": "https://pgbx-app.vercel.app",
+  "version": "1.0.0",
+  "build": 1
+}

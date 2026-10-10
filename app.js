@@ -10,7 +10,7 @@ const LIVE = BUILD === 'production';
 
 // Fonts: Apple system families (SF Pro, SF Compact, SF Mono, New York) via CSS; nothing is downloaded.
 // Requirement IDs (FR-*, NFR-*, CMP-*) live in code comments only; customers never see them.
-const APP_VERSION = LIVE ? '1.0' : '0.9 (prototype)';
+const APP_VERSION = LIVE ? '1.0.0' : '0.9 (prototype)';
 
 /* ============================================================
    Constants (SRS references in comments)
@@ -733,6 +733,7 @@ const Demo = ({ title, body, children }) => LIVE ? null : html`<div class="demo"
 // Details PGBX hasn't given yet: marked in the demo; in production the row or sentence is left out instead (see LIVE checks)
 const Tbc = () => (LIVE ? null : html`<span class="tbc">${TBC}</span>`);
 const DEALERS_TEXT = LIVE ? 'PGBX dealers' : '250 dealers';
+const LEGAL = Live.API_ROOT.replace(/\/api\/v1$/, '');   // where the terms and privacy policy pages are (the phone apps open the website)
 const Sample = () => (LIVE ? null : html`<span class="tag neutral">Sample</span>`);
 const Seg = ({ items, value, onChange, label }) => {
   const idx = Math.max(0, items.findIndex(x => x[0] === value));
@@ -2350,7 +2351,7 @@ function InfoScreen({ S, A, kind }) {
       <p>Prices are set by PGBX from international spot prices converted at the live USD/PKR rate, plus the premium for each bar shown in Fees and limits.</p>
       <p class="small" style="margin-top:16px">Version ${APP_VERSION}</p>
     </div>`;
-  else if (kind === 'about') body = html`<div class="prose">
+  else if (kind === 'about' && !LIVE) body = html`<div class="prose">
       <h3>What this is</h3>
       <p>A working prototype of the PGBX customer app, built to test the experience before launch. Rates are live; everything else uses sample data stored only in this browser.</p>
       <h3>Live</h3>
@@ -2367,7 +2368,9 @@ function InfoScreen({ S, A, kind }) {
   else body = html`<div class="prose">
       ${[['Ownership of the metal in your wallet', 'How the wallet is classified and which approvals apply.'], ['Fees and charges', 'Spread, collection fee and any storage fee.'], ['How long you can hold', 'How long holdings can be kept and collected.'], ['Refunds and disputes', 'What happens if something goes wrong.'], ['Shariah approval', 'Written approval of the product, wallet and collection process.'], ['Privacy policy', 'How your personal data is collected, stored and deleted.']].map(([h, d]) =>
         html`<h3>${h}</h3><p>${d}</p>${!LIVE && html`<p style="margin-top:4px"><${Tbc}/></p>`}`)}
-      <p class="small" style="margin-top:24px">${LIVE ? 'Ask PGBX support for the full current terms.' : 'You’ll be asked to accept these terms before your first purchase.'}</p>
+      ${LIVE ? html`<div class="stack-btns" style="margin-top:24px"><a class="btn btn-secondary" href=${LEGAL + '/legal/terms'} target="_blank" rel="noopener">Read the full terms</a>
+        <a class="btn btn-secondary" href=${LEGAL + '/legal/privacy'} target="_blank" rel="noopener">Read the privacy policy</a></div>`
+        : html`<p class="small" style="margin-top:24px">You’ll be asked to accept these terms before your first purchase.</p>`}
     </div>`;
   return html`<div class="page">
     <${TopBar} title=${titles[kind]} onBack=${A.back} />
@@ -3585,7 +3588,7 @@ function App() {
     lockNow: () => { if (LIVE) Live.lockNow(); set({ lockNote: 'App locked', stack: [] }); setPhase('pin'); },
     // Demo: a new PIN is kept on this phone. Production: saved on the server with the current PIN; answers true or the error.
     setPin: (p, current) => {
-      if (!LIVE) { set({ pin: p }); toast('PIN changed'); return; }
+      if (!LIVE) { set({ pin: pinStore(p) }); notify('security', 'PIN changed', 'Your app PIN was changed on this device.', true); toast('PIN changed'); return; }
       return Live.setPin(p, current).then(() => { toast('PIN changed'); return true; }, e => { if (Live.signedOut(e)) { sessionEnded(endedNote(e)); return { message: e.message }; } return e; });
     },
     pinWrong: () => pinFail(),
@@ -3713,7 +3716,6 @@ function App() {
       toast(reverify ? 'Saved. Verify your identity again before your next purchase.' : 'Changes saved');
     },
     changePhone: n => { if (LIVE) { sync(); toast('Mobile number updated'); return; } set({ phone: n }); notify('security', 'Mobile number changed', `Your account now uses +92 ${n.slice(0, 3)} ${n.slice(3)}. If this wasn’t you, contact PGBX.`, true); toast('Mobile number updated'); },
-    setPin: p => { set({ pin: pinStore(p) }); notify('security', 'PIN changed', 'Your app PIN was changed on this device.', true); toast('PIN changed'); },
     markAllRead: () => { readAt.current = Date.now(); set(s => ({ notifications: s.notifications.map(n => ({ ...n, read: true })) })); if (LIVE) Live.markRead().catch(liveFail); },
     addAlert: (metal, dir, target) => { if (st.guest) { A.login('Log in to get price alerts.', { tab: 'rates' }); return; } if (LIVE) { Live.addAlert(metal, dir, target).then(a => { set(s => ({ alerts: [a, ...s.alerts] })); toast(`We’ll notify you when ${metalName(metal).toLowerCase()} goes ${dir} ${fmt(target)}`); }, liveFail); return; } set(s => ({ alerts: [...s.alerts, { id: uid(), metal, dir, target, active: true }] })); toast(`We’ll notify you when ${metalName(metal).toLowerCase()} goes ${dir} ${fmt(target)}`); },
     removeAlert: id => {

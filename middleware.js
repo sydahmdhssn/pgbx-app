@@ -17,6 +17,7 @@ const OPEN = [
   /^\/api\/v1\/cron\//,                      // Vercel Cron, verified by CRON_SECRET
   /^\/(favicon\.svg|favicon\.ico|robots\.txt)$/,
   /^\/(live\/)?manifest\.webmanifest$/,        // browsers fetch the manifest without cookies; it holds nothing private
+  /^\/legal\/[a-z_]+(\.html|\.css)?$/,           // terms and privacy policy: the app stores link to them
 ];
 
 const enc = new TextEncoder();

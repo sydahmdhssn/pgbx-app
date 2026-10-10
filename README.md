@@ -374,6 +374,26 @@ Before a store release PGBX needs: Apple and Google developer accounts in PGBX's
 (`pk.com.pgbx.app` is a placeholder), a Firebase project for push, store screenshots, and the privacy answers (plus an app-level `PrivacyInfo.xcprivacy` if PGBX
 adds code that uses Apple's "required reason" APIs; Capacitor and its plugins ship their own).
 
+## Launch preparation
+
+* **`app.config.json`** is the one place for the app's name, app ID (bundle ID), API domain, version and build number.
+  `npm run build:app` writes it into the iOS and Android projects, the web manifest, the security policy and the app.
+  Change the placeholder app ID `pk.com.pgbx.app` before the first store upload (it can't change afterwards) and raise
+  `build` for every upload.
+* **Production bundle**: the build makes one minified file (`live/app.js`, also used by the phone apps) with the demo
+  code removed: about 250 KB instead of 380 KB in three files.
+* **`npm run launch:check`** (with the production settings, e.g. `node --env-file=.env.production scripts/launch-check.mjs`)
+  lists what blocks launch: missing providers, test modes, sample staff, dealers or premiums, unset retention, missing
+  legal pages, the placeholder app ID. It reads the database but never changes it.
+* **Store review login**: set `REVIEW_LOGIN=<number>:<6-digit code>` (number without 0 or +92) while Apple or Google
+  review the app; that number logs in with that code and no SMS is sent. Approve the account's identity in Admin ›
+  Identity checks beforehand, and remove the setting once the app is approved. Review logins are audited.
+* **Legal pages**: `legal/privacy.html` and `legal/terms.html` (public at `/legal/privacy` and `/legal/terms`, also behind
+  the site password, and linked from Account › Terms and privacy). They are **drafts** for PGBX's lawyer.
+* **Store material**: `docs/store/listing.md` (names, description, keywords, review notes, declarations),
+  `docs/store/privacy-answers.md` (Apple App Privacy and Google Data Safety answers) and `docs/store/screenshots/`
+  (iPhone 6.7" 1290×2796, iPhone 6.5" 1242×2688, Android 1080×1920).
+
 ## Performance rules
 
 Measured on a 4x-slowed CPU (a mid-range phone). Keep these when changing the app:

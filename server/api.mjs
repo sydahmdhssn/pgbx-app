@@ -7,7 +7,7 @@
 //   Scheduler   GET /cron/sweep (expiry, purge, push; Vercel Cron) with "Authorization: Bearer $CRON_SECRET"
 import { getDb } from './db.mjs';
 import * as sec from './security.mjs';
-import { otp, turnstile, payments, kyc, push } from './providers.mjs';
+import { otp, turnstile, payments, kyc, push, reviewLogin } from './providers.mjs';
 import { fetchLiveRates } from './rates.mjs';
 import { ALLOWED_ORIGIN } from '../api/_origin.mjs';
 
@@ -303,7 +303,7 @@ route('POST', '/auth/otp/verify', {}, async ({ db, body, req, res }) => {
   const days = Number((await db.one(`select setting_int('session_days') as d`)).d);
   await db.query(`insert into sessions (token_hash, customer_id, device, expires_at) values ($1, $2, $3, now() + make_interval(days => $4::int))`,
     [sec.hashToken(token), c.id, str(body.device, 120) || null, days]);
-  await audit(db, 'customer:' + c.id, isNew ? 'account.created' : 'login', 'customer', c.id, { ip: clientIp(req) });
+  await audit(db, 'customer:' + c.id, isNew ? 'account.created' : 'login', 'customer', c.id, { ip: clientIp(req), ...(reviewLogin(phone) ? { storeReview: true } : {}) });
   if (!isNew) await db.query(`select notify_customer($1, 'security', 'New login', $2, null, true)`, [c.id, `Your account was opened on ${str(body.device, 60) || 'a device'}. If this wasn’t you, contact PGBX.`]);
   // Web: the session lives only in the HttpOnly cookie, so page scripts never see it. Native apps ask for the token
   // (cookie: false) and keep it in the phone's secure storage.
