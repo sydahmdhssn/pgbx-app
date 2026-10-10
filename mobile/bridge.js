@@ -62,12 +62,20 @@ if (C && C.isNativePlatform && C.isNativePlatform()) {
       try { await P.Share.share({ title: name, url: f.uri, dialogTitle: 'Save your statement' }); return true; }
       catch (e) { if (/cancel/i.test((e && e.message) || '')) return false; throw e; }
     };
+    // Chat files (a PDF a support agent sent): base64 in, then the same share sheet
+    native.shareFile = async (name, base64) => {
+      const f = await P.Filesystem.writeFile({ path: name.replace(/[^\w.-]+/g, '_').slice(0, 80) || 'file', data: base64, directory: 'CACHE' });
+      try { await P.Share.share({ title: name, url: f.uri, dialogTitle: 'Save this file' }); return true; }
+      catch (e) { if (/cancel/i.test((e && e.message) || '')) return false; throw e; }
+    };
   }
 
   if (P.Browser) {
-    native.openUrl = url => P.Browser.open({ url, presentationStyle: 'popover' });
+    // On Android the payment page pauses the app; app.js reads browserOpen so paying doesn't lock it after 30 seconds
+    native.browserOpen = false;
+    native.openUrl = url => { native.browserOpen = true; return P.Browser.open({ url, presentationStyle: 'popover' }).catch(e => { native.browserOpen = false; throw e; }); };
     // Closing a payment page: the app refreshes at once to show the result
-    P.Browser.addListener('browserFinished', () => window.dispatchEvent(new Event('pgbx-browser-closed')));
+    P.Browser.addListener('browserFinished', () => { native.browserOpen = false; window.dispatchEvent(new Event('pgbx-browser-closed')); });
   }
 
   if (P.App) {

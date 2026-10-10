@@ -41,5 +41,10 @@ test('webhooks, the scheduled job and the screen itself stay reachable', async (
   const js = await middleware(req('/__gate.js'));
   assert.equal(js.status, 200); assert.match(js.headers.get('content-type'), /javascript/);
   assert.equal((await middleware(req('/api/v1/payments/webhook/../../me'))).status, 401);   // no path tricks
+  // the phone apps call the API from their own origin and have no password cookie; the website stays locked to them
+  for (const o of ['capacitor://localhost', 'https://localhost']) assert.ok(passes(await middleware(req('/api/v1/me', { headers: { origin: o } }))), o);
+  assert.equal((await middleware(req('/live/', { headers: { origin: 'capacitor://localhost' } }))).status, 401);
+  assert.equal((await middleware(req('/api/v1/me', { headers: { origin: 'https://localhost.evil.com' } }))).status, 401);
+  for (const p of ['/legal/privacy', '/legal/terms', '/legal/delete-account', '/legal/_style.css', '/manifest.webmanifest', '/live/manifest.webmanifest']) assert.ok(passes(await middleware(req(p))), p);
   delete process.env.SITE_PASSWORD;
 });

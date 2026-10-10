@@ -125,14 +125,14 @@ test('H8: refunds queue, second payments, and marking refunds paid', async () =>
   assert.ok(ok(await call('GET', '/api/v1/admin/refunds?status=refunded', { token: at })).refunds.some(x => x.id === r.id));
 });
 
-test('L1/L3: admins can’t remove themselves with a different-case id; one admin always stays; only failures count', async () => {
+test('L1/L3: admins can’t remove themselves with a different-case id; one admin always stays; others can’t lock an account out', async () => {
   const { t, id } = await adminToken('10.4.6.1');
   err(await call('POST', `/api/v1/admin/staff/${id.toUpperCase()}/active`, { token: t, body: { active: false } }), 400, 'SELF');
   err(await call('POST', `/api/v1/admin/staff/${id.toUpperCase()}/reset`, { token: t, body: {} }), 400, 'SELF');
   const o = await staffAccount('ops');
   for (let i = 0; i < 5; i++) ok(await call('POST', '/api/v1/staff/login', { body: { email: o.email, password: o.password, cookie: false }, ip: '10.4.6.' + (10 + i) }));
   for (let i = 0; i < 8; i++) err(await call('POST', '/api/v1/staff/login', { body: { email: o.email, password: 'wrong' }, ip: '10.4.6.' + (20 + i) }), 401);
-  err(await call('POST', '/api/v1/staff/login', { body: { email: o.email, password: o.password }, ip: '10.4.6.40' }), 429, 'RATE_LIMITED');
+  ok(await call('POST', '/api/v1/staff/login', { body: { email: o.email, password: o.password, cookie: false }, ip: '10.4.6.40' }));   // other people's wrong passwords don't lock the owner out
 });
 
 test('L5/L6: signed timestamps stop replays; the identity provider can report results', async () => {

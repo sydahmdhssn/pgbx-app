@@ -40,7 +40,7 @@ else { try { const j = JSON.parse(env('FCM_SERVICE_ACCOUNT')); j.project_id && j
 if (!env('TURNSTILE_SECRET')) warn('Cloudflare human check is off (TURNSTILE_*): bots can request login codes (each costs an SMS).');
 if (env('OTP_DEMO_SMS') === '1') warn('OTP_DEMO_SMS=1: the public demo can send real SMS codes.');
 if (env('REVIEW_LOGIN')) warn('REVIEW_LOGIN is on: the store-review number can log in without SMS. Remove it once the review is approved.');
-if (env('SITE_PASSWORD')) warn('SITE_PASSWORD is set: the whole site, including the production web app, is behind the password screen.');
+if (env('SITE_PASSWORD')) warn('SITE_PASSWORD is set: the website (including the production web app at /live and the admin panel) is behind the password screen. The phone apps still work.');
 
 // ---------- app identity and the files that go to the stores ----------
 if (config.appId === 'pk.com.pgbx.app') warn('app.config.json still has the placeholder app ID pk.com.pgbx.app. It can’t change after the first store upload.');
@@ -51,7 +51,7 @@ const robots = fs.readFileSync(path.join(ROOT, 'robots.txt'), 'utf8');
 if (/Disallow:\s*\/live/.test(robots)) warn('robots.txt hides the production app (/live) from search engines.');
 if (!fs.existsSync(path.join(ROOT, 'mobile', 'android', 'app', 'google-services.json'))) warn('Android: google-services.json is missing (push stays off in the Android app).');
 if (!fs.existsSync(path.join(ROOT, 'mobile', 'ios', 'App', 'App', 'GoogleService-Info.plist'))) warn('iOS: GoogleService-Info.plist is missing (push stays off in the iOS app).');
-for (const f of ['legal/privacy.html', 'legal/terms.html']) {
+for (const f of ['legal/privacy.html', 'legal/terms.html', 'legal/delete-account.html']) {
   const p = path.join(ROOT, f);
   if (!fs.existsSync(p)) block(`${f} is missing: both stores need a privacy policy, and customers must be shown the terms.`);
   else if (/DRAFT/.test(fs.readFileSync(p, 'utf8'))) warn(`${f} is still marked DRAFT: have it reviewed by PGBX’s lawyer, then remove the draft notice.`);

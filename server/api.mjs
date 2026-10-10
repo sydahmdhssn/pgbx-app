@@ -20,6 +20,9 @@ const MESSAGES = {
   LOCK_EXPIRED: [409, 'The price lock ended. Check the new price and try again.'],
   LOCK_NOT_FOUND: [404, 'That price lock wasn’t found. Start again from the product.'],
   KYC_REQUIRED: [403, 'Verify your identity before buying or collecting.'],
+  TOO_MANY_ALERTS: [400, 'You can have up to 20 active alerts.'],
+  TOO_MANY_FILES: [429, 'You’ve sent a lot of files. Describe the rest in a message, or try again tomorrow.'],
+  KEY_REUSED: [409, 'This request doesn’t match an earlier one with the same key. Please start again.'],
   ACCOUNT_INACTIVE: [403, 'This account isn’t active. Contact PGBX support.'],
   ORDER_LIMIT: [400, 'That’s more than the number of bars allowed in one order.'],
   DAILY_LIMIT: [400, 'This order would take you over today’s purchase limit.'],
@@ -130,6 +133,12 @@ async function limit(db, key, windowSec, max, message) {
   if (r.wait > 0) fail(429, 'RATE_LIMITED', message || 'Too many attempts. Please wait and try again.', { retryIn: r.wait });
 }
 const audit = (db, actor, action, entity, id, data = {}) => db.query(`select audit($1, $2, $3, $4, $5::jsonb)`, [actor, action, entity, id, JSON.stringify(data)]);
+// Staff opening a list of customers' personal data (identity checks, bank accounts, payments) is recorded once an hour
+const auditListOnce = async (db, staff, list) => {
+  const actor = 'staff:' + staff.id;
+  if (!(await db.one(`select 1 from audit_log where actor = $1 and action = 'list.viewed' and entity_id = $2 and at > now() - interval '1 hour' limit 1`, [actor, list])))
+    await audit(db, actor, 'list.viewed', 'list', list, {});
+};
 const settingsMap = async db => Object.fromEntries((await db.query(`select key, value from settings`)).map(r => [r.key, r.value]));
 
 // FR-R4: prices whose source timestamp is older than this are not recorded, so nothing can be locked at them.
@@ -292,9 +301,12 @@ route('POST', '/auth/otp/verify', {}, async ({ db, body, req, res }) => {
   const code = str(body.code).replace(/\D/g, '');
   if (!PK_MOBILE.test(phone) || code.length !== 6) fail(400, 'BAD_CODE', 'Enter the 6-digit code you received.');
   await limit(db, 'otp-check-ip:' + clientIp(req), 600, 20, 'Too many attempts from this device. Try again later.');
-  // Wrong codes per number are counted only when they are wrong, so nobody can lock a number out by guessing first
-  if ((await db.one(`select rate_hits($1, 3600) n`, ['otp-fail-h:' + phone])).n >= 10) fail(429, 'RATE_LIMITED', 'Too many wrong codes. Request a new code later.');
-  if (!(await otp.check(phone, code))) { await limit(db, 'otp-fail-h:' + phone, 3600, 1000); fail(400, 'WRONG_CODE', 'That code is incorrect. Check the message and try again.'); }
+  // Each attempt is counted before the code is checked (parallel guesses can't get past the limit), per number and
+  // address: someone else guessing can't lock the owner out. The SMS provider also limits attempts per code.
+  await limit(db, 'otp-try:' + phone + ':' + clientIp(req), 3600, 10, 'Too many wrong codes. Request a new code later.');
+  // The store-review number is checked here, not by the SMS provider, so it has its own small daily allowance
+  if (reviewLogin(phone)) await limit(db, 'review-try', 86400, 30, 'Too many attempts. Try again tomorrow.');
+  if (!(await otp.check(phone, code))) fail(400, 'WRONG_CODE', 'That code is incorrect. Check the message and try again.');
   let c = await db.one(`select * from customers where phone = $1`, [phone]);
   const isNew = !c;
   if (!c) c = await db.one(`insert into customers (phone) values ($1) returning *`, [phone]);
@@ -303,6 +315,7 @@ route('POST', '/auth/otp/verify', {}, async ({ db, body, req, res }) => {
   const days = Number((await db.one(`select setting_int('session_days') as d`)).d);
   await db.query(`insert into sessions (token_hash, customer_id, device, expires_at) values ($1, $2, $3, now() + make_interval(days => $4::int))`,
     [sec.hashToken(token), c.id, str(body.device, 120) || null, days]);
+  if (body.terms) await acceptTerms(db, c.id, str(body.terms, 20));   // the login screen says continuing accepts them
   await audit(db, 'customer:' + c.id, isNew ? 'account.created' : 'login', 'customer', c.id, { ip: clientIp(req), ...(reviewLogin(phone) ? { storeReview: true } : {}) });
   if (!isNew) await db.query(`select notify_customer($1, 'security', 'New login', $2, null, true)`, [c.id, `Your account was opened on ${str(body.device, 60) || 'a device'}. If this wasn’t you, contact PGBX.`]);
   // Web: the session lives only in the HttpOnly cookie, so page scripts never see it. Native apps ask for the token
@@ -397,11 +410,24 @@ route('GET', '/me', { auth: 'customer' }, async ({ db, customer }) => {
     profile: { id: c.id, phone: c.phone, name: c.name, cnic: c.cnic, dob: c.dob, email: c.email, address: c.address },
     kyc: { status: c.kyc_status, at: c.kyc_at },
     notifPrefs: { push: c.notif_prefs?.push !== false, alerts: c.notif_prefs?.alerts !== false },
+    terms: { version: c.terms_version || null, at: c.terms_accepted_at || null },
     wallet: await walletOf(db, c.id),
     unread: (await db.one(`select count(*)::int n from notifications where customer_id = $1 and read_at is null`, [c.id])).n,
   };
 });
 
+// The customer accepts a version of the terms and privacy policy (at login, and again when they change)
+const TERMS_RE = /^[0-9A-Za-z._-]{1,20}$/;
+async function acceptTerms(db, customerId, version) {
+  if (!TERMS_RE.test(version || '')) return false;
+  const r = await db.one(`update customers set terms_version = $2, terms_accepted_at = now() where id = $1 and terms_version is distinct from $2 returning id`, [customerId, version]);
+  if (r) await audit(db, 'customer:' + customerId, 'terms.accepted', 'customer', customerId, { version });
+  return true;
+}
+route('POST', '/me/terms', { auth: 'customer' }, async ({ db, customer, body }) => {
+  if (!(await acceptTerms(db, customer.id, str(body.version, 20)))) fail(400, 'BAD_REQUEST', MESSAGES.BAD_REQUEST[1]);
+  return { terms: { version: str(body.version, 20) } };
+});
 // Which notifications reach the phone (they always appear in the app's inbox)
 route('PATCH', '/me/notifications', { auth: 'customer' }, async ({ db, customer, body }) => {
   const prefs = {};
@@ -434,6 +460,9 @@ route('PATCH', '/me', { auth: 'customer' }, async ({ db, customer, body }) => {
     [customer.id, ...keys.map(k => f[k]), idChanged]);
   if (!u) fail(409, 'KYC_IN_PROGRESS', 'Your identity check is in progress. You can change your name, CNIC or date of birth once it’s finished.');
   const reverify = idChanged && customer.kyc_status === 'verified';
+  // A verified identity that changes: active collections are cancelled, the customer is told, and selling and
+  // collecting pause for 24 hours (someone with the phone can't turn the account into theirs)
+  if (reverify) await db.one(`select fn_identity_changed($1) n`, [customer.id]);
   await audit(db, 'customer:' + customer.id, 'profile.updated', 'customer', customer.id, { fields: keys, reverify });
   return { ok: true, reverify };
 });
@@ -533,7 +562,7 @@ route('POST', '/kyc/:id/submit', { auth: 'customer' }, async ({ db, customer, bo
 });
 
 // Identity provider result: body { check_id, status: "passed" | "failed" | "review", reason }, signed with KYC_WEBHOOK_SECRET
-route('POST', '/kyc/webhook', {}, async ({ db, raw, body, req }) => {
+route('POST', '/kyc/webhook', { webhook: true }, async ({ db, raw, body, req }) => {
   if (!signedWebhook(req, raw, kyc.webhookSecret)) fail(401, 'BAD_SIGNATURE', 'Invalid signature.');
   const id = str(body.check_id, 40), status = ['passed', 'failed', 'review'].includes(body.status) ? body.status : null;
   if (!id || !status) fail(400, 'BAD_EVENT', 'Missing fields.');
@@ -596,6 +625,10 @@ route('POST', '/orders', { auth: 'customer' }, async ({ db, customer, body }) =>
   if (!payments.provider) fail(503, 'PAYMENTS_OFF', 'Payments aren’t available yet.');
   await expireNow(db);
   const o = await db.one(`select * from fn_place_order($1, $2, $3::jsonb, $4, $5)`, [customer.id, str(body.lockId, 40), JSON.stringify(lines), method, key]);
+  // the same request key returns the earlier order; a different request with that key is refused, never mixed up
+  const had = await db.query(`select product_id, units from order_lines where order_id = $1`, [o.id]);
+  const sig = ls => ls.map(l => l.product_id + ':' + l.units).sort().join(',');
+  if (sig(had) !== sig(lines.filter(l => l.units > 0))) fail(409, 'KEY_REUSED', MESSAGES.KEY_REUSED[1]);
   const payment = o.status === 'pending_payment' ? await startPayment(db, 'order', o) : null;
   return { order: orderDto(o), payment };
 });
@@ -628,10 +661,12 @@ route('POST', '/payments/sandbox/:id', { auth: 'customer' }, async ({ db, custom
 // so a captured request can't be replayed later. Without it, the signature covers the body alone.
 function signedWebhook(req, raw, secret) {
   const ts = req.headers['x-pgbx-timestamp'];
+  // In production every callback must be signed with a recent timestamp, so a captured one can't be replayed later
+  if (ts === undefined && process.env.VERCEL_ENV === 'production') return false;
   if (ts !== undefined) return /^\d{9,11}$/.test(String(ts)) && Math.abs(Date.now() / 1000 - Number(ts)) <= 300 && sec.verifySignature(ts + '.' + raw, req.headers['x-pgbx-signature'], secret);
   return sec.verifySignature(raw, req.headers['x-pgbx-signature'], secret);
 }
-route('POST', '/payments/webhook', {}, async ({ db, raw, body, req }) => {
+route('POST', '/payments/webhook', { webhook: true }, async ({ db, raw, body, req }) => {
   if (!signedWebhook(req, raw, payments.webhookSecret)) fail(401, 'BAD_SIGNATURE', 'Invalid signature.');
   const ref = str(body.provider_ref, 120), orderId = str(body.order_id, 40);
   if (!ref || !orderId) fail(400, 'BAD_EVENT', 'Missing fields.');
@@ -669,6 +704,8 @@ const PHONE_HOLD_MS = 24 * 3600e3;
 function phoneHold(customer) {
   if (customer.phone_changed_at && Date.now() - new Date(customer.phone_changed_at) < PHONE_HOLD_MS)
     fail(403, 'PHONE_RECENTLY_CHANGED', 'Your mobile number changed in the last 24 hours. For your security, selling and collecting are paused until then.');
+  if (customer.identity_changed_at && Date.now() - new Date(customer.identity_changed_at) < PHONE_HOLD_MS)
+    fail(403, 'IDENTITY_RECENTLY_CHANGED', 'Your identity details changed in the last 24 hours. For your security, selling and collecting are paused until then.');
 }
 // Value created by sandbox payments is test money: it is never paid out or handed over as real gold.
 const sandboxFunds = async (db, customerId) => !!(await db.one(`select 1 from payments p join orders o on o.id = p.order_id where o.customer_id = $1 and p.provider = 'sandbox'
@@ -703,8 +740,8 @@ route('POST', '/alerts', { auth: 'customer' }, async ({ db, customer, body }) =>
   const metal = ['gold', 'silver'].includes(body.metal) ? body.metal : fail(400, 'BAD_METAL', 'Choose gold or silver.');
   const dir = ['above', 'below'].includes(body.dir) ? body.dir : fail(400, 'BAD_DIR', 'Choose above or below.');
   const target = int(body.targetPkr); if (!(target > 0)) fail(400, 'BAD_TARGET', 'Enter a target price.');
-  if ((await db.one(`select count(*)::int n from price_alerts where customer_id = $1 and active`, [customer.id])).n >= 20) fail(400, 'TOO_MANY', 'You can have up to 20 active alerts.');
-  return { alert: await db.one(`insert into price_alerts (customer_id, metal, dir, target_pkr) values ($1, $2, $3, $4) returning id, metal, dir, target_pkr, active`, [customer.id, metal, dir, target]) };
+  const a = await db.one(`select * from fn_add_alert($1, $2, $3, $4)`, [customer.id, metal, dir, target]);
+  return { alert: { id: a.id, metal: a.metal, dir: a.dir, target_pkr: a.target_pkr, active: a.active } };
 });
 route('DELETE', '/alerts/:id', { auth: 'customer' }, async ({ db, customer, params }) => {
   await db.query(`delete from price_alerts where id = $1 and customer_id = $2`, [params.id, customer.id]);
@@ -836,6 +873,7 @@ route('POST', '/micro/buy', { auth: 'customer' }, async ({ db, customer, body, f
   const confirmation = str(body.confirmationId, 40) || null;
   if (!confirmation) await ensureRates(db, fetchRates);           // a confirmed rate doesn't need the live feed
   const o = await db.one(`select * from fn_micro_buy($1, $2, $3, $4)`, [customer.id, units, key, confirmation]);
+  if (o.units !== units) fail(409, 'KEY_REUSED', MESSAGES.KEY_REUSED[1]);
   const payment = o.status === 'pending_payment' ? await startPayment(db, 'micro', o) : null;
   return { order: { id: o.id, ref: o.ref, units: o.units, unit_pkr: o.unit_pkr, total_pkr: o.total_pkr, usd_pkr: Number(o.usd_pkr), status: o.status }, payment };
 });
@@ -905,16 +943,10 @@ function attachmentFrom(body) {
 }
 // Files are kept in the database for now, so each customer has a daily allowance and each chat a total
 const FILE_DAY_BYTES = 15 * 1024 * 1024, FILES_PER_CHAT = 30;
-async function attachmentQuota(db, customerId, chatId, size) {
-  const q = await db.one(`select coalesce(sum(a.size) filter (where a.created_at > now() - interval '24 hours'), 0)::bigint as day,
-      count(*) filter (where a.chat_id = $2)::int as here
-    from chat_attachments a join rate_chats c on c.id = a.chat_id where c.customer_id = $1`, [customerId, chatId]);
-  if (q.here >= FILES_PER_CHAT) fail(429, 'TOO_MANY_FILES', 'This chat already has many files. Describe the rest in a message.');
-  if (Number(q.day) + size > FILE_DAY_BYTES) fail(429, 'TOO_MANY_FILES', 'You’ve sent a lot of files today. Try again tomorrow, or describe it in a message.');
-}
-async function storeAttachment(db, chatId, uploader, a) {
-  return (await db.one(`insert into chat_attachments (chat_id, uploaded_by, name, mime, size, data) values ($1, $2, $3, $4, $5, decode($6, 'base64')) returning id`,
-    [chatId, uploader, a.name, a.mime, a.buf.length, a.buf.toString('base64')])).id;
+// Customers' files are checked against their allowance and stored in one locked step (parallel uploads can't overrun it)
+async function storeAttachment(db, chatId, uploader, a, customerId = null) {
+  return (await db.one(`select fn_store_attachment($1, $2, $3, $4, $5, $6, $7, $8, $9) as id`,
+    [customerId, chatId, uploader, a.name, a.mime, a.buf.length, a.buf.toString('base64'), FILE_DAY_BYTES, FILES_PER_CHAT])).id;
 }
 const attachmentOut = async (db, chatId, aid) => {
   const a = await db.one(`select name, mime, size, encode(data, 'base64') as data from chat_attachments where id = $1 and chat_id = $2`, [aid, chatId]);
@@ -928,7 +960,7 @@ route('POST', '/chats', { auth: 'customer' }, async ({ db, customer, body }) => 
   await limit(db, 'chat-open:' + customer.id, 86400, 30, 'You’ve started many rate requests today. Continue in one of your open chats.');
   // the "app price" shown to support is worked out here from PGBX's own prices, never taken from the request
   const indicative = await suggestedRate(db, { kind, details }).then(r => r && r.total_pkr, () => null);
-  const c = await db.one(`select * from fn_chat_open($1, $2, $3::jsonb, $4)`, [customer.id, kind, JSON.stringify(details), Number.isSafeInteger(indicative) && indicative > 0 ? indicative : null]);
+  const c = await db.one(`select * from fn_chat_open_locked($1, $2, $3::jsonb, $4)`, [customer.id, kind, JSON.stringify(details), Number.isSafeInteger(indicative) && indicative > 0 ? indicative : null]);
   return { chat: chatDto(c) };
 });
 route('GET', '/chats', { auth: 'customer' }, async ({ db, customer }) => ({ chats: (await db.query(`select c.*,
@@ -953,9 +985,7 @@ route('POST', '/chats/:id/attachments', { auth: 'customer', maxBody: 3800000 }, 
   const c = await chatOf(db, params.id, customer.id);
   if (c.status === 'closed') fail(409, 'CHAT_CLOSED', MESSAGES.CHAT_CLOSED[1]);
   await limit(db, 'chat-file:' + customer.id, 3600, 20, 'You’ve sent many files this hour. Try again later.');
-  const a = attachmentFrom(body);
-  await attachmentQuota(db, customer.id, c.id, a.buf.length);
-  const id = await storeAttachment(db, c.id, 'customer:' + customer.id, a);
+  const id = await storeAttachment(db, c.id, 'customer:' + customer.id, attachmentFrom(body), customer.id);
   return msgOut(db, await db.one(`select * from fn_chat_post($1, 'customer', $2, null, $3, $4)`, [c.id, customer.id, str(body.caption, 2000), id]));
 });
 route('GET', '/chats/:id/attachments/:aid', { auth: 'customer' }, async ({ db, customer, params }) =>
@@ -972,7 +1002,10 @@ route('POST', '/bars/sell', { auth: 'customer' }, async ({ db, customer, body })
   const key = str(body.idempotencyKey, 80); if (key.length < 8) fail(400, 'BAD_KEY', 'Missing request key.');
   phoneHold(customer);
   await limit(db, 'bar-sell:' + customer.id, 3600, 20, 'Too many sales in an hour. Try again later.');
-  return { sale: barSaleDto(await db.one(`select * from fn_sell_bars($1, $2, $3, $4)`, [customer.id, str(body.confirmationId, 40) || null, iban, key])) };
+  const confirmation = str(body.confirmationId, 40) || null;
+  const b = await db.one(`select * from fn_sell_bars($1, $2, $3, $4)`, [customer.id, confirmation, iban, key]);
+  if (confirmation && b.confirmation_id !== confirmation) fail(409, 'KEY_REUSED', MESSAGES.KEY_REUSED[1]);
+  return { sale: barSaleDto(b) };
 });
 route('GET', '/bars/sales', { auth: 'customer' }, async ({ db, customer }) =>
   ({ sales: (await db.query(`select * from bar_sales where customer_id = $1 order by created_at desc limit 50`, [customer.id])).map(barSaleDto) }));
@@ -1075,14 +1108,21 @@ route('POST', '/account/close', { auth: 'customer' }, async ({ db, customer, res
 route('POST', '/staff/login', {}, async ({ db, body, req, res }) => {
   const email = str(body.email, 200).toLowerCase();
   await limit(db, 'staff-login-ip:' + clientIp(req), 900, 20, 'Too many sign-in attempts. Try again in 15 minutes.');
-  if ((await db.one(`select rate_hits($1, 900) n`, ['staff-fail:' + email])).n >= 8) fail(429, 'RATE_LIMITED', 'Too many sign-in attempts. Try again in 15 minutes.');
+  // Attempts are counted before the password is checked, so parallel guesses can't get past the limit. Per account and
+  // address, so someone else can't lock a staff member out; plus a higher cap per account from all addresses together
+  // (the authenticator code is still needed after a right password).
+  await limit(db, 'staff-try:' + email + ':' + clientIp(req), 900, 8, 'Too many sign-in attempts. Try again in 15 minutes.');
+  // an address this person signed in from before isn't held back by guesses made elsewhere
+  const where = sec.hashToken('ip:' + clientIp(req));
+  const known = !!(await db.one(`select 1 from staff_known_addresses k join staff s on s.id = k.staff_id where s.email = $1 and k.address_hash = $2 and k.last_at > now() - interval '30 days'`, [email, where]));
+  if (!known) await limit(db, 'staff-try:' + email, 900, 40, 'Too many sign-in attempts. Try again in 15 minutes.');
   const s = await db.one(`select * from staff where email = $1 and active`, [email]);
   const ok = s ? sec.verifyPassword(str(body.password, 200), s.password_hash) : (sec.verifyPassword('x', DUMMY_HASH), false);  // one scrypt either way
   if (!ok) {
-    await limit(db, 'staff-fail:' + email, 900, 1000);
     await audit(db, 'system', 'staff.login_failed', 'staff', /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '[not an email]', { ip: clientIp(req) });
     fail(401, 'BAD_LOGIN', 'Email or password is incorrect.');
   }
+  await db.query(`insert into staff_known_addresses (staff_id, address_hash) values ($1, $2) on conflict (staff_id, address_hash) do update set last_at = now()`, [s.id, where]);
   const token = sec.newToken();
   await db.query(`insert into staff_sessions (token_hash, staff_id, expires_at) values ($1, $2, now() + interval '12 hours')`, [sec.hashToken(token), s.id]);
   if (body.cookie === false) return { token, mfaRequired: true };   // scripts and tests; the panels use the HttpOnly cookie
@@ -1139,7 +1179,8 @@ route('POST', '/dealer/redemptions/:id/handover', dealerOnly, async ({ db, staff
   if (r && process.env.VERCEL_ENV === 'production' && await sandboxFunds(db, r.customer_id))
     fail(409, 'SANDBOX_FUNDS', 'This customer’s metal came from test (sandbox) payments. Do not hand over; contact PGBX operations.');
   const serials = Array.isArray(body.serials) ? body.serials.map(s => str(s, 60).toUpperCase()) : [];
-  return { redemption: await db.one(`select id, status, serials from fn_dealer_handover($1, $2, $3, $4)`, [staff.id, params.id, serials, body.cnicChecked === true]) };
+  const code = str(body.code).replace(/\D/g, '');                    // the customer's 6-digit code, asked again at the counter
+  return { redemption: await db.one(`select id, status, serials from fn_dealer_handover($1, $2, $3, $4, $5)`, [staff.id, params.id, serials, body.cnicChecked === true, code]) };
 });
 route('GET', '/dealer/stock', dealerOnly, async ({ db, staff }) =>
   ({ stock: await db.query(`select s.product_id, p.label, p.metal, s.units, s.updated_at from dealer_stock s join products p on p.id = s.product_id where s.dealer_id = $1 order by p.sort`, [staff.dealer_id]) }));
@@ -1250,7 +1291,7 @@ route('GET', '/admin/customers', ops, async ({ db, query, staff }) => {
   const q = str(query.q || '', 60);
   const where = `$1 = '' or phone like '%' || $1 || '%' or lower(name) like '%' || lower($1) || '%' or replace(cnic, '-', '') like '%' || replace($1, '-', '') || '%'`;
   const rows = await db.query(`select id, phone, name, cnic, kyc_status, status, created_at from customers where ${where} order by created_at desc limit 50`, [q]);
-  if (q) await audit(db, 'staff:' + staff.id, 'customer.searched', 'customer', null, { q, results: rows.length });   // who searched personal data
+  if (q) await audit(db, 'staff:' + staff.id, 'customer.searched', 'customer', null, { q: sec.hashToken('search:' + q).slice(0, 16), kind: /^\d+$/.test(q.replace(/\D/g, '')) && q.replace(/\D/g, '').length >= 7 ? 'number' : 'name', results: rows.length });   // who searched, never the searched CNIC or number itself   // who searched personal data
   return { customers: rows, total: (await db.one(`select count(*)::int n from customers where ${where}`, [q])).n };
 });
 route('GET', '/admin/customers/:id', ops, async ({ db, params, staff }) => {
@@ -1275,7 +1316,8 @@ route('POST', '/admin/customers/:id/status', adminOnly, async ({ db, staff, para
   return { customer: c };
 });
 
-route('GET', '/admin/kyc', ops, async ({ db, query }) => {
+route('GET', '/admin/kyc', ops, async ({ db, query, staff }) => {
+  await auditListOnce(db, staff, 'kyc');
   const status = ['review', 'submitted', 'failed', 'passed'].includes(query.status) ? query.status : 'review';
   const open = ['review', 'submitted'].includes(status);
   // The identity shown is the one submitted with the check (what a reviewer approves), not the current profile
@@ -1306,7 +1348,8 @@ route('POST', '/admin/kyc/:id/decide', ops, async ({ db, staff, params, body }) 
   return { ok: true };
 });
 
-route('GET', '/admin/orders', ops, async ({ db, query }) => {
+route('GET', '/admin/orders', ops, async ({ db, query, staff }) => {
+  await auditListOnce(db, staff, 'orders');
   const status = ['flagged', 'pending_payment', 'credited', 'refunded', 'failed', 'expired'].includes(query.status) ? query.status : 'flagged';
   return { orders: await db.query(`select o.id, o.receipt_no, o.status, o.total_pkr, o.note, o.created_at, o.paid_at, c.name, c.phone from orders o join customers c on c.id = o.customer_id where o.status = $1 order by o.created_at desc limit 200`, [status]),
     total: (await db.one(`select count(*)::int n from orders where status = $1`, [status])).n };
@@ -1326,7 +1369,8 @@ route('POST', '/admin/vault', ops, async ({ db, staff, body }) => {
   return { ok: true };
 });
 
-route('GET', '/admin/support', ops, async ({ db, query }) => {
+route('GET', '/admin/support', ops, async ({ db, query, staff }) => {
+  await auditListOnce(db, staff, 'support');
   const status = query.status === 'closed' ? 'closed' : 'open';
   return { requests: await db.query(`select s.id, s.topic, s.body, s.status, s.created_at, s.closed_at, s.closed_by, c.id as customer_id, c.name, c.phone
     from support_requests s left join customers c on c.id = s.customer_id where s.status = $1 order by s.created_at desc limit 200`, [status]),
@@ -1360,13 +1404,18 @@ route('POST', '/admin/appraisals/:id', ops, async ({ db, staff, params, body }) 
 route('GET', '/admin/gifts', ops, async ({ db, query }) => {
   const status = ['placed', 'in_production', 'dispatched', 'delivered', 'cancelled'].includes(query.status) ? query.status : 'placed';
   const open = ['placed', 'in_production', 'dispatched'].includes(status);
-  return { gifts: (await db.query(`select g.*, c.name as customer_name, i.label as item_label, i.metal from gift_orders g join customers c on c.id = g.customer_id join gift_items i on i.id = g.item_id
-    where g.status = $1 order by ${open ? 'g.deliver_by' : 'g.updated_at desc'} limit 200`, [status])).map(g => ({ ...giftDto(g), customer_name: g.customer_name, item_label: g.item_label, metal: g.metal })),
+  return { gifts: (await db.query(`select g.*, c.name as customer_name, i.label as item_label, i.metal,
+      exists (select 1 from service_payments sp where sp.kind = 'gift' and sp.entity_id = g.id and sp.provider = 'sandbox') as sandbox
+    from gift_orders g join customers c on c.id = g.customer_id join gift_items i on i.id = g.item_id
+    where g.status = $1 order by ${open ? 'g.deliver_by' : 'g.updated_at desc'} limit 200`, [status])).map(g => ({ ...giftDto(g), customer_name: g.customer_name, item_label: g.item_label, metal: g.metal, sandbox: g.sandbox })),
     total: (await db.one(`select count(*)::int n from gift_orders where status = $1`, [status])).n };
 });
 route('POST', '/admin/gifts/:id', ops, async ({ db, staff, params, body }) => {
   const action = ['produce', 'dispatch', 'deliver', 'cancel'].includes(body.action) ? body.action : fail(400, 'BAD_ACTION', MESSAGES.BAD_ACTION[1]);
   const data = { tracking: str(body.tracking, 60) || undefined, reason: str(body.reason, 300) || undefined };
+  if (['produce', 'dispatch'].includes(action) && process.env.VERCEL_ENV === 'production'
+      && (await db.one(`select exists (select 1 from service_payments where kind = 'gift' and entity_id = $1 and provider = 'sandbox') t`, [params.id])).t)
+    fail(409, 'SANDBOX_FUNDS', 'This gift was paid with test (sandbox) money. Don’t make or send it; check with an administrator.');
   return { gift: giftDto(await db.one(`select * from fn_gift_update($1, $2, $3, $4::jsonb)`, [staff.id, params.id, action, JSON.stringify(data)])) };
 });
 
@@ -1414,7 +1463,8 @@ route('GET', '/admin/micro/find', ops, async ({ db, query }) => {
 });
 route('POST', '/admin/micro/lots/:id/settle', ops, async ({ db, staff, params, body }) =>
   ({ lot: lotDto(await db.one(`select * from fn_lot_settle($1, $2, $3, $4)`, [staff.id, int(params.id), str(body.serial, 60), str(body.note, 300) || null])) }));
-route('GET', '/admin/micro/payouts', ops, async ({ db, query }) => {
+route('GET', '/admin/micro/payouts', ops, async ({ db, query, staff }) => {
+  await auditListOnce(db, staff, 'micro_payouts');
   const status = query.status === 'paid_out' ? 'paid_out' : 'pending_payout';
   const rows = await db.query(`select t.id, t.ref, t.amount_pkr, t.grams::float8 grams, t.payout_to, t.payout_ref, t.paid_out_at, t.created_at, c.name, c.phone, c.id as customer_id,
       exists (select 1 from service_payments sp join micro_orders m on m.id = sp.entity_id where sp.kind = 'micro' and m.customer_id = c.id and sp.provider = 'sandbox') as sandbox
@@ -1430,7 +1480,8 @@ route('POST', '/admin/micro/payouts/:id', ops, async ({ db, staff, params, body 
 });
 // One queue for every refund owed: orders, $1 gold, appraisals and gifts
 // Bars customers sold back to PGBX, to pay to their bank accounts
-route('GET', '/admin/bar-sales', ops, async ({ db, query }) => {
+route('GET', '/admin/bar-sales', ops, async ({ db, query, staff }) => {
+  await auditListOnce(db, staff, 'bar_sales');
   const status = query.status === 'paid_out' ? 'paid_out' : 'pending_payout';
   // sandbox: the customer's bars were bought with test payments, so nothing real is owed; paid_out_by shows the staff member's name
   const rows = await db.query(`select b.*, c.name, c.phone, s.name as paid_by_name,
@@ -1446,7 +1497,8 @@ route('POST', '/admin/bar-sales/:id', ops, async ({ db, staff, params, body }) =
     fail(409, 'SANDBOX_FUNDS', 'These bars came from test (sandbox) payments. Don’t send money; check with an administrator.');
   return { sale: await db.one(`select * from fn_bar_sale_payout($1, $2, $3)`, [staff.id, params.id, str(body.ref, 80)]) };
 });
-route('GET', '/admin/refunds', ops, async ({ db, query }) => {
+route('GET', '/admin/refunds', ops, async ({ db, query, staff }) => {
+  await auditListOnce(db, staff, 'refunds');
   const status = query.status === 'refunded' ? 'refunded' : 'due';
   const rows = await db.query(`select r.*, c.name, c.phone from refunds r left join customers c on c.id = r.customer_id where r.status = $1
     order by ${status === 'due' ? 'r.created_at' : 'r.refunded_at desc'} limit 200`, [status]);
@@ -1501,9 +1553,9 @@ route('POST', '/admin/staff/:id/active', adminOnly, async ({ db, staff, params, 
 });
 
 // ---------- scheduled jobs ----------
-route('GET', '/cron/sweep', {}, async ({ db, req, fetchRates }) => {
+route('GET', '/cron/sweep', { webhook: true }, async ({ db, req, fetchRates }) => {
   const secret = process.env.CRON_SECRET;
-  if (!secret || req.headers.authorization !== `Bearer ${secret}`) fail(401, 'UNAUTHORIZED', 'Unauthorized.');
+  if (!secret || !sec.sameText(String(req.headers.authorization || ''), `Bearer ${secret}`)) fail(401, 'UNAUTHORIZED', 'Unauthorized.');
   const r = {
     expired_orders: (await db.one(`select fn_expire_orders() n`)).n,
     expired_redemptions: (await db.one(`select fn_expire_redemptions() n`)).n,
@@ -1518,10 +1570,10 @@ route('GET', '/cron/sweep', {}, async ({ db, req, fetchRates }) => {
 });
 async function sendPendingPush(db) {
   // The customer's choices: no phone notifications at all, or none for price alerts (security notices always go)
+  // claimed (marked sent) first, so another server instance running the same sweep can't send them again
   const pending = await db.query(`select n.id, n.customer_id, n.title, n.body, n.link,
       n.kind = 'security' or (coalesce((c.notif_prefs->>'push')::boolean, true) and (n.kind <> 'alert' or coalesce((c.notif_prefs->>'alerts')::boolean, true))) as wanted
-    from notifications n join customers c on c.id = n.customer_id
-    where n.push and n.pushed_at is null and n.created_at > now() - interval '2 days' order by n.id limit 500`);
+    from fn_claim_push(500) n join customers c on c.id = n.customer_id order by n.id`);
   if (!pending.length) return 0;
   let sent = 0;
   if (push.enabled) {
@@ -1534,7 +1586,6 @@ async function sendPendingPush(db) {
     }
     if (gone.size) await db.query(`delete from push_tokens where token = any($1::text[])`, [[...gone]]);
   }
-  await db.query(`update notifications set pushed_at = now() where id = any($1::uuid[])`, [pending.map(n => n.id)]);
   return sent;
 }
 
@@ -1559,6 +1610,7 @@ function publicLimit(req) {
 const SYNC_PARTS = { me: '/me', orders: '/orders', ledger: '/ledger', redemptions: '/redemptions', notifications: '/notifications', alerts: '/alerts',
   appraisals: '/appraisals', gifts: '/gifts', micro: '/micro', chats: '/chats', barSales: '/bars/sales' };
 route('GET', '/sync', { auth: 'customer' }, async ctx => {
+  await limit(ctx.db, 'sync:' + ctx.customer.id, 60, 20, 'Refreshing too often. Wait a moment.');   // the app asks every 20 s
   const parts = {}, failed = [];
   for (const [name, path] of Object.entries(SYNC_PARTS)) {               // one after another: one database connection per customer
     const r = routes.find(x => x.method === 'GET' && x.re.test(path) && x.opts.auth === 'customer');
@@ -1605,7 +1657,7 @@ export async function handle(req, res, opts = {}) {
     if (hasBody && !String(req.headers['content-type'] || '').includes('application/json'))
       fail(415, 'JSON_ONLY', 'Send JSON.');
     const ctx = { req, res, db, raw: '', body: {}, params, query, fetchRates };
-    if (!match.opts.auth && !match.opts.staff && req.method === 'GET') publicLimit(req);
+    if (!match.opts.auth && !match.opts.staff && !match.opts.webhook) publicLimit(req);   // every public route, not only reads
     // who is asking is settled before the body is read, so nobody can make the server read a large upload without a session
     if (match.opts.auth === 'customer') { ctx.allowLocked = !!match.opts.allowLocked; ctx.customer = await customerFrom(ctx); }
     if (match.opts.staff) ctx.staff = await staffFrom(ctx, match.opts.staff);

@@ -17,9 +17,10 @@ const OPEN = [
   /^\/api\/v1\/cron\//,                      // Vercel Cron, verified by CRON_SECRET
   /^\/(favicon\.svg|favicon\.ico|robots\.txt)$/,
   /^\/(live\/)?manifest\.webmanifest$/,        // browsers fetch the manifest without cookies; it holds nothing private
-  /^\/legal\/[a-z_]+(\.html|\.css)?$/,           // terms and privacy policy: the app stores link to them
+  /^\/legal\/[a-z_-]+(\.html|\.css)?$/,           // terms and privacy policy: the app stores link to them
 ];
 
+const NATIVE_ORIGIN = /^(capacitor:\/\/localhost|https:\/\/localhost)$/;   // Capacitor on iOS and Android
 const enc = new TextEncoder();
 async function hmac(secret, text) {
   const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
@@ -107,6 +108,10 @@ export default async function middleware(request) {
   }
   // A "path" parameter could make an open URL reach a different API route through the rewrite, so it isn't open then.
   if (OPEN.some(re => re.test(path)) && !url.searchParams.has('path')) return next();
+
+  // The phone apps can't hold the password cookie: their API calls (from the app's own origin) go straight to the API,
+  // which has its own login. The password screen only keeps the website private.
+  if (path.startsWith('/api/') && NATIVE_ORIGIN.test(request.headers.get('origin') || '')) return next();
 
   const have = cookieOf(request, COOKIE);
   if (have && await validCookie(password, have)) return next();

@@ -29,11 +29,12 @@ const TWILIO_ERRORS = {
   60410: 'Codes to this number are temporarily blocked. Contact PGBX support.',
 };
 // App Store / Play Store review: Apple and Google reviewers can't receive Pakistani SMS, so one review-only number may
-// log in with a fixed code instead. REVIEW_LOGIN="3001234567:482915" (number without 0 or +92, then a 6-digit code).
-// Off unless set; set it only while a store review is running, then remove it. Every review login is audited.
+// log in with a fixed code instead. REVIEW_LOGIN="3001234567:482915:2026-12-31" (number without 0 or +92, a 6-digit
+// code, and the last day it works). Off unless set, and off after that day; set it only while a store review is running,
+// then remove it. Every review login is audited and attempts are limited (server/api.mjs).
 export function reviewLogin(phone, code) {
-  const m = /^(3\d{9}):(\d{6})$/.exec(env('REVIEW_LOGIN') || '');
-  if (!m || m[2] === '123456' || phone !== m[1]) return null;
+  const m = /^(3\d{9}):(\d{6}):(\d{4}-\d{2}-\d{2})$/.exec(env('REVIEW_LOGIN') || '');
+  if (!m || m[2] === '123456' || phone !== m[1] || new Date(m[3] + 'T23:59:59+05:00') < new Date()) return null;
   if (code === undefined) return true;                     // asking whether this number is the review number
   const a = Buffer.from(String(code)), b = Buffer.from(m[2]);
   return a.length === b.length && crypto.timingSafeEqual(a, b);

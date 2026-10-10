@@ -1,6 +1,6 @@
 // Production build only: the customer app's connection to the PGBX API (/api/v1). The demo build never loads data
 // from here. The server is the source of truth for the wallet, orders, collections, notifications and alerts;
-// the phone keeps only device settings (PIN, notification choices, cart).
+// the phone keeps only device settings (notification choices, cart); the PIN is checked by the server.
 //
 // Sessions: on the web the API sets an HttpOnly cookie (JavaScript can't read it). In the native app the session
 // token is kept in the phone's secure storage (iOS Keychain / Android Keystore) through mobile/bridge.js.
@@ -75,8 +75,9 @@ export async function sendCode(phone, channel) {
   const turnstileToken = await humanCheck();
   return api('/auth/otp/start', { method: 'POST', body: { phone, channel, turnstileToken } });
 }
-export async function verifyCode(phone, code) {
-  const d = await api('/auth/otp/verify', { method: 'POST', body: { phone, code, device: deviceName(), cookie: !NATIVE } });
+export const acceptTerms = version => api('/me/terms', { method: 'POST', body: { version } });
+export async function verifyCode(phone, code, terms) {
+  const d = await api('/auth/otp/verify', { method: 'POST', body: { phone, code, device: deviceName(), cookie: !NATIVE, terms } });
   await keepToken(NATIVE ? d.token : null);
   return d;
 }
@@ -145,6 +146,7 @@ export async function loadAll() {
     phone: me.profile.phone || '',
     profile: { name: me.profile.name || '', cnic: me.profile.cnic || '', dob: me.profile.dob ? String(me.profile.dob).slice(0, 10) : '', email: me.profile.email || '', address: me.profile.address || '' },
     kyc: { status: KYC[me.kyc.status] || 'none', serverStatus: me.kyc.status, at: ts(me.kyc.at) },
+    termsVersion: (me.terms && me.terms.version) || null,
     notifPrefs: me.notifPrefs ? { push: me.notifPrefs.push, alerts: me.notifPrefs.alerts, sms: false, email: false } : undefined,
     orders: orders && orders.orders.map(order).reverse(),
     ledger: ledger && redemptions && ledger.entries.map(e => ledgerEntry(e, redemptions)),

@@ -43,6 +43,7 @@ function production(html, { assetBase }) {
     .replace(/<meta name="description" content="[^"]*">/, '<meta name="description" content="PGBX: buy Shariah-compliant 999.0 gold and silver at live prices, hold it in your wallet and collect it at PGBX dealers.">')
     .replace(/<div class="page-caption">[^<]*<\/div>\n?/, '')
     .replace('<script type="module" src="app.js"></script>', `<script type="module" src="${assetBase}app.js"></script>`)
+    .replace(/<!-- the app's three modules[^>]*-->\n?/, '')
     .replace(/<link rel="modulepreload" href="[^"]+">\n?/g, '');                 // everything is in the one bundle
   if (!out.includes('content="production"') || !out.includes(`src="${assetBase}app.js"`)) throw new Error('index.html changed: update scripts/build.mjs');
   return out;

@@ -2,7 +2,7 @@
 // Flow: customer shows a 6-digit code -> dealer looks it up -> prepares the bars and marks ready -> checks the CNIC,
 // records one serial number per bar and confirms the handover. Every step is recorded on the server.
 import { html, render, useState, useEffect, useRef } from '../vendor/htm-preact-standalone-3.1.1.module.js';
-import { api, useLoad, useStaff, SignIn, ChangePassword, Loading, Failed, Tag, Toast, useToast, Act, Asker, ask, productName, when, left, ago } from '../staff/kit.js';
+import { api, useLoad, useStaff, SignIn, ChangePassword, Loading, Failed, Tag, Toast, useToast, Act, Asker, ask, productName, left, ago } from '../staff/kit.js';
 
 function Lookup({ toast, openRedemption }) {
   const [code, setCode] = useState('');
@@ -12,7 +12,8 @@ function Lookup({ toast, openRedemption }) {
   useEffect(() => ref.current?.focus(), []);
   const go = async e => {
     e.preventDefault(); setBusy(true); setErr(null);
-    try { const r = await api('/dealer/lookup', { method: 'POST', body: { code } }); setCode(''); openRedemption(r.redemption); }
+    // the code the customer showed is sent again with the handover: bars are only handed over against the customer's code
+    try { const r = await api('/dealer/lookup', { method: 'POST', body: { code } }); setCode(''); openRedemption({ ...r.redemption, code }); }
     catch (e2) { setErr(e2.message); }
     finally { setBusy(false); }
   };
@@ -51,7 +52,7 @@ function Handover({ r, onDone, onBack, toast }) {
   };
   const handover = async () => {
     setBusy(true); setErr(null);
-    try { await api(`/dealer/redemptions/${r.id}/handover`, { method: 'POST', body: { serials: clean, cnicChecked: cnic } }); onDone(); }
+    try { await api(`/dealer/redemptions/${r.id}/handover`, { method: 'POST', body: { serials: clean, cnicChecked: cnic, code: r.code } }); onDone(); }
     catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
 

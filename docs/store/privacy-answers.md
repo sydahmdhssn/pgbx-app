@@ -16,11 +16,12 @@ for tracking, advertising or sold.
 | Contact Info | Physical address (optional; gift and appraisal addresses) | Yes | App functionality | Yes |
 | Financial Info | Payment info (payment references; card details go to the payment provider) | Yes | App functionality | Yes |
 | Financial Info | Other financial info (holdings, transactions, bank account for payouts) | Yes | App functionality | Yes |
-| Sensitive Info | Government ID (CNIC number) | Yes | App functionality (identity verification) | Yes |
+| Other Data | CNIC number, date of birth, CNIC expiry (identity verification; Apple has no ID category, so declare them here) | Yes | App functionality | Yes |
 | User Content | Other user content (rate chat messages, photos and PDFs, support requests) | Yes | App functionality, customer support | Yes |
 | User Content | Photos (only files the customer chooses to send in a chat) | Yes | App functionality | Yes |
 | Identifiers | User ID (account ID) | Yes | App functionality | Yes |
-| Identifiers | Device ID: **No** (no advertising or device identifiers are collected) | No | | |
+| Identifiers | Device ID (the push notification token, only if notifications are allowed; no advertising ID) | Yes | App functionality | Yes |
+| Other Data | Security data: IP address, device name, login times | Yes | App functionality (account security, fraud prevention) | Yes |
 | Usage Data | No | | | |
 | Diagnostics | No (no crash or analytics SDKs) | | | |
 | Location | No | | | |
@@ -33,7 +34,7 @@ Info › Biometric data** if the provider says it processes face data, and re-ch
 
 **Collected:** yes. **Shared with third parties:** no (service providers acting for PGBX are not "sharing" in Google's
 definition). **Encrypted in transit:** yes. **Users can request deletion:** yes (Account › Close account; data the law
-requires is kept for the retention period). **Committed to the Families policy:** no (adults only).
+requires is kept for the retention period). **Deletion URL:** https://**[PGBX domain]**/legal/delete-account. **Committed to the Families policy:** no (adults only).
 
 | Google category | Data type | Collected | Optional? | Purpose |
 |---|---|---|---|---|
@@ -47,9 +48,9 @@ requires is kept for the retention period). **Committed to the Families policy:*
 | Messages | Other in-app messages (rate chat, support) | Yes | Optional | App functionality, customer support |
 | Photos and videos | Photos (chat attachments) | Yes | Optional | App functionality |
 | Files and docs | Files (PDF chat attachments) | Yes | Optional | App functionality |
-| App activity | No | | | |
 | App info and performance | No | | | |
-| Device or other IDs | No | | | |
+| Device or other IDs | Yes (push notification token, only if notifications are allowed) | Optional | App functionality (notifications) |
+| App activity | Other actions (security data: IP address, device name, login times) | Yes | Required | Fraud prevention, security |
 | Location | No | | | |
 
 Data processed only on the phone and never sent (Face ID / fingerprint checks) is not "collected".

@@ -165,11 +165,13 @@ test('collection: reserve, dealer lookup, ready, handover with serials', async (
   const found = ok(await call('POST', '/api/v1/dealer/lookup', { token: dealer, body: { code: redemption.code } })).redemption;
   assert.equal(found.units, 2);
   assert.doesNotMatch(JSON.stringify(found), /42101-1234567-1/, 'full CNIC never shown to the dealer');
-  err(await call('POST', `/api/v1/dealer/redemptions/${found.id}/handover`, { token: dealer, body: { serials: ['A1', 'A2'], cnicChecked: true } }), 409, 'REDEMPTION_NOT_READY');
+  const rcode = redemption.code;
+  err(await call('POST', `/api/v1/dealer/redemptions/${found.id}/handover`, { token: dealer, body: { serials: ['A1', 'A2'], cnicChecked: true, code: rcode } }), 409, 'REDEMPTION_NOT_READY');
   ok(await call('POST', `/api/v1/dealer/redemptions/${found.id}/ready`, { token: dealer, body: {} }));
-  err(await call('POST', `/api/v1/dealer/redemptions/${found.id}/handover`, { token: dealer, body: { serials: ['A1', 'A2'], cnicChecked: false } }), 400, 'CNIC_NOT_CHECKED');
-  err(await call('POST', `/api/v1/dealer/redemptions/${found.id}/handover`, { token: dealer, body: { serials: ['A1', 'A1'], cnicChecked: true } }), 400, 'SERIALS_REQUIRED');
-  const done = ok(await call('POST', `/api/v1/dealer/redemptions/${found.id}/handover`, { token: dealer, body: { serials: ['a1', 'a2'], cnicChecked: true } }));
+  err(await call('POST', `/api/v1/dealer/redemptions/${found.id}/handover`, { token: dealer, body: { serials: ['A1', 'A2'], cnicChecked: false, code: rcode } }), 400, 'CNIC_NOT_CHECKED');
+  err(await call('POST', `/api/v1/dealer/redemptions/${found.id}/handover`, { token: dealer, body: { serials: ['A1', 'A1'], cnicChecked: true, code: rcode } }), 400, 'SERIALS_REQUIRED');
+  err(await call('POST', `/api/v1/dealer/redemptions/${found.id}/handover`, { token: dealer, body: { serials: ['A1', 'A2'], cnicChecked: true } }), 404, 'CODE_NOT_FOUND');   // not without the customer's code
+  const done = ok(await call('POST', `/api/v1/dealer/redemptions/${found.id}/handover`, { token: dealer, body: { serials: ['a1', 'a2'], cnicChecked: true, code: rcode } }));
   assert.equal(done.redemption.status, 'completed'); assert.deepEqual(done.redemption.serials, ['A1', 'A2']);
   assert.equal(ok(await call('GET', '/api/v1/me', { token })).wallet.holdings[0].units, 1);
   const stock = ok(await call('GET', '/api/v1/dealer/stock', { token: dealer })).stock.find(s => s.product_id === 'g-1g');
@@ -226,10 +228,14 @@ test('staff sign-in needs password and authenticator code', async () => {
   err(await call('GET', '/api/v1/staff/me', { token }), 401, 'SESSION_EXPIRED');
 });
 
-test('staff sign-in is rate limited per email', async () => {
+test('staff sign-in is rate limited per email and address; others can’t lock a staff member out', async () => {
   const s = await staffAccount('ops');
-  for (let i = 0; i < 8; i++) err(await call('POST', '/api/v1/staff/login', { body: { email: s.email, password: 'wrong' }, ip: '10.9.2.' + i }), 401);
-  err(await call('POST', '/api/v1/staff/login', { body: { email: s.email, password: s.password }, ip: '10.9.2.99' }), 429, 'RATE_LIMITED');
+  for (let i = 0; i < 8; i++) err(await call('POST', '/api/v1/staff/login', { body: { email: s.email, password: 'wrong' }, ip: '10.9.2.1' }), 401);
+  err(await call('POST', '/api/v1/staff/login', { body: { email: s.email, password: s.password }, ip: '10.9.2.1' }), 429, 'RATE_LIMITED');
+  ok(await call('POST', '/api/v1/staff/login', { body: { email: s.email, password: s.password, cookie: false }, ip: '10.9.2.99' }));   // the real person elsewhere
+  // guesses spread over many addresses still stop at the per-account cap
+  const all = await Promise.all(Array.from({ length: 45 }, (_, i) => call('POST', '/api/v1/staff/login', { body: { email: s.email, password: 'wrong' }, ip: '10.9.3.' + i })));
+  assert.ok(all.filter(r => r.status === 401).length <= 40 - 9);
 });
 
 test('admin: overview, settings, products, dealers, stock, staff', async () => {

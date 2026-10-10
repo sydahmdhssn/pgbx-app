@@ -10,7 +10,7 @@ Character limits are noted; every text below fits them.
 | App name (30 / 30) | PGBX: Gold & Silver | PGBX: Gold & Silver |
 | Subtitle (30) / short description (80) | Buy 999 gold at live prices | Buy 999.0 gold and silver bars at live prices. Collect at PGBX dealers. |
 | Category | Finance | Finance |
-| Age rating | 17+ (unrestricted web access: No; gambling: No; the app is for adults with a CNIC) | Rated for 18+ users in the content questionnaire; target audience 18+ |
+| Age rating | 18+ (in the age-rating questions, set the app as for adults; unrestricted web access: No; gambling: No; the app is for adults with a CNIC) | Rated for 18+ users in the content questionnaire; target audience 18+ |
 | Price | Free | Free |
 | Availability | Pakistan only | Pakistan only |
 
@@ -65,6 +65,7 @@ Today's gold and silver prices, whole 999.0 bars from 10 mg, and your final rate
 |---|---|
 | Privacy policy URL | https://**[PGBX domain]**/legal/privacy |
 | Terms (App Store: EULA, optional) | https://**[PGBX domain]**/legal/terms |
+| Account deletion URL (Google Play) | https://**[PGBX domain]**/legal/delete-account |
 | Support URL | https://pgbx.com.pk **[PGBX: a page with contact details]** |
 | Marketing URL (optional) | https://pgbx.com.pk |
 | Contact email for the stores | **[PGBX]** |
@@ -81,10 +82,10 @@ Today's gold and silver prices, whole 999.0 bars from 10 mg, and your final rate
 > PGBX support agent confirms it (during review we will answer within **[time]**, **[hours, PKT]**). Payments go through
 > **[payment provider]**; to see the payment step without paying, stop at the payment page.
 >
-> No account data is stored on the phone; the PIN is checked by the server. Screenshots are blocked on purpose (Android
-> FLAG_SECURE) to protect financial data.
+> No account data is stored on the phone; the PIN is checked by the server. On Android, screenshots are blocked on purpose
+> (FLAG_SECURE) to protect financial data.
 
-Turn the review login on with `REVIEW_LOGIN=<number>:<code>` in the production settings for the review, approve that
+Turn the review login on with `REVIEW_LOGIN=<number>:<code>:<last day, YYYY-MM-DD>` in the production settings for the review, approve that
 account's identity in Admin › Identity checks beforehand, and remove the setting once the app is approved.
 
 ## Google Play: other declarations
@@ -100,7 +101,7 @@ account's identity in Admin › Identity checks beforehand, and remove the setti
 ## Apple: other answers
 
 * **Encryption** (export compliance): the app uses only standard HTTPS and the operating system's encryption, so it
-  qualifies for the exemption. `ITSAppUsesNonExemptEncryption = NO` can be added to Info.plist.
+  qualifies for the exemption. `ITSAppUsesNonExemptEncryption = NO` is already set in Info.plist, so App Store Connect won't ask.
 * **Sign in with Apple**: not required (the app uses mobile-number login only, no third-party social login).
 * **Account deletion**: available in the app (Account › Close account), as Apple requires.
 * **Financial app**: Apple may ask for proof that PGBX is licensed to offer the service in Pakistan; have it ready.

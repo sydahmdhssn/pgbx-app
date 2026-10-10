@@ -3,6 +3,8 @@ import crypto from 'node:crypto';
 
 // Session tokens: 256 random bits. Only the SHA-256 hash is stored, so a database leak does not expose live sessions.
 export const newToken = () => crypto.randomBytes(32).toString('base64url');
+// Compares two secrets in constant time (no early exit that would leak how many characters matched)
+export const sameText = (a, b) => { const x = crypto.createHash('sha256').update(String(a)).digest(), y = crypto.createHash('sha256').update(String(b)).digest(); return crypto.timingSafeEqual(x, y); };
 export const hashToken = t => crypto.createHash('sha256').update(String(t)).digest('hex');
 
 // 6-digit codes (redemption) from a cryptographic RNG

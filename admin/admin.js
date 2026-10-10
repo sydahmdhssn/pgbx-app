@@ -229,7 +229,7 @@ function Gifts({ toast }) {
       <td>${g.metal === 'silver' ? 'Silver' : 'Gold'} ${g.item_label} ${g.shape}<div class="muted small">${DESIGN[g.design]} · ${g.packaging} box</div></td>
       <td class="small" style="max-width:220px">${g.engraving ? html`<b>“${g.engraving}”</b>` : html`<span class="muted">No engraving</span>`}${g.message ? html`<div class="muted">${g.message}</div>` : ''}</td>
       <td class="small" style="max-width:240px">${g.recipient.name} · +92 ${g.recipient.phone}<div class="muted">${g.recipient.address}, ${g.recipient.city}</div><div class="muted">Ordered by ${g.customer_name || '—'}</div></td>
-      <td class="r num">${pkr(g.total_pkr)}${g.refund_due ? html`<div><span class="tag warn">refund due</span></div>` : ''}</td>
+      <td class="r num">${pkr(g.total_pkr)}${g.refund_due ? html`<div><span class="tag warn">refund due</span></div>` : ''}${g.sandbox && html`<div><span class="tag bad" title="This gift was paid with test payments">test money: don’t make or send</span></div>`}</td>
       <td class="r"><div class="row" style="justify-content:flex-end">
         ${NEXT[g.status] && html`<button class="btn sm" onClick=${() => { setF({}); setAct({ g, action: NEXT[g.status][0] }); }}>${NEXT[g.status][1]}</button>`}
         ${['placed', 'in_production'].includes(g.status) && html`<button class="btn sm sec" onClick=${() => { setF({}); setAct({ g, action: 'cancel' }); }}>Cancel</button>`}

@@ -111,13 +111,15 @@ test('dealer hand-over: own dealer only, CNIC checked, serials recorded, code wo
   const look = (await db.one(`select fn_dealer_lookup($1, '200001') r`, [mine])).r;
   assert.equal(look.units, 2);
   assert.equal(look.cnic_masked, '42101-•••••••-1');
-  await rejects(db.one(`select * from fn_dealer_handover($1, $2, $3, true)`, [mine, r.id, ['A1', 'A2']]), 'REDEMPTION_NOT_READY');
+  await rejects(db.one(`select * from fn_dealer_handover($1, $2, $3, true, (select code from redemptions where id = $2))`, [mine, r.id, ['A1', 'A2']]), 'REDEMPTION_NOT_READY');
   await db.one(`select * from fn_dealer_ready($1, $2)`, [mine, r.id]);
-  await rejects(db.one(`select * from fn_dealer_handover($1, $2, $3, false)`, [mine, r.id, ['A1', 'A2']]), 'CNIC_NOT_CHECKED');
-  await rejects(db.one(`select * from fn_dealer_handover($1, $2, $3, true)`, [mine, r.id, ['A1']]), 'SERIALS_REQUIRED');
-  await rejects(db.one(`select * from fn_dealer_handover($1, $2, $3, true)`, [mine, r.id, ['A1', 'A1']]), 'SERIALS_REQUIRED');
+  await rejects(db.one(`select * from fn_dealer_handover($1, $2, $3, false, (select code from redemptions where id = $2))`, [mine, r.id, ['A1', 'A2']]), 'CNIC_NOT_CHECKED');
+  await rejects(db.one(`select * from fn_dealer_handover($1, $2, $3, true, (select code from redemptions where id = $2))`, [mine, r.id, ['A1']]), 'SERIALS_REQUIRED');
+  await rejects(db.one(`select * from fn_dealer_handover($1, $2, $3, true, '000000')`, [mine, r.id, ['A1', 'A2']]), 'CODE_NOT_FOUND');   // the customer's code is needed
+  await rejects(db.one(`select * from fn_dealer_handover($1, $2, $3, true, null)`, [mine, r.id, ['A1', 'A2']]), 'CODE_NOT_FOUND');
+  await rejects(db.one(`select * from fn_dealer_handover($1, $2, $3, true, (select code from redemptions where id = $2))`, [mine, r.id, ['A1', 'A1']]), 'SERIALS_REQUIRED');
   const stockBefore = (await db.one(`select units from dealer_stock where dealer_id = 'd1' and product_id = 's-5t'`)).units;
-  const done = await db.one(`select * from fn_dealer_handover($1, $2, $3, true)`, [mine, r.id, ['AG-5T-0001', 'AG-5T-0002']]);
+  const done = await db.one(`select * from fn_dealer_handover($1, $2, $3, true, (select code from redemptions where id = $2))`, [mine, r.id, ['AG-5T-0001', 'AG-5T-0002']]);
   assert.equal(done.status, 'completed');
   assert.equal(await holdings(c, 's-5t'), 0, 'wallet reduced through the ledger');
   assert.equal((await db.one(`select units from dealer_stock where dealer_id = 'd1' and product_id = 's-5t'`)).units, stockBefore - 2);
@@ -153,7 +155,7 @@ test('closing an account: blocked while holding metal, then closes and frees the
   const s = await dealerStaff('d1');
   const r = await db.one(`select * from fn_reserve($1, 'g-10mg', 1, 'd1', '400001')`, [c]);
   await db.one(`select * from fn_dealer_ready($1, $2)`, [s, r.id]);
-  await db.one(`select * from fn_dealer_handover($1, $2, $3, true)`, [s, r.id, ['AU-10MG-1']]);
+  await db.one(`select * from fn_dealer_handover($1, $2, $3, true, (select code from redemptions where id = $2))`, [s, r.id, ['AU-10MG-1']]);
   await db.query(`update settings set value = '0' where key = 'retention_days'`);
   const ok = (await db.one(`select fn_close_account($1) r`, [c])).r;
   assert.equal(ok.closed, true);
@@ -211,5 +213,5 @@ test('a suspended customer can’t collect at a dealer', async () => {
   await db.query(`update customers set status = 'suspended' where id = $1`, [c]);
   await rejects(db.one(`select fn_dealer_lookup($1, '771177') r`, [s]), 'ACCOUNT_INACTIVE');
   await db.query(`update redemptions set status = 'ready' where id = $1`, [r.id]);
-  await rejects(db.one(`select * from fn_dealer_handover($1, $2, $3, true)`, [s, r.id, ['SN1']]), 'ACCOUNT_INACTIVE');
+  await rejects(db.one(`select * from fn_dealer_handover($1, $2, $3, true, (select code from redemptions where id = $2))`, [s, r.id, ['SN1']]), 'ACCOUNT_INACTIVE');
 });

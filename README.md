@@ -60,7 +60,8 @@ npx vercel --prod
 ```
 
 `vercel.json` serves the folder as static files plus the functions in `api/`. There is no build step on Vercel;
-after changing `index.html` or `app.js`, run `npm run build:app` and commit `live/index.html` (a test checks it is current).
+after changing `index.html`, `app.js`, `live.js` or `app.config.json`, run `npm run build:app` and commit `live/index.html`,
+`live/app.js` and the files it rewrites in `mobile/` and `api/_origin.mjs` (a test checks the build is current).
 `vercel.json` also runs `/api/v1/cron/sweep` daily (expire unpaid orders and old collection codes, purge closed accounts
 after the retention period, send pending push notifications); on a paid plan make it hourly.
 
@@ -371,8 +372,9 @@ identity provider with in-app camera capture is added: `NSCameraUsageDescription
 Android manifest, and `camera=()` in the `Permissions-Policy` header must change.
 
 Before a store release PGBX needs: Apple and Google developer accounts in PGBX's name, the final bundle ID
-(`pk.com.pgbx.app` is a placeholder), a Firebase project for push, store screenshots, and the privacy answers (plus an app-level `PrivacyInfo.xcprivacy` if PGBX
-adds code that uses Apple's "required reason" APIs; Capacitor and its plugins ship their own).
+(`pk.com.pgbx.app` is a placeholder), a Firebase project for push, store screenshots, and the privacy answers. The iOS app is iPhone-only (no iPad layout to
+review). `mobile/ios/App/App/PrivacyInfo.xcprivacy` declares the app's own "required reason" API use (file timestamps)
+and no tracking; check it again whenever a plugin or SDK is added.
 
 ## Launch preparation
 
@@ -385,7 +387,7 @@ adds code that uses Apple's "required reason" APIs; Capacitor and its plugins sh
 * **`npm run launch:check`** (with the production settings, e.g. `node --env-file=.env.production scripts/launch-check.mjs`)
   lists what blocks launch: missing providers, test modes, sample staff, dealers or premiums, unset retention, missing
   legal pages, the placeholder app ID. It reads the database but never changes it.
-* **Store review login**: set `REVIEW_LOGIN=<number>:<6-digit code>` (number without 0 or +92) while Apple or Google
+* **Store review login**: set `REVIEW_LOGIN=<number>:<6-digit code>:<last day, YYYY-MM-DD>` (number without 0 or +92) while Apple or Google
   review the app; that number logs in with that code and no SMS is sent. Approve the account's identity in Admin ›
   Identity checks beforehand, and remove the setting once the app is approved. Review logins are audited.
 * **Legal pages**: `legal/privacy.html` and `legal/terms.html` (public at `/legal/privacy` and `/legal/terms`, also behind

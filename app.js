@@ -10,6 +10,7 @@ const LIVE = BUILD === 'production';
 
 // Fonts: Apple system families (SF Pro, SF Compact, SF Mono, New York) via CSS; nothing is downloaded.
 // Requirement IDs (FR-*, NFR-*, CMP-*) live in code comments only; customers never see them.
+const TERMS_VERSION = '1.0';                // the terms and privacy policy customers accept (app.config.json termsVersion)
 const APP_VERSION = LIVE ? '1.0.0' : '0.9 (prototype)';
 
 /* ============================================================
@@ -56,7 +57,8 @@ function applyLimits(l) {
   if (typeof l.rate_chat_required === 'boolean') RATE_CHAT = l.rate_chat_required;
 }
 const PIN_DEFAULT = '1234';                // prototype PIN (changeable in Account > Change PIN)
-// Production: the PIN is stored on the phone only as a salted, stretched SHA-256 hash, never as the digits.
+// The demo keeps its sample PIN on the phone. Production never stores the PIN on the phone: the server checks it.
+// The hash below only reads PINs an older build saved, so they still work once before being dropped.
 function sha256(bytes) {
   const K = [0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
   const H = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
@@ -77,11 +79,7 @@ function sha256(bytes) {
 }
 const hex = b => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
 function pinHash(pin, salt) { let h = new TextEncoder().encode(salt + ':' + pin); for (let i = 0; i < 4000; i++) h = sha256(h); return hex(h); }
-function pinStore(pin) {
-  if (!LIVE) return pin;
-  const salt = hex(crypto.getRandomValues(new Uint8Array(16)));
-  return `h1$${salt}$${pinHash(pin, salt)}`;
-}
+const pinStore = pin => pin;              // demo only
 function pinOk(input, stored) {
   if (typeof stored !== 'string') return false;
   if (!stored.startsWith('h1$')) return !LIVE && input === stored;
@@ -110,7 +108,7 @@ async function liveOtp(body, purpose) {
       return { ok: true, approved: true };
     }
     if (body.action === 'send') { const d = await Live.sendCode(body.phone, body.channel); return { ok: true, channel: d.channel }; }
-    await Live.verifyCode(body.phone, body.code);
+    await Live.verifyCode(body.phone, body.code, TERMS_VERSION);
     return { ok: true, approved: true };
   } catch (e) {
     return e.code === 'NETWORK' ? { ok: false, error: 'unreachable', message: e.message } : { ok: false, message: e.message };
@@ -579,6 +577,7 @@ function Login({ S, note, intent, hasPin, onDone, onBrowse, onPin, onRetry }) {
         <button class="btn btn-primary" style="margin-top:20px" disabled=${!valid || !cfg.checked || down || busy} onClick=${() => send()}>
           ${busy ? html`<span class="spin"></span> Sending code` : !cfg.checked ? html`<span class="spin"></span> Connecting` : `Send code`}</button>
         ${demo && html`<p class="demo-line"><${Icon} n="info" c="sm"/><span>Demo mode: SMS isn’t connected yet, so no message is sent and any 6 digits will work.</span></p>`}
+        <p class="tiny muted consent">By continuing you agree to PGBX’s <a href=${LEGAL + '/legal/terms'} target="_blank" rel="noopener">Terms of use</a> and <a href=${LEGAL + '/legal/privacy'} target="_blank" rel="noopener">Privacy policy</a>.</p>
       </div>` : html`<div class="step-in" key="otp">
         <h2>${ok ? 'Verified' : 'Enter the code'}</h2>
         <p class="sub">${demo ? 'Demo mode: no message was sent to' : `We sent a 6-digit code by ${viaName(sentVia)} to`} +92 ${shown(phone)}.${' '}
@@ -1202,6 +1201,7 @@ function b64Blob(data, mime) {               // a plain loop: several times fast
 function ChatFile({ chatId, a, onLoad }) {
   const [url, setUrl] = useState(a.url || FILE_URLS.get(a.id) || null);
   const [err, setErr] = useState(false);
+  const [big, setBig] = useState(false);
   const box = useRef(null);
   useEffect(() => {
     if (url || !LIVE) return;
@@ -1215,8 +1215,27 @@ function ChatFile({ chatId, a, onLoad }) {
   }, [a.id]);
   if (err || (!url && !LIVE)) return html`<span class="small muted">${a.name} (no longer available)</span>`;
   if (!url) return html`<span class="chat-file-wait small muted" ref=${box}>Loading ${a.name}…</span>`;
-  return a.mime.startsWith('image/') ? html`<a href=${url} target="_blank" rel="noopener"><img class="chat-img" src=${url} alt=${a.name} onLoad=${onLoad} /></a>`
-    : html`<a class="chat-pdf" href=${url} download=${a.name}><${Icon} n="doc" c="sm"/> ${a.name}</a>`;
+  // The phone apps can't open a file in a new window: photos open full screen here, PDFs go to the share sheet
+  const N = typeof window !== 'undefined' && window.PGBXNative;
+  if (a.mime.startsWith('image/')) {
+    const img = html`<img class="chat-img" src=${url} alt=${a.name} onLoad=${onLoad} />`;
+    return N ? html`<button type="button" class="chat-img-btn" aria-label=${'View ' + a.name} onClick=${() => setBig(true)}>${img}</button>
+      ${big && html`<${PhotoView} url=${url} name=${a.name} onClose=${() => setBig(false)} />`}`
+      : html`<a href=${url} target="_blank" rel="noopener">${img}</a>`;
+  }
+  if (N && N.shareFile) return html`<button type="button" class="chat-pdf" onClick=${() => fetch(url).then(r => r.blob()).then(toB64).then(d => N.shareFile(a.name, d)).catch(() => { })}><${Icon} n="doc" c="sm"/> ${a.name}</button>`;
+  return html`<a class="chat-pdf" href=${url} download=${a.name}><${Icon} n="doc" c="sm"/> ${a.name}</a>`;
+}
+function PhotoView({ url, name, onClose }) {
+  const btn = useRef(null);
+  useEffect(() => {
+    btn.current && btn.current.focus();
+    const k = e => { if (e.key === 'Escape') onClose(); };
+    addEventListener('keydown', k); return () => removeEventListener('keydown', k);
+  }, []);
+  return html`<div class="photo-view" role="dialog" aria-modal="true" aria-label=${name} onClick=${onClose}>
+    <img src=${url} alt=${name} />
+    <button type="button" class="btn btn-secondary btn-sm" ref=${btn} onClick=${onClose}>Close</button></div>`;
 }
 // What a chat's tag says: a confirmed rate that has run out is "Rate expired", not "Rate confirmed"
 const rateEnds = c => (c.confirmation && c.confirmation.status === 'valid' ? c.confirmation.expiresAt : c.rateExpiresAt || null);
@@ -2898,7 +2917,7 @@ const SAVED = loadSaved();
 const CARRY_NOTE = (() => { try { const n = sessionStorage.getItem('pgbx-note'); sessionStorage.removeItem('pgbx-note'); return n || ''; } catch (e) { return ''; } })();
 
 // Account data. Cleared on logout and session end; hidden while browsing as a guest.
-const ACCOUNT_BLANK = LIVE ? { synced: false, missing: [], lastIban: '', ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], chats: [], barSales: [], banner: null, apprDraft: null, giftDraft: null, micro: { grams: 0, txns: [], lots: null },
+const ACCOUNT_BLANK = LIVE ? { synced: false, missing: [], lastIban: '', termsVersion: null, ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], chats: [], barSales: [], banner: null, apprDraft: null, giftDraft: null, micro: { grams: 0, txns: [], lots: null },
   profile: { name: '', cnic: '', dob: '', email: '', address: '' }, kyc: { status: 'none', at: null }, checkout: [], lock: null } : {};
 const GUEST_VIEW = { ledger: [], orders: [], redemptions: [], notifications: [], alerts: [], appraisals: [], giftOrders: [], chats: [], barSales: [], banner: null, micro: { grams: 0, txns: [], lots: { buy: { no: 1, filled: 0 }, sell: { no: 1, filled: 0 } } } };
 // A request key for a draft: the same draft sent twice (a retry after a lost answer) books once; any change makes a new one
@@ -3079,6 +3098,18 @@ function App() {
     return () => { removeEventListener('online', again); document.removeEventListener('visibilitychange', again); clearInterval(t); };
   }, []);
   const signedIn = phase === 'app' && st.loggedIn && !st.guest;
+  // Production: a customer who hasn't accepted the current terms (they changed, or the account is older than the
+  // login-screen consent) is asked once per app start; declining logs out.
+  const termsAsked = useRef(false);
+  useEffect(() => {
+    if (!signedIn) { termsAsked.current = false; return; }
+    if (!LIVE || !st.synced || termsAsked.current || st.termsVersion === TERMS_VERSION) return;
+    termsAsked.current = true;
+    set({ dialog: { title: 'Updated terms', body: 'Please read and accept PGBX’s Terms of use and Privacy policy to keep using the app. You can read them in Account › Terms and privacy.',
+      confirm: 'I accept', cancel: 'Log out',
+      onConfirm: () => Live.acceptTerms(TERMS_VERSION).then(() => set({ termsVersion: TERMS_VERSION }), e => { termsAsked.current = false; liveFail(e); }),
+      onCancel: () => ACT.logout() } });
+  }, [signedIn, st.synced, st.termsVersion]);
   useEffect(() => {
     if (!LIVE || !signedIn) return;
     sync();
@@ -3107,9 +3138,10 @@ function App() {
   useEffect(() => {
     if (!LIVE) return;
     const locked = () => lockApp();
-    let away = 0;
-    const pause = () => { away = Date.now(); };
-    const resume = () => { if (away && Date.now() - away > 30000) { Live.lockNow(); lockApp('Locked while PGBX was in the background'); } away = 0; };
+    let away = 0, limit = 30000;
+    // Paying in the in-app browser pauses the app on Android: allow up to 10 minutes for that before locking
+    const pause = () => { away = Date.now(); limit = window.PGBXNative?.browserOpen ? 600000 : 30000; };
+    const resume = () => { if (away && Date.now() - away > limit) { Live.lockNow(); lockApp('Locked while PGBX was in the background'); } away = 0; };
     const closed = () => { if (phaseRef.current === 'app') sync(); };    // back from a payment page
     addEventListener('pgbx-locked', locked); addEventListener('pgbx-pause', pause); addEventListener('pgbx-resume', resume); addEventListener('pgbx-browser-closed', closed);
     return () => { removeEventListener('pgbx-locked', locked); removeEventListener('pgbx-pause', pause); removeEventListener('pgbx-resume', resume); removeEventListener('pgbx-browser-closed', closed); };
@@ -3320,9 +3352,9 @@ function App() {
       if (LIVE) {
         Live.closeAccount().then(r => {
           if (!r.closed) { toast('Your account can’t be closed yet. Check the items listed.'); sync(); return; }
-          clearSaved(); Live.forget();
+          clearSaved();
           try { sessionStorage.setItem('pgbx-note', 'Your PGBX account has been closed and your details were removed from this phone.'); } catch (e) { }
-          location.reload();
+          Live.forget().catch(() => { }).then(() => location.reload());    // the saved login is removed before the reload
         }, liveFail);
         return;
       }
@@ -3986,7 +4018,7 @@ function Dialog({ d, onClose }) {
       <h2 id="dlg-t">${d.title}</h2>${d.body && html`<p id="dlg-b">${d.body}</p>`}
       <div class="stack-btns">
         <button class=${'btn ' + (d.danger ? 'btn-danger-solid' : 'btn-primary')} onClick=${ok}>${d.confirm || 'Confirm'}</button>
-        <button class="btn btn-secondary" data-cancel onClick=${onClose}>${d.cancel || 'Cancel'}</button>
+        <button class="btn btn-secondary" data-cancel onClick=${() => { onClose(); d.onCancel && d.onCancel(); }}>${d.cancel || 'Cancel'}</button>
       </div>
     </div>
   </div>`;

@@ -157,14 +157,16 @@ test('one /sync request returns every part the app shows, each the same as its o
 
 test('the store-review number logs in with its own code only while REVIEW_LOGIN is set, and is audited', async () => {
   const ph = '3009998887';
-  process.env.REVIEW_LOGIN = ph + ':482915';
+  process.env.REVIEW_LOGIN = ph + ':482915:2099-12-31';
   try {
     ok(await call('POST', '/api/v1/auth/otp/start', { body: { phone: ph }, ip: '10.8.9.1' }));
     err(await call('POST', '/api/v1/auth/otp/verify', { body: { phone: ph, code: '123456', cookie: false }, ip: '10.8.9.1' }), 400, 'WRONG_CODE');   // not the test code
     const r = ok(await call('POST', '/api/v1/auth/otp/verify', { body: { phone: ph, code: '482915', cookie: false }, ip: '10.8.9.1' }));
     assert.ok((await db.one(`select data from audit_log where entity_id = $1 and action in ('login', 'account.created') order by id desc limit 1`, [r.customer.id])).data.storeReview);
-    process.env.REVIEW_LOGIN = '3009998887:123456';                      // the public test code is never accepted as a review code
+    process.env.REVIEW_LOGIN = '3009998887:123456:2099-12-31';                      // the public test code is never accepted as a review code
     ok(await call('POST', '/api/v1/auth/otp/start', { body: { phone: '3009998886' }, ip: '10.8.9.2' }));
+    process.env.REVIEW_LOGIN = ph + ':482915:2020-01-01';                 // past its last day: off
+    err(await call('POST', '/api/v1/auth/otp/verify', { body: { phone: ph, code: '482915', cookie: false }, ip: '10.8.9.4' }), 400, 'WRONG_CODE');
   } finally { delete process.env.REVIEW_LOGIN; }
   // switched off: the number is an ordinary number again
   err(await call('POST', '/api/v1/auth/otp/verify', { body: { phone: ph, code: '482915', cookie: false }, ip: '10.8.9.3' }), 400, 'WRONG_CODE');
