@@ -196,6 +196,8 @@ so they hold across server instances. Every staff action and every look at a cus
 
 ### Environment variables (set in Vercel, never in the code)
 
+The full list, including the demo, build and local development variables, is in `.env.example`.
+
 | Variable | Purpose | Until it is set |
 |---|---|---|
 | `DATABASE_URL` | PostgreSQL connection. On Supabase use the pooled connection string (port 6543). | API answers "not connected" |
@@ -395,6 +397,19 @@ and no tracking; check it again whenever a plugin or SDK is added.
 * **Store material**: `docs/store/listing.md` (names, description, keywords, review notes, declarations),
   `docs/store/privacy-answers.md` (Apple App Privacy and Google Data Safety answers) and `docs/store/screenshots/`
   (iPhone 6.7" 1290×2796, iPhone 6.5" 1242×2688, Android 1080×1920).
+
+## Before going live
+
+`.env.example` lists every environment variable with what it does. Beyond `npm run launch:check`:
+
+- [ ] **Error tracking**: connect an error tracker (for example Sentry) to the Vercel functions and the web app, and
+  check that a test error arrives. Until then, watch Vercel's runtime logs.
+- [ ] **Database backups**: on PGBX's Supabase project enable Point in Time Recovery (a paid add on; daily backups
+  alone can lose up to a day of ledger entries), then restore one backup to a scratch project to prove it works.
+- [ ] **Uptime check**: add an external monitor (for example Better Stack or UptimeRobot) on the production domain
+  and on `/api/v1/config`, alerting PGBX's on call phone and email.
+- [ ] Remove every test mode (`OTP_TEST_MODE`, `ALLOW_SANDBOX`, `sandbox` providers), and `REVIEW_LOGIN` once the
+  store review is approved.
 
 ## Performance rules
 
