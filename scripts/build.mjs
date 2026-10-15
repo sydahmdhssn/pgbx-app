@@ -40,7 +40,7 @@ const prodJs = await bundle();
 function production(html, { assetBase }) {
   let out = html
     .replace('<meta name="pgbx-build" content="demo">', `<meta name="pgbx-build" content="production">\n<meta name="pgbx-api" content="${api}">`)
-    .replace(/<meta name="description" content="[^"]*">/, '<meta name="description" content="PGBX: buy Shariah-compliant 999.0 gold and silver at live prices, hold it in your wallet and collect it at PGBX dealers.">')
+    .replace(/<meta name="description" content="[^"]*">/, '<meta name="description" content="PGBX: buy 999.0 gold and silver at live prices, hold it in your wallet and collect it at PGBX dealers.">')
     .replace(/<div class="page-caption">[^<]*<\/div>\n?/, '')
     .replace('<script type="module" src="app.js"></script>', `<script type="module" src="${assetBase}app.js"></script>`)
     .replace(/<!-- the app's three modules[^>]*-->\n?/, '')

@@ -413,8 +413,10 @@ function Coin({ size = 200, animate = false, label = 'PGBX logo' }) {
 // Logo stage for splash, login and lock: the mark draws in, then breathes with a soft glow and a passing light.
 // `orbit` adds the original touches from the first version: two slowly rotating rings, a gold ball orbiting the coin
 // and the coin's dotted rim turning (splash and sign-in).
-// Brand badge. The claim depends on PGBX's written Shariah approval (CMP-3), still to be confirmed.
-const Shariah = ({ small }) => html`<span class=${'shariah' + (small ? ' sm' : '')}><${Icon} n="shield" c="xs"/><span class="sh-t">Shariah compliant</span></span>`;
+// Brand badge. The claim depends on PGBX's written Shariah approval (CMP-3), still to be confirmed, so it stays hidden
+// (badge and statement line) until that approval exists. Set to true only once PGBX holds the written approval.
+const SHARIAH_APPROVED = false;
+const Shariah = ({ small }) => SHARIAH_APPROVED && html`<span class=${'shariah' + (small ? ' sm' : '')}><${Icon} n="shield" c="xs"/><span class="sh-t">Shariah compliant</span></span>`;
 
 const Logo = ({ size, animate = true, orbit = false }) => html`<div class=${'logo-stage' + (orbit ? ' orbiting' : '')} style=${{ width: size + 'px', height: size + 'px' }}>
   ${orbit && html`<span class="ring r2" aria-hidden="true"></span><span class="ring r1" aria-hidden="true"></span>`}
@@ -472,7 +474,7 @@ function Splash({ onDone, rates, quick }) {
     <${Logo} size=${quick ? 112 : 140} animate=${!quick} orbit=${true} />
     <h1>Pakistan Gold Bullion Exchange</h1>
     ${!quick && html`<p class="tagline">Gold and silver, held for you</p>`}
-    <div class="brand-badge"><${Shariah}/></div>
+    ${SHARIAH_APPROVED && html`<div class="brand-badge"><${Shariah}/></div>`}
     ${!quick && html`<div class="splash-status" role="status"><span class=${'ldot' + (rates.mode === 'live' ? '' : ' sim')}></span>${rates.mode === 'live' ? 'Live rates connected' : rates.mode === 'sim' ? 'Using simulated rates' : 'Connecting to live rates'}</div>`}
   </div>`;
 }
@@ -540,7 +542,7 @@ function Login({ S, note, intent, hasPin, onDone, onBrowse, onPin, onRetry }) {
     <div class="login-top on-dark">
       <${Logo} size=${104} orbit=${true} />
       <h1>Pakistan Gold Bullion Exchange</h1>
-      <div class="brand-badge"><${Shariah}/></div>
+      ${SHARIAH_APPROVED && html`<div class="brand-badge"><${Shariah}/></div>`}
       <p>Buy 999.0 gold and silver, held for you by PGBX. Collect it at any of ${DEALERS_TEXT}.</p>
       <div class="ticker" aria-label="Current buy rates">
         ${[['gold', g], ['silver', s]].map(([m, r]) => html`<div class="tick">
@@ -1930,7 +1932,7 @@ function statementHtml(S, d, from, to) {
   const rows = d.entries.map(e => `<tr><td>${esc(dt(e.ts))}</td><td>${esc(entryType(e))}</td><td>${esc(pname(P[e.pid]))}</td><td style="text-align:right">${e.delta > 0 ? '+' : '−'}${Math.abs(e.delta)}</td><td style="text-align:right">${e.price ? esc(fmt(e.price)) : ''}</td><td>${esc(e.ref)}</td></tr>`).join('') || '<tr><td colspan="6">No activity in this period.</td></tr>';
   return `<!doctype html><html><head><meta charset="utf-8"><title>PGBX statement ${from} to ${to}</title>
 <style>body{font:13px/1.5 -apple-system,BlinkMacSystemFont,system-ui,'Segoe UI',Roboto,Arial,sans-serif;color:#1D2B22;margin:32px}h1{font-family:ui-serif,'New York',Georgia,serif;color:#0B4A2C;margin:0}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{padding:7px 8px;border-bottom:1px solid #ddd;text-align:left}th{background:#0B4A2C;color:#fff;font-size:11px;text-transform:uppercase}.m{color:#5F6D64}.box{border:1px solid #C8962B;border-radius:8px;padding:10px 12px;margin-top:12px}</style></head>
-<body><h1>PGBX wallet statement</h1><div class="m">Pakistan Gold Bullion Exchange · Shariah compliant · Office 1211, 12th Floor, Gold Tower, Saddar, Karachi</div>
+<body><h1>PGBX wallet statement</h1><div class="m">Pakistan Gold Bullion Exchange${SHARIAH_APPROVED ? ' · Shariah compliant' : ''} · Office 1211, 12th Floor, Gold Tower, Saddar, Karachi</div>
 <div class="box"><b>${esc(S.profile.name)}</b> · CNIC ${esc(maskCnic(S.profile.cnic) || 'not verified')} · ${S.phone ? '+92 ' + esc(S.phone) : ''}<br>Period: ${from} to ${to} · Generated ${esc(dt(Date.now()))}</div>
 <p><b>Opening holdings:</b> ${esc(holdText(d.opening))}<br><b>Closing holdings:</b> ${esc(holdText(d.closing))}</p>
 <table><tr><th>Date</th><th>Type</th><th>Product</th><th>Units</th><th>Price / unit</th><th>Receipt / reference</th></tr>${rows}</table>

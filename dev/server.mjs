@@ -17,6 +17,9 @@ const PORT = Number(process.env.PORT || 8080);
 Object.assign(process.env, { NODE_ENV: 'development', OTP_TEST_MODE: '1', PAYMENT_PROVIDER: 'sandbox', KYC_PROVIDER: 'sandbox', CRON_SECRET: 'dev-cron', ...process.env });
 const { handle } = await import('../server/api.mjs');
 const { default: ratesHandler } = await import('../api/rates.mjs');
+// The demo's own endpoints, so the demo at / works locally without reaching the deployed site
+const { default: historyHandler } = await import('../api/history.mjs');
+const { default: otpHandler } = await import('../api/otp.mjs');
 
 const db = await createMemoryDb();
 // Live prices when the rate sources are reachable; otherwise clearly marked sample prices so buying can still be tried.
@@ -51,6 +54,8 @@ http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname.startsWith('/api/v1')) return handle(req, res, { db, fetchRates });
   if (url.pathname === '/api/rates') return ratesHandler(req, res);
+  if (url.pathname === '/api/history') return historyHandler(req, res);
+  if (url.pathname === '/api/otp') return otpHandler(req, res);
   let decoded; try { decoded = decodeURIComponent(url.pathname); } catch { res.statusCode = 400; return res.end(); }
   if (BLOCKED.test(decoded) || decoded.includes('\0')) { res.statusCode = 404; return res.end('Not found'); }   // checked after decoding
   let file = path.join(ROOT, decoded);
